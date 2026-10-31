@@ -77,6 +77,15 @@ double = (_ * 2)       // Anonymous single-parameter function: double(5) == 10
 invert = (100 - _)     // Anonymous single-parameter function: invert(20) == 80
 ```
 
+A scrutinee-less (headless) guarded choice (`[guard] ...`) also desugars directly into a single-parameter function over `_` without requiring enclosing parentheses:
+
+```{.dva .run}
+classify = [> 5] "more" [< 0] "less" | "ok"
+res1 = classify(10)                      // "more"
+res2 = -3 $> classify                    // "less"
+is_vowel = ['a', 'e', 'i', 'o', 'u']     // Rune => <>
+```
+
 ### Operator sections
 
 See [Operator sections](../language/operator-sections.qmd) for the complete

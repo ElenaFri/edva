@@ -133,6 +133,15 @@ classify = score =>
   - `[Variant]`: Unit enum variant match (or payload-ignoring match; `[Variant _]` is disallowed).
   - `[V1, V2]`: Multi-variant OR guard.
   - `[Variant payload]`: Tagged enum variant payload binding (space-separated juxtaposition without parentheses; parentheses introduce a nested tuple/record subpattern such as `[Add (a, b)]`; construct enums with `Enum(Variant)` or `Enum(Variant, payload)`).
+- **Headless Choice Functions**: A guarded choice without a leading scrutinee (`[guard] ...`, when not a direct statement in an `@` cycle body) wraps into a 1-argument function over `_` without requiring `x => x ...` or enclosing parentheses:
+```dva complete
+classify: Int => String
+classify =
+   [100]  "perfect"
+   [> 89] "distinction"
+   [> 49] "pass"
+   |      "fail"
+```
 - **Statement Choices**: Single-branch choices without fallbacks evaluate for side effects:
 ```dva partial reason="statement choice fragment"
 has_error | log("Error detected")

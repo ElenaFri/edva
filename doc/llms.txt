@@ -92,6 +92,7 @@ types and cannot be implicitly coerced between one another.
 # 4. Essential Control Flow & Error Handling
 
 - **Choice**: `x [100] "perfect" [> 89] "pass" | "fail"`
+- **Headless Choice Function**: `classify = [100] "perfect" [> 89] "pass" | "fail"` (a scrutinee-less `[guard]` choice outside an `@` cycle body desugars into a 1-argument function over `_`, callable as `classify(95)` or `95 $> [> 89] "pass" | "fail"`).
 - **Cycle**: `0..count @ i => (i == 5 | -->)`
 - **Cycle Escape**: `found = 0..10 @ i => (i == 3 | -->) >-- 3` (returns `< Int | >`)
 - **Early Return**: `--| value` returns value immediately; bare `--|` returns from void functions.

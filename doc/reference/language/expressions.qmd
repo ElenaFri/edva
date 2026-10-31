@@ -33,11 +33,14 @@ needed.
 
 ## Choices, cycles, and assignments
 
-A choice has adjacent guarded branches and an optional trailing bare fallback:
+A choice has adjacent guarded branches and an optional trailing bare fallback. Omitting the scrutinee before `[guard]` produces a first-class 1-argument function over `_` (except when used as a direct statement inside an `@` cycle body):
 
 ```{.dva .run}
 value = 2
 label = value [1] "one" [2] "two" | "other"
+
+describe = [1] "one" [2] "two" | "other"
+piped = 2 $> describe
 ```
 
 One-branch choices are statements, not exhaustive values. In an assignable choice

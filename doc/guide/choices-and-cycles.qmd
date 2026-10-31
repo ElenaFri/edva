@@ -33,13 +33,28 @@ Each branch normalizes to exactly one of four guard kinds:
 ```{.dva .run}
 // Comprehensive guard demonstration:
 classify_number: Int => String
-classify_number = n =>
-   n [< 0] "negative"
+classify_number =
+   [< 0] "negative"
    [0] "zero"
    [1, 2, 3] "one, two, or three"
    [> 100] "huge"
    | "moderate positive"
 ```
+
+### Headless (scrutinee-less) choice functions
+
+When a guarded choice starts directly with `[guard]` without a preceding scrutinee, the compiler wraps it into a first-class 1-argument function over an implicit `_` parameter—just like an operator section (`double = * 2`)—without requiring `x => x ...` or enclosing parentheses:
+
+```{.dva .run}
+#use io
+
+fun = [> 5] "more" [< 0] "less" | "ok"
+io::out $ fun(10)                        // more
+io::out $ -3 $> fun                      // less
+io::out $ 2 $> [> 5] "more" | "ok"       // ok
+```
+
+Inside an `@` cycle body, a statement-level `[guard]` choice continues to match the cycle's implicit `_` element directly so `-->` and `--^` jump controls operate in-place.
 
 ## Statement choices vs Expression choices
 
