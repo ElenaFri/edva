@@ -188,8 +188,7 @@ pk = lx, off =>
 
 // Consume one rune, maintaining line/col.
 is_nl: Rune => <>
-is_nl = r =>
-   r ['\n']
+is_nl = ['\n']
 
 adv: Lx, Rune => Rune
 adv = lx, r => 
@@ -200,8 +199,7 @@ adv = lx, r =>
    r
 
 is_ws: Rune => <>
-is_ws = c =>
-   c [' ', '\t', '\r', '\n']
+is_ws = [' ', '\t', '\r', '\n']
 
 // Uniform token constructor; reads/clears the leading-ws state and records
 // whether whitespace follows the token. has_trailing_ws is meaningful only
@@ -350,8 +348,7 @@ decode_escapes = raw =>
 // --- character classes ----------------------------------------------------
 
 is_delim: Rune => <>
-is_delim = c =>
-   c ['(', ')', '[', ']', '{', '}', ',', ';']
+is_delim = ['(', ')', '[', ']', '{', '}', ',', ';']
 
 is_id_start: Rune => <>
 is_id_start = r =>
@@ -368,8 +365,7 @@ is_id_char = r =>
 // references (apply to c), with the branches swapped so a non-special char
 // yields <-> and a special one <+>.
 is_special: Rune => <>
-is_special = c =>
-   c ['"', '\'', '#', '\0', is_delim, is_ws, is_id_char] <-> | <+>
+is_special = ['"', '\'', '#', '\0', is_delim, is_ws, is_id_char] <-> | <+>
 
 // < >-returning predicates yield genuine rams (<+>/<->): an Int-yielding
 // body under a <> signature is an E3093 mismatch, and an Int can never
@@ -1790,43 +1786,42 @@ show = t =>
    libc::write(2, line, ?line)
 
 kind_name: TokKind => String
-kind_name = k =>
-   k
-      [Id] "id"
-      [Int] "int"
-      [Float] "float"
-      [Str] "str"
-      [Rune] "rune"
-      [Op] "op"
-      [LParen] "("
-      [RParen] ")"
-      [LBracket] "["
-      [RBracket] "]"
-      [LBrace] "{"
-      [RBrace] "}"
-      [Comma] ","
-      [Semi] ";"
-      [Newline] "newline"
-      [Indent] "INDENT"
-      [Dedent] "DEDENT"
-      [UsePath] "#use"
-      [UseDynamicPath] "#use(dynamic)"
-      [UseImportPath] "#use(import)"
-      [UseDynamicImportPath] "#use(dynamic, import)"
-      [Foreign] "#foreign"
-      [TypeKw] "#type"
-      [PackedKw] "#packed"
-      [AlignKw] "#align"
-      [Private] "#private"
-      [Public] "#public"
-      [Export] "#export"
-      [SpawnKw] "#spawn"
-      [JoinKw] "#join"
-      [ExitKw] "#exit"
-      [ErrorKw] "#error"
-      [WarnKw] "#warn"
-      [PragmaKw] "#pragma"
-      [PragmaSwizzle] "#pragma"
-      [CT] "#!"
-      [Eof] "eof"
-      | "?"
+kind_name =
+   [Id] "id"
+   [Int] "int"
+   [Float] "float"
+   [Str] "str"
+   [Rune] "rune"
+   [Op] "op"
+   [LParen] "("
+   [RParen] ")"
+   [LBracket] "["
+   [RBracket] "]"
+   [LBrace] "{"
+   [RBrace] "}"
+   [Comma] ","
+   [Semi] ";"
+   [Newline] "newline"
+   [Indent] "INDENT"
+   [Dedent] "DEDENT"
+   [UsePath] "#use"
+   [UseDynamicPath] "#use(dynamic)"
+   [UseImportPath] "#use(import)"
+   [UseDynamicImportPath] "#use(dynamic, import)"
+   [Foreign] "#foreign"
+   [TypeKw] "#type"
+   [PackedKw] "#packed"
+   [AlignKw] "#align"
+   [Private] "#private"
+   [Public] "#public"
+   [Export] "#export"
+   [SpawnKw] "#spawn"
+   [JoinKw] "#join"
+   [ExitKw] "#exit"
+   [ErrorKw] "#error"
+   [WarnKw] "#warn"
+   [PragmaKw] "#pragma"
+   [PragmaSwizzle] "#pragma"
+   [CT] "#!"
+   [Eof] "eof"
+   | "?"

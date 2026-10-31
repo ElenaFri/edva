@@ -1,0 +1,59 @@
+// Headless (scrutinee-less) choice expressions wrapped as implicit '_' lambdas (#238)
+#use io
+#use str
+
+// 1. Inline headless choice assignment, direct call, feed ($>), and apply ($)
+fun = [> 5] "more" [< 0] "less" | "ok"
+io::out $ fun(10)
+io::out $ -3 $> fun
+io::out $ fun $ 2
+
+// 2. Direct feed into inline headless choice
+io::out $ -3 $> [> 5] "more" [< 0] "less" | "ok"
+io::out $ 9 $> [> 5] "more" [< 0] "less" | "ok"
+
+// 3. Indented multi-line headless choice
+indented_fun =
+   [> 5] "more"
+   [< 0] "less"
+   | "ok"
+io::out $ indented_fun(8)
+io::out $ 0 $> indented_fun
+
+// 4. Typed signature + enum destructuring headless choice
+#type Shape < Circle(Int), Square(Int), Dot >
+
+area: Shape => Int
+area = [Circle r] r * r * 3 [Square s] s * s | 0
+
+io::out $ str::from_int(area(Shape(Circle, 2)))
+io::out $ str::from_int(Shape(Square, 4) $> area)
+io::out $ str::from_int(area(Shape(Dot)))
+
+// 5. Higher-order function argument
+apply_to: Int, (Int => String) => String
+apply_to = x, f => f(x)
+
+io::out $ apply_to(7, [> 5] "more" [< 0] "less" | "ok")
+
+// 6. Parenthesized headless choice (no double-wrapping)
+p_fun = ([> 5] "more" | "ok")
+io::out $ p_fun(6)
+io::out $ p_fun(3)
+
+// 7. Multi-line guard inside indented headless choice
+multi_guard =
+   ["alpha",
+      "beta"] 1
+   ["gamma",
+      "delta"] 2
+   | 0
+io::out $ str::from_int(multi_guard("beta"))
+io::out $ str::from_int(multi_guard("delta"))
+io::out $ str::from_int(multi_guard("omega"))
+
+// 8. Cycle body headless choices remain direct statements with _ and _i
+0..3 @
+   [0] io::out $ "zero:" + str::from_int(_i)
+   [2] -->
+   | io::out $ "other:" + str::from_int(_i)

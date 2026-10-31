@@ -1110,55 +1110,53 @@ codegen_error_size = cg => is_32bit_target(cg) | 48 | 56
 // --- type helpers ------------------------------------------------------------
 
 is_float_vt: ast::ValueType => <>
-is_float_vt = vt => vt [Float, F32]
+is_float_vt = [Float, F32]
 
 is_int_vt: ast::ValueType => <>
-is_int_vt = vt =>
-   vt [Int, Rune, I8, I16, I32, I64, U8, U16, U32, U64]
+is_int_vt = [Int, Rune, I8, I16, I32, I64, U8, U16, U32, U64]
 
 is_unsigned_vt: ast::ValueType => <>
-is_unsigned_vt = vt => vt [U8, U16, U32, U64]
+is_unsigned_vt = [U8, U16, U32, U64]
 
 is_ram_vt: ast::ValueType => <>
-is_ram_vt = vt => vt [Ram]
+is_ram_vt = [Ram]
 
 is_flag_vt: ast::ValueType => <>
-is_flag_vt = vt => vt [Flag]
+is_flag_vt = [Flag]
 
 is_enum_vt: ast::ValueType => <>
-is_enum_vt = vt => vt [Enum]
+is_enum_vt = [Enum]
 
 is_any_ram_vt: ast::ValueType => <>
-is_any_ram_vt = vt => vt [Flag, Ram, Enum]
+is_any_ram_vt = [Flag, Ram, Enum]
 
 is_str_vt: ast::ValueType => <>
-is_str_vt = vt => vt [Str]
+is_str_vt = [Str]
 
 is_rune_vt: ast::ValueType => <>
-is_rune_vt = vt => vt [Rune]
+is_rune_vt = [Rune]
 
 is_record_vt: ast::ValueType => <>
-is_record_vt = vt => vt [Record, Error]
+is_record_vt = [Record, Error]
 
 is_array_vt: ast::ValueType => <>
-is_array_vt = vt => vt [Array]
+is_array_vt = [Array]
 
 is_builder_vt: ast::ValueType => <>
-is_builder_vt = vt => vt [Builder]
+is_builder_vt = [Builder]
 
 is_slice_vt: ast::ValueType => <>
-is_slice_vt = vt => vt [Slice]
+is_slice_vt = [Slice]
 
 is_scalar_vt: ast::ValueType => <>
-is_scalar_vt = vt =>
-   vt [Int, Rune, I8, I16, I32, I64, U8, U16, U32, U64,
-      Float, F32, Str, Builder, Unit]
+is_scalar_vt = [Int, Rune, I8, I16, I32, I64, U8, U16, U32, U64,
+   Float, F32, Str, Builder, Unit]
 
 is_map_vt: ast::ValueType => <>
-is_map_vt = vt => vt [Map]
+is_map_vt = [Map]
 
 is_ptr_vt: ast::ValueType => <>
-is_ptr_vt = vt => vt [RawPtr]
+is_ptr_vt = [RawPtr]
 
 // The LLVM type backing a ValueType (i64 Int, double Float, i1 ram-flag,
 // ptr String). Slice-9 subset; composite types arrive with later slices.
@@ -3654,37 +3652,36 @@ static_expr_vt = cg, e =>
       | ast::ValueType(Unknown)
 
 value_type_name: ast::ValueType => String
-value_type_name = vt =>
-   vt
-      [Unknown] "Unknown"
-      [Int] "Int"
-      [I8] "I8"
-      [I16] "I16"
-      [I32] "I32"
-      [I64] "I64"
-      [U8] "U8"
-      [U16] "U16"
-      [U32] "U32"
-      [U64] "U64"
-      [Rune] "Rune"
-      [Float] "Float"
-      [F32] "F32"
-      [Str] "String"
-      [Flag] "Flag"
-      [Ram] "Ramification"
-      [Enum] "Enum"
-      [Record] "Record"
-      [Unit] "Void"
-      [RawPtr] "Addr"
-      [Fn] "Function"
-      [Type] "Type"
-      [Slice] "Slice"
-      [Builder] "Builder"
-      [Array] "Array"
-      [Map] "Map"
-      [Error] "Error"
-      [ThreadId] "ThreadId"
-      | "unknown"
+value_type_name =
+   [Unknown] "Unknown"
+   [Int] "Int"
+   [I8] "I8"
+   [I16] "I16"
+   [I32] "I32"
+   [I64] "I64"
+   [U8] "U8"
+   [U16] "U16"
+   [U32] "U32"
+   [U64] "U64"
+   [Rune] "Rune"
+   [Float] "Float"
+   [F32] "F32"
+   [Str] "String"
+   [Flag] "Flag"
+   [Ram] "Ramification"
+   [Enum] "Enum"
+   [Record] "Record"
+   [Unit] "Void"
+   [RawPtr] "Addr"
+   [Fn] "Function"
+   [Type] "Type"
+   [Slice] "Slice"
+   [Builder] "Builder"
+   [Array] "Array"
+   [Map] "Map"
+   [Error] "Error"
+   [ThreadId] "ThreadId"
+   | "unknown"
 
 // Named ram construction checks the literal against the declared slot layout
 // while leaving the runtime value as the same erased union/flag representation.
@@ -3751,14 +3748,13 @@ ram_tag_is_flag: ast::Tag => <>
 ram_tag_is_flag = tag => tag == ast::Tag(Positive) || tag == ast::Tag(Negative)
 
 ram_tag_name: ast::Tag => String
-ram_tag_name = tag =>
-   tag
-      [Positive] "Positive"
-      [Negative] "Negative"
-      [Some] "Some"
-      [Err] "Err"
-      [Succ] "Succ"
-      | "Noth"
+ram_tag_name =
+   [Positive] "Positive"
+   [Negative] "Negative"
+   [Some] "Some"
+   [Err] "Err"
+   [Succ] "Succ"
+   | "Noth"
 
 ram_slot_name: ast::Tag => String
 ram_slot_name = tag => ram_tag_is_positive(tag) | "Some" | "Err"
@@ -3932,19 +3928,17 @@ codegen_eval_type_value = cg, name =>
 // The built-in ram tag ids: 1 = positive-ish (Positive/Some), 2 = Succ,
 // 3 = Noth, 0 = negative-ish (Negative/Err).
 tag_id_of: ast::Tag => Int
-tag_id_of = tg =>
-   tg
-      [Positive] 1
-      [Some] 1
-      [Succ] 2
-      [Noth] 3
-      | 0
+tag_id_of =
+   [Positive] 1
+   [Some] 1
+   [Succ] 2
+   [Noth] 3
+   | 0
 
 // A pointer-shaped payload is stored in the union slot directly; a scalar is
 // boxed. The chain form (not a '||' merge) avoids flag-phi inference.
 is_ptrish_vt: ast::ValueType => <>
-is_ptrish_vt = vt =>
-   vt [Str, RawPtr, Builder, Ram, Record, Map, Error, Array, Slice, Enum, Fn]
+is_ptrish_vt = [Str, RawPtr, Builder, Ram, Record, Map, Error, Array, Slice, Enum, Fn]
 
 // A heap { tag, payload } union: malloc'd 16-byte struct, tag in slot 0, the
 // payload in slot 1 (a pointer-shaped value stored directly, a scalar boxed

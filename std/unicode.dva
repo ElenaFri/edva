@@ -841,8 +841,7 @@
 
    // Byte width of a rune's UTF-8 encoding.
    utf8_width: Rune => Int
-   utf8_width = r =>
-      r [< 0x80] 1 [< 0x800] 2 [< 0x10000] 3 | 4
+   utf8_width = [< 0x80] 1 [< 0x800] 2 [< 0x10000] 3 | 4
 
    // UAX #31: XID_Start characters (Lu, Ll, Lt, Lm, Lo, Nl)
    is_xid_start: Rune => <>

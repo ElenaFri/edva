@@ -37,16 +37,14 @@
 
    // The reason phrase for a status code ("" for unknown codes).
    reason_of: Int => String
-   reason_of = code =>
-      code
-         [200] "OK"
-         [301] "Moved Permanently"
-         [302] "Found"
-         [400] "Bad Request"
-         [404] "Not Found"
-         [500] "Internal Server Error"
-         |
-            ""
+   reason_of =
+      [200] "OK"
+      [301] "Moved Permanently"
+      [302] "Found"
+      [400] "Bad Request"
+      [404] "Not Found"
+      [500] "Internal Server Error"
+      | ""
 
    // One header line "Name: Value\r\n" (Name and Value must not contain CR/LF).
    header: String, String => String

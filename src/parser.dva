@@ -69,6 +69,7 @@ set_target_triple = t =>
    expr_depth: Int,
    indent_level: Int,
    cont_depth: Int,
+   cycle_depth: Int,
    user_types: TypeEntry{},
    forward_refs: ForwardRef{},
    user_ops: UserOpEntry{},
@@ -179,7 +180,7 @@ parser_init = lx =>
    tl = ast::Ints()
    tc = ast::Ints()
    p = Parser(lx, lexer::Tok(lexer::TokKind(Eof), 0, 0, 1, 1, <->, <->, ""),
-      0, 0, 0, 0, 0, 0, user_types, forward_refs, user_ops,
+      0, 0, 0, 0, 0, 0, 0, user_types, forward_refs, user_ops,
       <->, <->, <->, <->, <->, ast::Names(), ast::Names(), ast::Names(), "", 0, 0,
       <->, <->, <->, "", <+>, lexer::lex_get_file(), tl, tc, consts)
    parser_advance(p)
@@ -300,7 +301,10 @@ cycle_cont = p, lhs =>
       |
          is_rune = is_atat
          parser_advance(p)
-         parse_block(p)
+         p.cycle_depth = p.cycle_depth + 1
+         b_opt = parse_block(p)
+         p.cycle_depth = p.cycle_depth - 1
+         b_opt
             | body =>
                cyc = ast::Expr(Cycle, ast::CycleExpr(lhs, body, is_rune))
                token_is_op(p.curr, ">--")
@@ -315,10 +319,22 @@ cycle_cont = p, lhs =>
             | <-->
       | <+ lhs +>
 
+wrap_headless_choice: Parser, <ast::Expr|> => <ast::Expr|>
+wrap_headless_choice = p, res =>
+   res
+      | ce =>
+         p.cycle_depth > 0 && !p.in_rhs
+            | <+ ce +>
+            |
+               params = ast::Names()
+               params += "_"
+               <+ ast::Expr(Fn, ast::FnExpr(params, ast::Names(), ce)) +>
+      | <-->
+
 parse_choice: Parser => <ast::Expr|>
 parse_choice = p =>
    p.curr.kind
-      [LBracket] choice_resume(p, ast::Expr(Var, "_"))
+      [LBracket] wrap_headless_choice(p, headless_choice_resume(p))
       |
          token_is_pipe(p.curr)
             | choice_resume(p, ast::Expr(Var, "_"))
@@ -329,6 +345,18 @@ parse_choice = p =>
                         [Assign, Fn, TypeDecl, Import, Foreign, Block] <+ r +>
                         | choice_resume(p, r)
                   | <-->
+
+headless_choice_resume: Parser => <ast::Expr|>
+headless_choice_resume = p =>
+   headless_choice_cont(p, ast::Expr(Var, "_"))
+      | r =>
+         is_binary_cont(p)
+            |
+               parse_bp_lhs(p, 30, r)
+                  | rr => choice_resume(p, rr)
+                  | <-->
+            | <+ r +>
+      | <-->
 
 // Runs the choice continuation on `lhs`, then alternates with the Pratt loop:
 // a binary operator after a complete choice is picked up by the loop (the
@@ -507,6 +535,26 @@ bp_loop = p, res, min_bp, cmp_line =>
                   | bp_cont_user(p, res, min_bp, cmp_line, uo.1, uo.2)
                   | <+ res +>
 
+// Whether an operator is apply/feed ($, $>, $>>) — the binary tiers BELOW
+// the choice tier, whose right operand absorbs a choice continuation.
+op_is_apply_feed: ast::BinaryOp => <>
+op_is_apply_feed = [Apply, Feed, Bind]
+
+parse_bp_rhs: Parser, operators::BinOpInfo => <ast::Expr|>
+parse_bp_rhs = p, i =>
+   is_brk = p.curr.kind [LBracket]
+   p.branch_body_depth == 0 && op_is_apply_feed(i.op) && is_brk
+      |
+         saved_cd = p.cycle_depth
+         p.cycle_depth = 0
+         res = parse_choice(p)
+         p.cycle_depth = saved_cd
+         res
+      |
+         parse_bp(p, i.rbp)
+            | rre => apply_feed_rhs(p, rre, i.op)
+            | <-->
+
 // Consume one binary operator (the token is an Op whose BinOpInfo is in hand):
 // bound check, comparison same-line check, advance, parse the right operand,
 // build the Bin node, then resume the loop.
@@ -524,22 +572,13 @@ bp_cont = p, res, min_bp, cmp_line, i =>
                   | node => bp_loop(p, node, min_bp, cmp_line)
                   | <-->
             |
-               parse_bp(p, i.rbp)
-                  | rre =>
-                     apply_feed_rhs(p, rre, i.op)
-                        | cae =>
-                           node = ast::Expr(Bin, (i.op, res, cae))
-                           set_cmp = i.same_line && cmp_line == -1
-                           nc = set_cmp | op_line | cmp_line
-                           bp_loop(p, node, min_bp, nc)
-                        | <-->
+               parse_bp_rhs(p, i)
+                  | cae =>
+                     node = ast::Expr(Bin, (i.op, res, cae))
+                     set_cmp = i.same_line && cmp_line == -1
+                     nc = set_cmp | op_line | cmp_line
+                     bp_loop(p, node, min_bp, nc)
                   | <-->
-
-// Whether an operator is apply/feed ($, $>, $>>) — the binary tiers BELOW
-// the choice tier, whose right operand absorbs a choice continuation.
-op_is_apply_feed: ast::BinaryOp => <>
-op_is_apply_feed = o =>
-   o [Apply, Feed, Bind]
 
 // The apply/feed right operand: a full choice ("a $> b | c | d" ==
 // "a $> (b | c | d)"), suppressed inside a choice branch body where a
@@ -1732,6 +1771,8 @@ atom_paren: Parser => <ast::Expr|>
 atom_paren = p =>
    saved_no_assign = p.no_assign
    p.no_assign = <->
+   saved_cd = p.cycle_depth
+   p.cycle_depth = 0
    parser_advance(p)
    res = p.curr.kind
       [RParen]
@@ -1749,6 +1790,7 @@ atom_paren = p =>
                | paren_has_comma(p)
                   | parse_paren_record(p)
                   | parse_paren_group(p)
+   p.cycle_depth = saved_cd
    p.no_assign = saved_no_assign
    res
 
@@ -2428,7 +2470,10 @@ fn_arrow = p, params, ct_params =>
          p.in_rhs = <->
          saved_ml = p.module_level
          p.module_level = <->
+         saved_cd = p.cycle_depth
+         p.cycle_depth = 0
          body = parse_block(p)
+         p.cycle_depth = saved_cd
          p.module_level = saved_ml
          p.in_rhs = saved_rhs
          body
@@ -2629,29 +2674,28 @@ stmt_end_ok = p =>
 // A primitive type name -> ValueType (mirrors parse_dva_type_name). The HARD
 // RULES recognize ONLY these canonical names.
 parse_dva_type_name: String => <ast::ValueType|>
-parse_dva_type_name = name =>
-   name
-      ["Int"] <+ ast::ValueType(Int) +>
-      ["i64"] <+ ast::ValueType(Int) +>
-      ["i8"] <+ ast::ValueType(I8) +>
-      ["i16"] <+ ast::ValueType(I16) +>
-      ["i32"] <+ ast::ValueType(I32) +>
-      ["u8"] <+ ast::ValueType(U8) +>
-      ["u16"] <+ ast::ValueType(U16) +>
-      ["u32"] <+ ast::ValueType(U32) +>
-      ["u64"] <+ ast::ValueType(U64) +>
-      ["i1"] <+ ast::ValueType(Flag) +>
-      ["Rune"] <+ ast::ValueType(Rune) +>
-      ["Float"] <+ ast::ValueType(Float) +>
-      ["f64"] <+ ast::ValueType(Float) +>
-      ["f32"] <+ ast::ValueType(F32) +>
-      ["String"] <+ ast::ValueType(Str) +>
-      ["Addr"] <+ ast::ValueType(RawPtr) +>
-      ["ptr"] <+ ast::ValueType(RawPtr) +>
-      ["Builder"] <+ ast::ValueType(Builder) +>
-      ["Error"] <+ ast::ValueType(Error) +>
-      ["Type"] <+ ast::ValueType(Type) +>
-      | <-->
+parse_dva_type_name =
+   ["Int"] <+ ast::ValueType(Int) +>
+   ["i64"] <+ ast::ValueType(Int) +>
+   ["i8"] <+ ast::ValueType(I8) +>
+   ["i16"] <+ ast::ValueType(I16) +>
+   ["i32"] <+ ast::ValueType(I32) +>
+   ["u8"] <+ ast::ValueType(U8) +>
+   ["u16"] <+ ast::ValueType(U16) +>
+   ["u32"] <+ ast::ValueType(U32) +>
+   ["u64"] <+ ast::ValueType(U64) +>
+   ["i1"] <+ ast::ValueType(Flag) +>
+   ["Rune"] <+ ast::ValueType(Rune) +>
+   ["Float"] <+ ast::ValueType(Float) +>
+   ["f64"] <+ ast::ValueType(Float) +>
+   ["f32"] <+ ast::ValueType(F32) +>
+   ["String"] <+ ast::ValueType(Str) +>
+   ["Addr"] <+ ast::ValueType(RawPtr) +>
+   ["ptr"] <+ ast::ValueType(RawPtr) +>
+   ["Builder"] <+ ast::ValueType(Builder) +>
+   ["Error"] <+ ast::ValueType(Error) +>
+   ["Type"] <+ ast::ValueType(Type) +>
+   | <-->
 
 parse_ram_np_type: Parser => (ast::ValueType, ast::TypeInfo, <>)
 parse_ram_np_type = p =>
@@ -2670,18 +2714,17 @@ parse_ram_np_type = p =>
          | mk_tp(pt.0, pt.1, <->)
 
 bitfield_backing_info: String => (ast::ValueType, Int, <>)
-bitfield_backing_info = name =>
-   name
-      ["u8"] (ast::ValueType(U8), 8, <+>)
-      ["i8"] (ast::ValueType(I8), 8, <+>)
-      ["u16"] (ast::ValueType(U16), 16, <+>)
-      ["i16"] (ast::ValueType(I16), 16, <+>)
-      ["u32"] (ast::ValueType(U32), 32, <+>)
-      ["i32"] (ast::ValueType(I32), 32, <+>)
-      ["u64"] (ast::ValueType(U64), 64, <+>)
-      ["i64"] (ast::ValueType(I64), 64, <+>)
-      ["Int"] (ast::ValueType(Int), 64, <+>)
-      | (ast::ValueType(Unknown), 0, <->)
+bitfield_backing_info =
+   ["u8"] (ast::ValueType(U8), 8, <+>)
+   ["i8"] (ast::ValueType(I8), 8, <+>)
+   ["u16"] (ast::ValueType(U16), 16, <+>)
+   ["i16"] (ast::ValueType(I16), 16, <+>)
+   ["u32"] (ast::ValueType(U32), 32, <+>)
+   ["i32"] (ast::ValueType(I32), 32, <+>)
+   ["u64"] (ast::ValueType(U64), 64, <+>)
+   ["i64"] (ast::ValueType(I64), 64, <+>)
+   ["Int"] (ast::ValueType(Int), 64, <+>)
+   | (ast::ValueType(Unknown), 0, <->)
 
 parse_align_type: Parser => (ast::ValueType, ast::TypeInfo, <>)
 parse_align_type = p =>
@@ -3886,8 +3929,7 @@ parse_type_map = p, at =>
          mk_tp(at.0, at.1, <+>)
 
 map_key_ok: ast::ValueType => <>
-map_key_ok = vt =>
-   vt [Str, Int, Rune, I8, I16, I32, I64, U8, U16, U32, U64, RawPtr]
+map_key_ok = [Str, Int, Rune, I8, I16, I32, I64, U8, U16, U32, U64, RawPtr]
 
 // Compile-time unary operator "#size T": the byte size of T in bytes.
 parse_sizeof: Parser => <ast::Expr|>
@@ -4694,10 +4736,12 @@ member_chain_name = e =>
 
 parse_arg: Parser => <ast::Expr|>
 parse_arg = p =>
+   saved_cd = p.cycle_depth
+   p.cycle_depth = 0
    is_id = p.curr.kind [Id]
    nxt = parser_peek_next(p)
    is_named = is_id && (nxt.text [":", "="])
-   is_named
+   res = is_named
       |
          name = p.curr.text
          parser_advance(p)
@@ -4706,6 +4750,8 @@ parse_arg = p =>
             | val => <+ ast::Expr(NamedArg, ast::NamedArgExpr(name, val)) +>
             | <-->
       | parse_choice(p)
+   p.cycle_depth = saved_cd
+   res
 
 parse_comma_args: Parser => <ast::Exprs|>
 parse_comma_args = p =>
@@ -5668,9 +5714,17 @@ finish_parsed_choice = p, lhs, pbrs =>
 
 choice_cont: Parser, ast::Expr => <ast::Expr|>
 choice_cont = p, lhs =>
+   choice_cont_init(p, lhs, -1)
+
+headless_choice_cont: Parser, ast::Expr => <ast::Expr|>
+headless_choice_cont = p, lhs =>
+   choice_cont_init(p, lhs, p.indent_level)
+
+choice_cont_init: Parser, ast::Expr, Int => <ast::Expr|>
+choice_cont_init = p, lhs, init_bi =>
    p.choice_depth = p.choice_depth + 1
    entry_indent = p.indent_level
-   r = choice_cont_loop(p, empty_pbrs(), entry_indent, -1)
+   r = choice_cont_loop(p, empty_pbrs(), entry_indent, init_bi)
    p.choice_depth = p.choice_depth - 1
    choice_unwind(p, entry_indent)
    r
@@ -5678,7 +5732,7 @@ choice_cont = p, lhs =>
       | <-->
 
 choice_peek_pipe: Parser, Int => <Int|>
-choice_peek_pipe = p, entry_indent =>
+choice_peek_pipe = p, min_indent =>
    p.fn_depth > 0
       | <-->
       |
@@ -5687,24 +5741,24 @@ choice_peek_pipe = p, entry_indent =>
                c = lexer::clone_lx(p.lx)
                tok = lexer::next_tok(c, 0)
                init_indent = p.indent_level + (tok_is_indent(p.curr) | 1 | 0)
-               choice_scan_pipe(c, tok, init_indent, entry_indent)
+               choice_scan_pipe(c, tok, init_indent, min_indent)
             | <-->
 
 choice_scan_pipe: lexer::Lx, lexer::Tok, Int, Int => <Int|>
-choice_scan_pipe = lx, tok, cur_indent, entry_indent =>
+choice_scan_pipe = lx, tok, cur_indent, min_indent =>
    tok.kind
       [Newline]
          choice_scan_pipe(lx, lexer::next_tok(lx, 0),
-            cur_indent, entry_indent)
+            cur_indent, min_indent)
       [Indent]
          choice_scan_pipe(lx, lexer::next_tok(lx, 0), cur_indent + 1,
-            entry_indent)
+            min_indent)
       [Dedent]
-         cur_indent - 1 !> entry_indent
+         cur_indent - 1 < min_indent
             | <-->
             |
                choice_scan_pipe(lx, lexer::next_tok(lx, 0), cur_indent - 1,
-                  entry_indent)
+                  min_indent)
       [LBracket] <+ cur_indent +>
       |
          is_sep = token_is_pipe(tok)
@@ -5765,7 +5819,8 @@ choice_cont_loop = p, brs, entry_indent, branch_indent =>
    p.fn_depth > 0 && token_is_pipe(p.curr)
       | <+ brs +>
       |
-         peek = choice_peek_pipe(p, entry_indent)
+         min_indent = branch_indent !< 0 | branch_indent | entry_indent + 1
+         peek = choice_peek_pipe(p, min_indent)
          is_dedent = peek
             | pi => branch_indent !< 0 && pi < branch_indent
             | <->
@@ -6527,9 +6582,8 @@ sig_params_g = p, name, params, infos, first_tn, is_global =>
 // runtime param types are parsed for syntax; the Assign carries only the
 // return marker, since the selfhost Assign has no type slot).
 is_valid_ct_param_type: ast::ValueType => <>
-is_valid_ct_param_type = vt =>
-   vt [Type, Int, Str, Float, F32, Rune, Flag, RawPtr,
-      I8, I16, I32, I64, U8, U16, U32, U64]
+is_valid_ct_param_type = [Type, Int, Str, Float, F32, Rune, Flag, RawPtr,
+   I8, I16, I32, I64, U8, U16, U32, U64]
 
 ct_signature: Parser, String, String, ast::CParams => <ast::Expr|>
 ct_signature = p, name, prior_names, cps =>
@@ -6749,7 +6803,10 @@ parse_indented_rhs = p =>
                p.in_rhs = <->
                saved_ml = p.module_level
                p.module_level = <->
+               saved_cd = p.cycle_depth
+               p.cycle_depth = 0
                res = block_stmts(p, ast::Exprs())
+               p.cycle_depth = saved_cd
                p.module_level = saved_ml
                p.in_rhs = saved_rhs
                p.fn_depth = saved_fd

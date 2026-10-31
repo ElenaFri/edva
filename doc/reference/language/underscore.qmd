@@ -352,13 +352,14 @@ io::out(label)
 // => single digit
 ```
 
-An omitted choice subject uses the current `_`. This can be an existing cycle
-item, or the argument introduced by grouping the choice:
+An omitted choice subject uses the current `_` inside a cycle body, or wraps a
+guarded headless choice (`[guard] ...`) directly into a one-argument function
+over `_` (with or without enclosing parentheses):
 
 ```{.dva .run}
 #use io
 
-sign = ([< 0] -1 | 1)
+sign = [< 0] -1 | 1
 io::out(sign(-2))
 io::out(sign(2))
 

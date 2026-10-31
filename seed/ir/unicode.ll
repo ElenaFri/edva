@@ -2028,9 +2028,9 @@ choice.exit383:                                   ; preds = %choice.else382, %ch
 
 define i64 @"unicode::utf8_width"(i32 %0) #1 {
 entry:
-  %var.r = alloca i32, align 4
-  store i32 %0, ptr %var.r, align 4
-  %var.load = load i32, ptr %var.r, align 4
+  %var._ = alloca i32, align 4
+  store i32 %0, ptr %var._, align 4
+  %var.load = load i32, ptr %var._, align 4
   %coerce.sext = sext i32 %var.load to i64
   %cmptmp = icmp slt i64 %coerce.sext, 128
   br i1 %cmptmp, label %choice.case, label %choice.next

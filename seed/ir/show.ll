@@ -8930,9 +8930,9 @@ declare ptr @"str::from_float"(double) #1
 
 define ptr @"show::show_op"(ptr %0) #1 {
 entry:
-  %var.o = alloca ptr, align 8
-  store ptr %0, ptr %var.o, align 8
-  %var.load = load ptr, ptr %var.o, align 8
+  %var._ = alloca ptr, align 8
+  store ptr %0, ptr %var._, align 8
+  %var.load = load ptr, ptr %var._, align 8
   %tag.gep = getelementptr inbounds { i64, ptr }, ptr %var.load, i32 0, i32 0
   %tag.id = load i64, ptr %tag.gep, align 8
   %tag.match = icmp eq i64 %tag.id, 0
@@ -9140,9 +9140,9 @@ choice.next102:                                   ; preds = %choice.next97
 
 define ptr @"show::show_unop"(ptr %0) #1 {
 entry:
-  %var.o = alloca ptr, align 8
-  store ptr %0, ptr %var.o, align 8
-  %var.load = load ptr, ptr %var.o, align 8
+  %var._ = alloca ptr, align 8
+  store ptr %0, ptr %var._, align 8
+  %var.load = load ptr, ptr %var._, align 8
   %tag.gep = getelementptr inbounds { i64, ptr }, ptr %var.load, i32 0, i32 0
   %tag.id = load i64, ptr %tag.gep, align 8
   %tag.match = icmp eq i64 %tag.id, 0
@@ -9233,9 +9233,9 @@ choice.next37:                                    ; preds = %choice.next32
 
 define ptr @"show::show_tag"(ptr %0) #1 {
 entry:
-  %var.g = alloca ptr, align 8
-  store ptr %0, ptr %var.g, align 8
-  %var.load = load ptr, ptr %var.g, align 8
+  %var._ = alloca ptr, align 8
+  store ptr %0, ptr %var._, align 8
+  %var.load = load ptr, ptr %var._, align 8
   %tag.gep = getelementptr inbounds { i64, ptr }, ptr %var.load, i32 0, i32 0
   %tag.id = load i64, ptr %tag.gep, align 8
   %tag.match = icmp eq i64 %tag.id, 0
@@ -10524,7 +10524,7 @@ a.rd.err.null:                                    ; preds = %a.after
   %err.file.gep = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc, i32 0, i32 2
   store ptr @str.62.struct, ptr %err.file.gep, align 8
   %err.line.gep = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc, i32 0, i32 3
-  store i64 152, ptr %err.line.gep, align 8
+  store i64 151, ptr %err.line.gep, align 8
   %err.col.gep = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc, i32 0, i32 4
   store i64 20, ptr %err.col.gep, align 8
   %err.ctx.gep = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc, i32 0, i32 5
@@ -10545,7 +10545,7 @@ a.rd.err.oob:                                     ; preds = %a.rd.check
   %err.file.gep10 = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc7, i32 0, i32 2
   store ptr @str.62.struct, ptr %err.file.gep10, align 8
   %err.line.gep11 = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc7, i32 0, i32 3
-  store i64 152, ptr %err.line.gep11, align 8
+  store i64 151, ptr %err.line.gep11, align 8
   %err.col.gep12 = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc7, i32 0, i32 4
   store i64 20, ptr %err.col.gep12, align 8
   %err.ctx.gep13 = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc7, i32 0, i32 5
@@ -11893,9 +11893,9 @@ b.freeze.done:                                    ; preds = %b.freeze.copy, %b.f
 
 define ptr @"show::show_vt"(ptr %0) #1 {
 entry:
-  %var.v = alloca ptr, align 8
-  store ptr %0, ptr %var.v, align 8
-  %var.load = load ptr, ptr %var.v, align 8
+  %var._ = alloca ptr, align 8
+  store ptr %0, ptr %var._, align 8
+  %var.load = load ptr, ptr %var._, align 8
   %tag.gep = getelementptr inbounds { i64, ptr }, ptr %var.load, i32 0, i32 0
   %tag.id = load i64, ptr %tag.gep, align 8
   %tag.match = icmp eq i64 %tag.id, 0

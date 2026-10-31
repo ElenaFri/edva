@@ -2136,8 +2136,7 @@ write_file = path, content =>
          ok
 
 is_decl_stmt: ast::Expr => <>
-is_decl_stmt = e =>
-   e [Assign, TypeDecl, Foreign, Import]
+is_decl_stmt = [Assign, TypeDecl, Foreign, Import]
 
 exprs_have_decl: ast::Exprs => <>
 exprs_have_decl = exprs =>
@@ -2977,8 +2976,7 @@ dump_program_ast = prog, as_tree =>
             | print $ show::show_expr(prog)
 
 is_pkg_subcmd: String => <>
-is_pkg_subcmd = cmd =>
-   cmd ["init", "add", "fetch", "build", "test", "update", "graph", "tree", "vendor", "cache", "version"]
+is_pkg_subcmd = ["init", "add", "fetch", "build", "test", "update", "graph", "tree", "vendor", "cache", "version"]
 
 eval_cleanup: String, String, String, String => ()
 eval_cleanup = dir, src_f, ll_f, bin_f =>

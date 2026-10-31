@@ -38002,10 +38002,10 @@ loop.body.81:                                     ; preds = %loop.header.81
   %var.load555 = load ptr, ptr %var.de, align 8
   %var.load556 = load ptr, ptr %var.cid, align 8
   %var.load557 = load ptr, ptr %var.dppr, align 8
-  %fld.gep558 = getelementptr inbounds { { ptr, i64, i64, i64, i64, i64, ptr, i64, ptr, i64, i1, ptr, ptr, i64, i64 }, { ptr, i64, i64, i64, i64, i1, i1, ptr }, i64, i64, i64, i64, i64, i64, ptr, ptr, ptr, i1, i1, i1, i1, i1, ptr, ptr, ptr, ptr, i64, i64, i1, i1, i1, ptr, i1, ptr, ptr, ptr, ptr }, ptr %var.load557, i32 0, i32 17
+  %fld.gep558 = getelementptr inbounds { { ptr, i64, i64, i64, i64, i64, ptr, i64, ptr, i64, i1, ptr, ptr, i64, i64 }, { ptr, i64, i64, i64, i64, i1, i1, ptr }, i64, i64, i64, i64, i64, i64, i64, ptr, ptr, ptr, i1, i1, i1, i1, i1, ptr, ptr, ptr, ptr, i64, i64, i1, i1, i1, ptr, i1, ptr, ptr, ptr, ptr }, ptr %var.load557, i32 0, i32 18
   %fld.load559 = load ptr, ptr %fld.gep558, align 8
   %var.load560 = load ptr, ptr %var.dppr, align 8
-  %fld.gep561 = getelementptr inbounds { { ptr, i64, i64, i64, i64, i64, ptr, i64, ptr, i64, i1, ptr, ptr, i64, i64 }, { ptr, i64, i64, i64, i64, i1, i1, ptr }, i64, i64, i64, i64, i64, i64, ptr, ptr, ptr, i1, i1, i1, i1, i1, ptr, ptr, ptr, ptr, i64, i64, i1, i1, i1, ptr, i1, ptr, ptr, ptr, ptr }, ptr %var.load560, i32 0, i32 18
+  %fld.gep561 = getelementptr inbounds { { ptr, i64, i64, i64, i64, i64, ptr, i64, ptr, i64, i1, ptr, ptr, i64, i64 }, { ptr, i64, i64, i64, i64, i1, i1, ptr }, i64, i64, i64, i64, i64, i64, i64, ptr, ptr, ptr, i1, i1, i1, i1, i1, ptr, ptr, ptr, ptr, i64, i64, i1, i1, i1, ptr, i1, ptr, ptr, ptr, ptr }, ptr %var.load560, i32 0, i32 19
   %fld.load562 = load ptr, ptr %fld.gep561, align 8
   %var.load563 = load ptr, ptr %var.ldr, align 8
   %fld.gep564 = getelementptr inbounds { ptr, ptr, ptr, ptr, ptr, i1, i1, { i1, ptr, ptr, ptr, ptr, ptr, ptr }, ptr, ptr, ptr, ptr, ptr }, ptr %var.load563, i32 0, i32 0
@@ -40121,7 +40121,7 @@ choice.else12:                                    ; preds = %str_ok
   %var.load18 = load ptr, ptr %var.path, align 8
   call void @"lexer::lex_set_file"(ptr %var.load18)
   %var.load19 = load ptr, ptr %var.ppr, align 8
-  %fld.gep20 = getelementptr inbounds { { ptr, i64, i64, i64, i64, i64, ptr, i64, ptr, i64, i1, ptr, ptr, i64, i64 }, { ptr, i64, i64, i64, i64, i1, i1, ptr }, i64, i64, i64, i64, i64, i64, ptr, ptr, ptr, i1, i1, i1, i1, i1, ptr, ptr, ptr, ptr, i64, i64, i1, i1, i1, ptr, i1, ptr, ptr, ptr, ptr }, ptr %var.load19, i32 0, i32 15
+  %fld.gep20 = getelementptr inbounds { { ptr, i64, i64, i64, i64, i64, ptr, i64, ptr, i64, i1, ptr, ptr, i64, i64 }, { ptr, i64, i64, i64, i64, i1, i1, ptr }, i64, i64, i64, i64, i64, i64, i64, ptr, ptr, ptr, i1, i1, i1, i1, i1, ptr, ptr, ptr, ptr, i64, i64, i1, i1, i1, ptr, i1, ptr, ptr, ptr, ptr }, ptr %var.load19, i32 0, i32 16
   store i1 true, ptr %fld.gep20, align 1
   %var.load21 = load ptr, ptr %var.ppr, align 8
   %call.res22 = call { i1, i64 } @"parser::parse_program"(ptr %var.load21)
@@ -40151,7 +40151,7 @@ choice.exit26:                                    ; preds = %choice.else25, %cho
 
 and.84.then:                                      ; preds = %choice.then24
   %var.load29 = load ptr, ptr %var.ppr, align 8
-  %fld.gep30 = getelementptr inbounds { { ptr, i64, i64, i64, i64, i64, ptr, i64, ptr, i64, i1, ptr, ptr, i64, i64 }, { ptr, i64, i64, i64, i64, i1, i1, ptr }, i64, i64, i64, i64, i64, i64, ptr, ptr, ptr, i1, i1, i1, i1, i1, ptr, ptr, ptr, ptr, i64, i64, i1, i1, i1, ptr, i1, ptr, ptr, ptr, ptr }, ptr %var.load29, i32 0, i32 17
+  %fld.gep30 = getelementptr inbounds { { ptr, i64, i64, i64, i64, i64, ptr, i64, ptr, i64, i1, ptr, ptr, i64, i64 }, { ptr, i64, i64, i64, i64, i1, i1, ptr }, i64, i64, i64, i64, i64, i64, i64, ptr, ptr, ptr, i1, i1, i1, i1, i1, ptr, ptr, ptr, ptr, i64, i64, i1, i1, i1, ptr, i1, ptr, ptr, ptr, ptr }, ptr %var.load29, i32 0, i32 18
   %fld.load = load ptr, ptr %fld.gep30, align 8
   %a.len.query = getelementptr inbounds { i64, ptr, i64 }, ptr %fld.load, i32 0, i32 0
   %a.len.query31 = load i64, ptr %a.len.query, align 8
@@ -40347,7 +40347,7 @@ choice.next:                                      ; preds = %choice.else34
 
 choice.then111:                                   ; preds = %choice.case
   %var.load113 = load ptr, ptr %var.ppr, align 8
-  %fld.gep114 = getelementptr inbounds { { ptr, i64, i64, i64, i64, i64, ptr, i64, ptr, i64, i1, ptr, ptr, i64, i64 }, { ptr, i64, i64, i64, i64, i1, i1, ptr }, i64, i64, i64, i64, i64, i64, ptr, ptr, ptr, i1, i1, i1, i1, i1, ptr, ptr, ptr, ptr, i64, i64, i1, i1, i1, ptr, i1, ptr, ptr, ptr, ptr }, ptr %var.load113, i32 0, i32 16
+  %fld.gep114 = getelementptr inbounds { { ptr, i64, i64, i64, i64, i64, ptr, i64, ptr, i64, i1, ptr, ptr, i64, i64 }, { ptr, i64, i64, i64, i64, i1, i1, ptr }, i64, i64, i64, i64, i64, i64, i64, ptr, ptr, ptr, i1, i1, i1, i1, i1, ptr, ptr, ptr, ptr, i64, i64, i1, i1, i1, ptr, i1, ptr, ptr, ptr, ptr }, ptr %var.load113, i32 0, i32 17
   %fld.load115 = load ptr, ptr %fld.gep114, align 8
   %arr.cycle.len = getelementptr inbounds { i64, ptr, i64 }, ptr %fld.load115, i32 0, i32 0
   %arr.cycle.len116 = load i64, ptr %arr.cycle.len, align 8
@@ -40441,18 +40441,18 @@ a.after:                                          ; preds = %a.create, %choice.e
   %call.res144 = call ptr @dirname(ptr %var.load143)
   %var.load145 = load ptr, ptr %var.prefix, align 8
   %var.load146 = load ptr, ptr %var.ppr, align 8
-  %fld.gep147 = getelementptr inbounds { { ptr, i64, i64, i64, i64, i64, ptr, i64, ptr, i64, i1, ptr, ptr, i64, i64 }, { ptr, i64, i64, i64, i64, i1, i1, ptr }, i64, i64, i64, i64, i64, i64, ptr, ptr, ptr, i1, i1, i1, i1, i1, ptr, ptr, ptr, ptr, i64, i64, i1, i1, i1, ptr, i1, ptr, ptr, ptr, ptr }, ptr %var.load146, i32 0, i32 17
+  %fld.gep147 = getelementptr inbounds { { ptr, i64, i64, i64, i64, i64, ptr, i64, ptr, i64, i1, ptr, ptr, i64, i64 }, { ptr, i64, i64, i64, i64, i1, i1, ptr }, i64, i64, i64, i64, i64, i64, i64, ptr, ptr, ptr, i1, i1, i1, i1, i1, ptr, ptr, ptr, ptr, i64, i64, i1, i1, i1, ptr, i1, ptr, ptr, ptr, ptr }, ptr %var.load146, i32 0, i32 18
   %fld.load148 = load ptr, ptr %fld.gep147, align 8
   %var.load149 = load ptr, ptr %var.ppr, align 8
-  %fld.gep150 = getelementptr inbounds { { ptr, i64, i64, i64, i64, i64, ptr, i64, ptr, i64, i1, ptr, ptr, i64, i64 }, { ptr, i64, i64, i64, i64, i1, i1, ptr }, i64, i64, i64, i64, i64, i64, ptr, ptr, ptr, i1, i1, i1, i1, i1, ptr, ptr, ptr, ptr, i64, i64, i1, i1, i1, ptr, i1, ptr, ptr, ptr, ptr }, ptr %var.load149, i32 0, i32 18
+  %fld.gep150 = getelementptr inbounds { { ptr, i64, i64, i64, i64, i64, ptr, i64, ptr, i64, i1, ptr, ptr, i64, i64 }, { ptr, i64, i64, i64, i64, i1, i1, ptr }, i64, i64, i64, i64, i64, i64, i64, ptr, ptr, ptr, i1, i1, i1, i1, i1, ptr, ptr, ptr, ptr, i64, i64, i1, i1, i1, ptr, i1, ptr, ptr, ptr, ptr }, ptr %var.load149, i32 0, i32 19
   %fld.load151 = load ptr, ptr %fld.gep150, align 8
   %var.load152 = load ptr, ptr %var.ldr, align 8
   %var.load153 = load ptr, ptr %var.path, align 8
   %var.load154 = load ptr, ptr %var.ppr, align 8
-  %fld.gep155 = getelementptr inbounds { { ptr, i64, i64, i64, i64, i64, ptr, i64, ptr, i64, i1, ptr, ptr, i64, i64 }, { ptr, i64, i64, i64, i64, i1, i1, ptr }, i64, i64, i64, i64, i64, i64, ptr, ptr, ptr, i1, i1, i1, i1, i1, ptr, ptr, ptr, ptr, i64, i64, i1, i1, i1, ptr, i1, ptr, ptr, ptr, ptr }, ptr %var.load154, i32 0, i32 28
+  %fld.gep155 = getelementptr inbounds { { ptr, i64, i64, i64, i64, i64, ptr, i64, ptr, i64, i1, ptr, ptr, i64, i64 }, { ptr, i64, i64, i64, i64, i1, i1, ptr }, i64, i64, i64, i64, i64, i64, i64, ptr, ptr, ptr, i1, i1, i1, i1, i1, ptr, ptr, ptr, ptr, i64, i64, i1, i1, i1, ptr, i1, ptr, ptr, ptr, ptr }, ptr %var.load154, i32 0, i32 29
   %fld.load156 = load ptr, ptr %fld.gep155, align 8
   %var.load157 = load ptr, ptr %var.ppr, align 8
-  %fld.gep158 = getelementptr inbounds { { ptr, i64, i64, i64, i64, i64, ptr, i64, ptr, i64, i1, ptr, ptr, i64, i64 }, { ptr, i64, i64, i64, i64, i1, i1, ptr }, i64, i64, i64, i64, i64, i64, ptr, ptr, ptr, i1, i1, i1, i1, i1, ptr, ptr, ptr, ptr, i64, i64, i1, i1, i1, ptr, i1, ptr, ptr, ptr, ptr }, ptr %var.load157, i32 0, i32 29
+  %fld.gep158 = getelementptr inbounds { { ptr, i64, i64, i64, i64, i64, ptr, i64, ptr, i64, i1, ptr, ptr, i64, i64 }, { ptr, i64, i64, i64, i64, i1, i1, ptr }, i64, i64, i64, i64, i64, i64, i64, ptr, ptr, ptr, i1, i1, i1, i1, i1, ptr, ptr, ptr, ptr, i64, i64, i1, i1, i1, ptr, i1, ptr, ptr, ptr, ptr }, ptr %var.load157, i32 0, i32 30
   %fld.load159 = load ptr, ptr %fld.gep158, align 8
   %call.res160 = call i1 @load_stmts(ptr %a.load2, ptr %call.res144, ptr %var.load145, ptr %fld.load148, ptr %fld.load151, ptr %var.load152, ptr %var.load153, ptr %fld.load156, ptr %fld.load159)
   br label %choice.exit106
@@ -61432,10 +61432,10 @@ b.freeze.done:                                    ; preds = %b.freeze.copy, %b.f
 
 define i1 @is_decl_stmt(ptr %0) #1 {
 entry:
+  %var._6 = alloca ptr, align 8
   %var._ = alloca ptr, align 8
-  %var.e = alloca ptr, align 8
-  store ptr %0, ptr %var.e, align 8
-  %var.load = load ptr, ptr %var.e, align 8
+  store ptr %0, ptr %var._, align 8
+  %var.load = load ptr, ptr %var._, align 8
   %tag.gep = getelementptr inbounds { i64, ptr }, ptr %var.load, i32 0, i32 0
   %tag.id = load i64, ptr %tag.gep, align 8
   %tag.match = icmp eq i64 %tag.id, 6
@@ -61454,7 +61454,7 @@ choice.exit:                                      ; preds = %choice.next, %choic
 choice.case:                                      ; preds = %entry
   %pay.gep = getelementptr inbounds { i64, ptr }, ptr %var.load, i32 0, i32 1
   %payload.ptr = load ptr, ptr %pay.gep, align 8
-  store ptr %payload.ptr, ptr %var._, align 8
+  store ptr %payload.ptr, ptr %var._6, align 8
   br label %choice.exit
 
 choice.next:                                      ; preds = %entry
@@ -64612,7 +64612,7 @@ a.rd.err.null:                                    ; preds = %a.after10
   %err.file.gep = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc, i32 0, i32 2
   store ptr @str.10.struct, ptr %err.file.gep, align 8
   %err.line.gep = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc, i32 0, i32 3
-  store i64 2297, ptr %err.line.gep, align 8
+  store i64 2296, ptr %err.line.gep, align 8
   %err.col.gep = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc, i32 0, i32 4
   store i64 44, ptr %err.col.gep, align 8
   %err.ctx.gep = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc, i32 0, i32 5
@@ -64633,7 +64633,7 @@ a.rd.err.oob:                                     ; preds = %a.rd.check
   %err.file.gep27 = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc24, i32 0, i32 2
   store ptr @str.10.struct, ptr %err.file.gep27, align 8
   %err.line.gep28 = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc24, i32 0, i32 3
-  store i64 2297, ptr %err.line.gep28, align 8
+  store i64 2296, ptr %err.line.gep28, align 8
   %err.col.gep29 = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc24, i32 0, i32 4
   store i64 44, ptr %err.col.gep29, align 8
   %err.ctx.gep30 = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc24, i32 0, i32 5
@@ -64796,7 +64796,7 @@ a.rd.err.null:                                    ; preds = %a.after15
   %err.file.gep = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc, i32 0, i32 2
   store ptr @str.10.struct, ptr %err.file.gep, align 8
   %err.line.gep = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc, i32 0, i32 3
-  store i64 2305, ptr %err.line.gep, align 8
+  store i64 2304, ptr %err.line.gep, align 8
   %err.col.gep = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc, i32 0, i32 4
   store i64 35, ptr %err.col.gep, align 8
   %err.ctx.gep = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc, i32 0, i32 5
@@ -64817,7 +64817,7 @@ a.rd.err.oob:                                     ; preds = %a.rd.check
   %err.file.gep32 = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc29, i32 0, i32 2
   store ptr @str.10.struct, ptr %err.file.gep32, align 8
   %err.line.gep33 = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc29, i32 0, i32 3
-  store i64 2305, ptr %err.line.gep33, align 8
+  store i64 2304, ptr %err.line.gep33, align 8
   %err.col.gep34 = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc29, i32 0, i32 4
   store i64 35, ptr %err.col.gep34, align 8
   %err.ctx.gep35 = getelementptr inbounds { i64, ptr, ptr, i64, i64, { i64, i64 } }, ptr %err.alloc29, i32 0, i32 5
@@ -76157,9 +76157,9 @@ declare ptr @"show::show_expr"(ptr) #1
 
 define i1 @is_pkg_subcmd(ptr %0) #1 {
 entry:
-  %var.cmd = alloca ptr, align 8
-  store ptr %0, ptr %var.cmd, align 8
-  %var.load = load ptr, ptr %var.cmd, align 8
+  %var._ = alloca ptr, align 8
+  store ptr %0, ptr %var._, align 8
+  %var.load = load ptr, ptr %var._, align 8
   %eq.lhs.len = getelementptr inbounds { i64, ptr }, ptr %var.load, i32 0, i32 0
   %eq.lhs.len1 = load i64, ptr %eq.lhs.len, align 8
   %eq.lhs.len2 = and i64 %eq.lhs.len1, 281474976710655

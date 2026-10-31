@@ -151,70 +151,62 @@ mk_lambda_te = params, body_te, fn_ut, ti =>
       fn_ut, ti, lay, 0, 0)
 
 type_name_to_uprim: String => < unify::UPrim | >
-type_name_to_uprim = name =>
-   name
-      ["Int", "i64"] <+ unify::UPrim(Int) +>
-      ["i8"] <+ unify::UPrim(I8) +>
-      ["i16"] <+ unify::UPrim(I16) +>
-      ["i32"] <+ unify::UPrim(I32) +>
-      ["u8"] <+ unify::UPrim(U8) +>
-      ["u16"] <+ unify::UPrim(U16) +>
-      ["u32"] <+ unify::UPrim(U32) +>
-      ["u64"] <+ unify::UPrim(U64) +>
-      ["i1", "<>"] <+ unify::UPrim(Flag) +>
-      ["Rune"] <+ unify::UPrim(Rune) +>
-      ["Float", "f64"] <+ unify::UPrim(Float) +>
-      ["f32"] <+ unify::UPrim(F32) +>
-      ["String"] <+ unify::UPrim(Str) +>
-      ["void"] <+ unify::UPrim(Unit) +>
-      ["Addr", "ptr"] <+ unify::UPrim(RawPtr) +>
-      ["Builder"] <+ unify::UPrim(Builder) +>
-      ["Error"] <+ unify::UPrim(Error) +>
-      ["Type"] <+ unify::UPrim(Type) +>
-      | <-->
+type_name_to_uprim =
+   ["Int", "i64"] <+ unify::UPrim(Int) +>
+   ["i8"] <+ unify::UPrim(I8) +>
+   ["i16"] <+ unify::UPrim(I16) +>
+   ["i32"] <+ unify::UPrim(I32) +>
+   ["u8"] <+ unify::UPrim(U8) +>
+   ["u16"] <+ unify::UPrim(U16) +>
+   ["u32"] <+ unify::UPrim(U32) +>
+   ["u64"] <+ unify::UPrim(U64) +>
+   ["i1", "<>"] <+ unify::UPrim(Flag) +>
+   ["Rune"] <+ unify::UPrim(Rune) +>
+   ["Float", "f64"] <+ unify::UPrim(Float) +>
+   ["f32"] <+ unify::UPrim(F32) +>
+   ["String"] <+ unify::UPrim(Str) +>
+   ["void"] <+ unify::UPrim(Unit) +>
+   ["Addr", "ptr"] <+ unify::UPrim(RawPtr) +>
+   ["Builder"] <+ unify::UPrim(Builder) +>
+   ["Error"] <+ unify::UPrim(Error) +>
+   ["Type"] <+ unify::UPrim(Type) +>
+   | <-->
 
 is_uprim_int: unify::UPrim => <>
-is_uprim_int = p =>
-   p [Int, I8, I16, I32, I64, U8, U16, U32, U64, Rune]
+is_uprim_int = [Int, I8, I16, I32, I64, U8, U16, U32, U64, Rune]
 
 is_uprim_float: unify::UPrim => <>
-is_uprim_float = p =>
-   p [Float, F32]
+is_uprim_float = [Float, F32]
 
 is_uprim_flag: unify::UPrim => <>
-is_uprim_flag = p =>
-   p [Flag]
+is_uprim_flag = [Flag]
 
 is_uprim_ptr: unify::UPrim => <>
-is_uprim_ptr = p =>
-   p [RawPtr]
+is_uprim_ptr = [RawPtr]
 
 is_uprim_str: unify::UPrim => <>
-is_uprim_str = p =>
-   p [Str]
+is_uprim_str = [Str]
 
 is_uprim_builder: unify::UPrim => <>
-is_uprim_builder = p =>
-   p [Builder]
+is_uprim_builder = [Builder]
 
 cast_name_to_uprim: String => < unify::UPrim | >
-cast_name_to_uprim = name =>
-   name
-      ["Int", "i64"] <+ unify::UPrim(Int) +>
-      ["i8"] <+ unify::UPrim(I8) +>
-      ["i16"] <+ unify::UPrim(I16) +>
-      ["i32"] <+ unify::UPrim(I32) +>
-      ["u8"] <+ unify::UPrim(U8) +>
-      ["u16"] <+ unify::UPrim(U16) +>
-      ["u32"] <+ unify::UPrim(U32) +>
-      ["u64"] <+ unify::UPrim(U64) +>
-      ["i1", "<>"] <+ unify::UPrim(Flag) +>
-      ["Rune"] <+ unify::UPrim(Rune) +>
-      ["Float", "f64"] <+ unify::UPrim(Float) +>
-      ["f32"] <+ unify::UPrim(F32) +>
-      ["String"] <+ unify::UPrim(Str) +>
-      ["Addr", "ptr"] <+ unify::UPrim(RawPtr) +>
-      | <-->
+cast_name_to_uprim =
+   ["Int", "i64"] <+ unify::UPrim(Int) +>
+   ["i8"] <+ unify::UPrim(I8) +>
+   ["i16"] <+ unify::UPrim(I16) +>
+   ["i32"] <+ unify::UPrim(I32) +>
+   ["u8"] <+ unify::UPrim(U8) +>
+   ["u16"] <+ unify::UPrim(U16) +>
+   ["u32"] <+ unify::UPrim(U32) +>
+   ["u64"] <+ unify::UPrim(U64) +>
+   ["i1", "<>"] <+ unify::UPrim(Flag) +>
+   ["Rune"] <+ unify::UPrim(Rune) +>
+   ["Float", "f64"] <+ unify::UPrim(Float) +>
+   ["f32"] <+ unify::UPrim(F32) +>
+   ["String"] <+ unify::UPrim(Str) +>
+   ["Addr", "ptr"] <+ unify::UPrim(RawPtr) +>
+   | <-->
 
 check_addr_target: unify::Ctx, String, <>, unify::UType => ()
 check_addr_target = ctx, fn_name, is_tgt_ptr, src_ut =>
@@ -752,10 +744,9 @@ is_str_ut = ctx, ut =>
    c [Prim p] (p [Str]) | <->
 
 is_reserved_type_name: String => <>
-is_reserved_type_name = name =>
-   name ["Int", "i64", "i8", "i16", "i32", "u8", "u16", "u32", "u64",
-      "i1", "<>", "Rune", "Float", "f64", "f32", "String", "void",
-      "Addr", "ptr", "Builder", "Error", "Type"]
+is_reserved_type_name = ["Int", "i64", "i8", "i16", "i32", "u8", "u16", "u32", "u64",
+   "i1", "<>", "Rune", "Float", "f64", "f32", "String", "void",
+   "Addr", "ptr", "Builder", "Error", "Type"]
 
 is_ufields_homogeneous: unify::Ctx, unify::UFields => <>
 is_ufields_homogeneous = ctx, flds =>
@@ -873,8 +864,7 @@ is_view_expr = e =>
       | <->
 
 is_builder_append_prim: unify::UPrim => <>
-is_builder_append_prim = p =>
-   p [Int, Rune, Str, I8, I16, I32, I64, U8, U16, U32, U64]
+is_builder_append_prim = [Int, Rune, Str, I8, I16, I32, I64, U8, U16, U32, U64]
 
 is_builder_append_rec: unify::Ctx, unify::UFields, Int, Int => <>
 is_builder_append_rec = ctx, fields, i, n =>
@@ -2465,15 +2455,14 @@ ut_has_fn = ctx, ut, visited =>
       | <->
 
 cmp_binop_name: ast::BinaryOp => String
-cmp_binop_name = op =>
-   op
-      [Gt] "Greater"
-      [Lt] "Less"
-      [Eq] "Equals"
-      [NotGt] "NotGreater"
-      [NotLt] "NotLess"
-      [NotEq] "NotEqual"
-      | ""
+cmp_binop_name =
+   [Gt] "Greater"
+   [Lt] "Less"
+   [Eq] "Equals"
+   [NotGt] "NotGreater"
+   [NotLt] "NotLess"
+   [NotEq] "NotEqual"
+   | ""
 
 unify_cmp_op: unify::Ctx, ast::BinaryOp, unify::UType,
    unify::UType => unify::UType
@@ -3097,7 +3086,7 @@ annotate_block = ctx, env, exprs, is_disc =>
    tast::mk_typed_block(tes, block_ut, ti, lay, 0, 0)
 
 is_range_expr: ast::Expr => <>
-is_range_expr = e => e [Range]
+is_range_expr = [Range]
 
 find_last_dot: String, Int => <Int|>
 find_last_dot = s, i =>
@@ -3129,37 +3118,34 @@ is_intrinsic_name = name =>
    ?name > 1 && name(0) == '%'
 
 is_known_intrinsic: String => <>
-is_known_intrinsic = name =>
-   name ["%min", "%max", "%clamp", "%abs", "%shuffle",
-      "%all", "%any", "%sum", "%prod", "%dot",
-      "%sqrt", "%fma", "%floor", "%ceil", "%trunc", "%round", "%copysign",
-      "%popcount", "%clz", "%ctz", "%bswap", "%bitreverse",
-      "%rotl", "%rotr",
-      "%pow", "%sin", "%cos", "%exp2", "%log2", "%uadd_sat", "%usub_sat",
-      "%fmuladd", "%memcpy", "%memmove", "%memset", "%ptrmask", "%bitcast",
-      "%to_str"]
+is_known_intrinsic = ["%min", "%max", "%clamp", "%abs", "%shuffle",
+   "%all", "%any", "%sum", "%prod", "%dot",
+   "%sqrt", "%fma", "%floor", "%ceil", "%trunc", "%round", "%copysign",
+   "%popcount", "%clz", "%ctz", "%bswap", "%bitreverse",
+   "%rotl", "%rotr",
+   "%pow", "%sin", "%cos", "%exp2", "%log2", "%uadd_sat", "%usub_sat",
+   "%fmuladd", "%memcpy", "%memmove", "%memset", "%ptrmask", "%bitcast",
+   "%to_str"]
 
 expected_intrinsic_nargs: String => Int
-expected_intrinsic_nargs = name =>
-   name
-      ["%abs", "%all", "%any", "%sum", "%prod", "%sqrt",
-         "%floor", "%ceil", "%trunc", "%round",
-         "%popcount", "%clz", "%ctz", "%bswap", "%bitreverse",
-         "%sin", "%cos", "%exp2", "%log2", "%to_str"] 1
-      ["%min", "%max", "%dot", "%copysign", "%rotl", "%rotr",
-         "%pow", "%uadd_sat", "%usub_sat", "%ptrmask", "%bitcast"] 2
-      ["%clamp", "%fma", "%fmuladd", "%memcpy", "%memmove", "%memset"] 3
-      ["%shuffle"] 0
-      | -1
+expected_intrinsic_nargs =
+   ["%abs", "%all", "%any", "%sum", "%prod", "%sqrt",
+      "%floor", "%ceil", "%trunc", "%round",
+      "%popcount", "%clz", "%ctz", "%bswap", "%bitreverse",
+      "%sin", "%cos", "%exp2", "%log2", "%to_str"] 1
+   ["%min", "%max", "%dot", "%copysign", "%rotl", "%rotr",
+      "%pow", "%uadd_sat", "%usub_sat", "%ptrmask", "%bitcast"] 2
+   ["%clamp", "%fma", "%fmuladd", "%memcpy", "%memmove", "%memset"] 3
+   ["%shuffle"] 0
+   | -1
 
 bitcast_prim_bits: unify::UPrim => Int
-bitcast_prim_bits = p =>
-   p
-      [I8, U8] 8
-      [I16, U16] 16
-      [I32, U32, F32, Rune] 32
-      [Int, I64, U64, Float] 64
-      | 0
+bitcast_prim_bits =
+   [I8, U8] 8
+   [I16, U16] 16
+   [I32, U32, F32, Rune] 32
+   [Int, I64, U64, Float] 64
+   | 0
 
 bitcast_type_bits: unify::Ctx, unify::UType => Int
 bitcast_type_bits = ctx, ut =>

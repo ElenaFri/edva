@@ -281,16 +281,13 @@ format_error = e =>
    fn + pos + "E" + str::from_int(e.code) + ": " + e.msg
 
 is_integerish_uprim: UPrim => <>
-is_integerish_uprim = p =>
-   p [Int, Rune, I8, I16, I32, I64, U8, U16, U32, U64]
+is_integerish_uprim = [Int, Rune, I8, I16, I32, I64, U8, U16, U32, U64]
 
 is_flag_uprim: UPrim => <>
-is_flag_uprim = p =>
-   p [Flag]
+is_flag_uprim = [Flag]
 
 is_map_key_uprim: UPrim => <>
-is_map_key_uprim = p =>
-   p [Str, Int, Rune, I8, I16, I32, I64, U8, U16, U32, U64, RawPtr]
+is_map_key_uprim = [Str, Int, Rune, I8, I16, I32, I64, U8, U16, U32, U64, RawPtr]
 
 is_map_key_utype: Ctx, UType => <>
 is_map_key_utype = ctx, ut =>
@@ -937,87 +934,83 @@ show_ufields = ctx, flds =>
    +out
 
 show_ram_shape: URamShape => String
-show_ram_shape = s =>
-   s
-      [RamNN] "RamNN(<>)"
-      [RamPN] "RamPN(<A|>)"
-      [RamNP] "RamNP(<|B>)"
-      [RamPP] "RamPP(<A|B>)"
-      | "Ram"
+show_ram_shape =
+   [RamNN] "RamNN(<>)"
+   [RamPN] "RamPN(<A|>)"
+   [RamNP] "RamNP(<|B>)"
+   [RamPP] "RamPP(<A|B>)"
+   | "Ram"
 
 show_uprim: UPrim => String
-show_uprim = p =>
-   p
-      [Int] "Int"
-      [I8] "i8"
-      [I16] "i16"
-      [I32] "i32"
-      [I64] "i64"
-      [U8] "u8"
-      [U16] "u16"
-      [U32] "u32"
-      [U64] "u64"
-      [Float] "Float"
-      [F32] "f32"
-      [Str] "String"
-      [Rune] "Rune"
-      [Flag] "Flag"
-      [Unit] "()"
-      [RawPtr] "Addr"
-      [Builder] "Builder"
-      [Error] "Error"
-      [ThreadId] "ThreadId"
-      | "Unknown"
+show_uprim =
+   [Int] "Int"
+   [I8] "i8"
+   [I16] "i16"
+   [I32] "i32"
+   [I64] "i64"
+   [U8] "u8"
+   [U16] "u16"
+   [U32] "u32"
+   [U64] "u64"
+   [Float] "Float"
+   [F32] "f32"
+   [Str] "String"
+   [Rune] "Rune"
+   [Flag] "Flag"
+   [Unit] "()"
+   [RawPtr] "Addr"
+   [Builder] "Builder"
+   [Error] "Error"
+   [ThreadId] "ThreadId"
+   | "Unknown"
 
 uprim_to_vt: UPrim => ast::ValueType
-uprim_to_vt = p =>
-   p
-      [Int] ast::ValueType(Int)
-      [I8] ast::ValueType(I8)
-      [I16] ast::ValueType(I16)
-      [I32] ast::ValueType(I32)
-      [I64] ast::ValueType(I64)
-      [U8] ast::ValueType(U8)
-      [U16] ast::ValueType(U16)
-      [U32] ast::ValueType(U32)
-      [U64] ast::ValueType(U64)
-      [Float] ast::ValueType(Float)
-      [F32] ast::ValueType(F32)
-      [Str] ast::ValueType(Str)
-      [Rune] ast::ValueType(Rune)
-      [Flag] ast::ValueType(Flag)
-      [Unit] ast::ValueType(Unit)
-      [RawPtr] ast::ValueType(RawPtr)
-      [Builder] ast::ValueType(Builder)
-      [Error] ast::ValueType(Error)
-      [ThreadId] ast::ValueType(ThreadId)
-      [Type] ast::ValueType(Type)
-      | ast::ValueType(Unknown)
+uprim_to_vt =
+   [Int] ast::ValueType(Int)
+   [I8] ast::ValueType(I8)
+   [I16] ast::ValueType(I16)
+   [I32] ast::ValueType(I32)
+   [I64] ast::ValueType(I64)
+   [U8] ast::ValueType(U8)
+   [U16] ast::ValueType(U16)
+   [U32] ast::ValueType(U32)
+   [U64] ast::ValueType(U64)
+   [Float] ast::ValueType(Float)
+   [F32] ast::ValueType(F32)
+   [Str] ast::ValueType(Str)
+   [Rune] ast::ValueType(Rune)
+   [Flag] ast::ValueType(Flag)
+   [Unit] ast::ValueType(Unit)
+   [RawPtr] ast::ValueType(RawPtr)
+   [Builder] ast::ValueType(Builder)
+   [Error] ast::ValueType(Error)
+   [ThreadId] ast::ValueType(ThreadId)
+   [Type] ast::ValueType(Type)
+   | ast::ValueType(Unknown)
 
 vt_to_uprim: ast::ValueType => UPrim
-vt_to_uprim = vt =>
-   vt
-      [Int] UPrim(Int)
-      [I8] UPrim(I8)
-      [I16] UPrim(I16)
-      [I32] UPrim(I32)
-      [I64] UPrim(I64)
-      [U8] UPrim(U8)
-      [U16] UPrim(U16)
-      [U32] UPrim(U32)
-      [U64] UPrim(U64)
-      [Float] UPrim(Float)
-      [F32] UPrim(F32)
-      [Str] UPrim(Str)
-      [Rune] UPrim(Rune)
-      [Flag] UPrim(Flag)
-      [Unit] UPrim(Unit)
-      [RawPtr] UPrim(RawPtr)
-      [Builder] UPrim(Builder)
-      [Error] UPrim(Error)
-      [ThreadId] UPrim(ThreadId)
-      [Type] UPrim(Type)
-      | UPrim(Unknown)
+vt_to_uprim =
+   [Int] UPrim(Int)
+   [I8] UPrim(I8)
+   [I16] UPrim(I16)
+   [I32] UPrim(I32)
+   [I64] UPrim(I64)
+   [U8] UPrim(U8)
+   [U16] UPrim(U16)
+   [U32] UPrim(U32)
+   [U64] UPrim(U64)
+   [Float] UPrim(Float)
+   [F32] UPrim(F32)
+   [Str] UPrim(Str)
+   [Rune] UPrim(Rune)
+   [Flag] UPrim(Flag)
+   [Unit] UPrim(Unit)
+   [RawPtr] UPrim(RawPtr)
+   [Builder] UPrim(Builder)
+   [Error] UPrim(Error)
+   [ThreadId] UPrim(ThreadId)
+   [Type] UPrim(Type)
+   | UPrim(Unknown)
 
 // --- AST TypeInfo Conversion -----------------------------------------------
 

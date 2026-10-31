@@ -94,15 +94,14 @@ show_fwd_name = v, e =>
       | show_expr(e)
 
 show_vt: ast::ValueType => String
-show_vt = v =>
-   v
-      [Unknown] "?"
-      [Int] "Int"
-      [Str] "String"
-      [Float] "Float"
-      [Ram] "Ram"
-      [Record] "Record"
-      | "vt"
+show_vt =
+   [Unknown] "?"
+   [Int] "Int"
+   [Str] "String"
+   [Float] "Float"
+   [Ram] "Ram"
+   [Record] "Record"
+   | "vt"
 
 show_branches: ast::Branches => String
 show_branches = bs =>
@@ -177,56 +176,53 @@ show_exprs = xs =>
    +out
 
 show_tag: ast::Tag => String
-show_tag = g =>
-   g
-      [Positive] "Positive"
-      [Negative] "Negative"
-      [Some] "Some"
-      [Err] "Err"
-      [Succ] "Succ"
-      [Noth] "Noth"
-      | "?"
+show_tag =
+   [Positive] "Positive"
+   [Negative] "Negative"
+   [Some] "Some"
+   [Err] "Err"
+   [Succ] "Succ"
+   [Noth] "Noth"
+   | "?"
 
 show_op: ast::BinaryOp => String
-show_op = o =>
-   o
-      [Add] "+"
-      [Sub] "-"
-      [Mul] "*"
-      [Div] "/"
-      [Mod] "%"
-      [Gt] ">"
-      [Lt] "<"
-      [Eq] "=="
-      [NotEq] "!="
-      [NotLt] "!<"
-      [NotGt] "!>"
-      [And] "&&"
-      [Or] "||"
-      [Feed] "$>"
-      [Bind] "$>>"
-      [Apply] "$"
-      [BitAnd] ".&."
-      [BitOr] ".|."
-      [BitXor] ".^."
-      [Shl] ".<."
-      [Shr] ".>."
-      [Seq] ";"
-      | "?"
+show_op =
+   [Add] "+"
+   [Sub] "-"
+   [Mul] "*"
+   [Div] "/"
+   [Mod] "%"
+   [Gt] ">"
+   [Lt] "<"
+   [Eq] "=="
+   [NotEq] "!="
+   [NotLt] "!<"
+   [NotGt] "!>"
+   [And] "&&"
+   [Or] "||"
+   [Feed] "$>"
+   [Bind] "$>>"
+   [Apply] "$"
+   [BitAnd] ".&."
+   [BitOr] ".|."
+   [BitXor] ".^."
+   [Shl] ".<."
+   [Shr] ".>."
+   [Seq] ";"
+   | "?"
 
 show_unop: ast::UnaryOp => String
-show_unop = o =>
-   o
-      [Not] "!"
-      [BitNot] ".!."
-      [Length] "?"
-      [AddrOf] "&"
-      [Freeze] "+"
-      [Unwrap] "!!"
-      [Propagate] "--!"
-      [RuneCount] "??"
-      [Neg] "-"
-      | "?"
+show_unop =
+   [Not] "!"
+   [BitNot] ".!."
+   [Length] "?"
+   [AddrOf] "&"
+   [Freeze] "+"
+   [Unwrap] "!!"
+   [Propagate] "--!"
+   [RuneCount] "??"
+   [Neg] "-"
+   | "?"
 
 show_indent: Int => String
 show_indent = n =>
