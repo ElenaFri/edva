@@ -1,0 +1,115 @@
+#use str
+#use unicode
+#use os
+#use cli
+#use test
+#use bench
+
+test::suite("str")
+
+// Predicates & searching
+test::check(str::is_empty(""), "is_empty empty")
+test::check(!str::is_empty("a"), "is_empty non-empty")
+test::check(str::is_blank("  \t\n "), "is_blank spaces")
+test::check(!str::is_blank("  x "), "is_blank non-blank")
+test::check(str::starts_with("edva-lang", "edva"), "starts_with")
+test::check(str::ends_with("edva-lang", "lang"), "ends_with")
+test::check(str::contains("hello world", "world"), "contains")
+test::eq(str::count("banana", "an"), 2, "count")
+
+f1 = str::find("abracadabra", "bra") | idx => idx | -1
+r1 = str::rfind("abracadabra", "bra") | idx => idx | -1
+test::eq(f1, 1, "find")
+test::eq(r1, 8, "rfind")
+
+// Trimming
+test::eq(str::trim("  \t hello edva \n "), "hello edva", "trim")
+test::eq(str::trim_start("   abc  "), "abc  ", "trim_start")
+test::eq(str::trim_end("   abc  "), "   abc", "trim_end")
+test::eq(str::trim_prefix("--verbose", "--"), "verbose", "trim_prefix")
+test::eq(str::trim_suffix("file.dva", ".dva"), "file", "trim_suffix")
+
+// Splitting & joining
+sp = str::split_once("key=value=extra", "=") | p => p.0 + ":" + p.1 | ""
+test::eq(sp, "key:value=extra", "split_once")
+
+parts = str::split("a,b,c,d", ",")
+test::eq(?parts, 4, "split len")
+test::eq(str::join(parts, "-"), "a-b-c-d", "join")
+
+lns = str::lines("one\r\ntwo\nthree\n")
+test::eq(?lns, 3, "lines len")
+test::eq(str::join(lns, "/"), "one/two/three", "lines join")
+
+wds = str::words("  quick   brown\tfox\n")
+test::eq(?wds, 3, "words len")
+test::eq(str::join(wds, "_"), "quick_brown_fox", "words join")
+
+// Case, padding, repeat, reverse, replace
+test::eq(str::lower("EdVa_123"), "edva_123", "lower")
+test::eq(str::upper("EdVa_123"), "EDVA_123", "upper")
+test::eq(str::upper("zażółć gęślą jaźni"), "ZAŻÓŁĆ GĘŚLĄ JAŹNI", "upper utf8 polish")
+test::eq(str::lower("ZAŻÓŁĆ GĘŚLĄ JAŹNI"), "zażółć gęślą jaźni", "lower utf8 polish")
+test::eq(str::upper("Привет, Мир!"), "ПРИВЕТ, МИР!", "upper utf8 cyrillic")
+test::eq(str::lower("ПРИВЕТ, МИР!"), "привет, мир!", "lower utf8 cyrillic")
+test::eq(str::upper("καλημέρα"), "ΚΑΛΗΜΈΡΑ", "upper utf8 greek")
+test::eq(str::lower("ΚΑΛΗΜΈΡΑ"), "καλημέρα", "lower utf8 greek")
+test::eq(str::upper("straße"), "STRASSE", "upper utf8 sharp s")
+test::eq(str::lower("STRAẞE"), "straße", "lower utf8 capital sharp s")
+test::eq(Int(unicode::to_upper(Rune(0x017C))), 0x017B, "unicode::to_upper ż -> Ż")
+test::eq(Int(unicode::to_lower(Rune(0x042F))), 0x044F, "unicode::to_lower Я -> я")
+test::eq(str::repeat("ha", 3), "hahaha", "repeat")
+test::eq(str::pad_left("42", 5, '0'), "00042", "pad_left")
+test::eq(str::pad_right("hi", 5, '.'), "hi...", "pad_right")
+test::eq(str::reverse("stressed"), "desserts", "reverse")
+test::eq(str::replace_first("foo bar foo", "foo", "baz"), "baz bar foo", "replace_first")
+test::eq(str::replace("foo bar foo", "foo", "baz"), "baz bar baz", "replace")
+
+// Signed number parsing
+pi1 = str::parse_int("  -12345 ") | v => v | 0
+pi2 = str::parse_int("0xFF") | v => v | 0
+test::eq(pi1, -12345, "parse_int negative")
+test::eq(pi2, 255, "parse_int hex")
+test::err(str::parse_int("12abc"), "parse_int invalid")
+
+pf1 = str::parse_float(" -3.14159 ") | v => v | 0.0
+pf2 = str::parse_float("2.5e3") | v => v | 0.0
+test::approx(pf1, -3.14159, 0.00001)
+test::approx(pf2, 2500.0, 0.001)
+
+// OS module
+test::suite("os")
+test::check(os::setenv("EDVA_TEST_VAR", "edva_rocks"), "setenv")
+test::eq(os::env_or("EDVA_TEST_VAR", "fallback"), "edva_rocks", "env_or hit")
+test::ok(os::env("EDVA_TEST_VAR"), "env hit")
+test::check(os::unsetenv("EDVA_TEST_VAR"), "unsetenv")
+test::eq(os::env_or("EDVA_TEST_VAR", "fallback"), "fallback", "env_or fallback")
+test::err(os::env("EDVA_TEST_VAR"), "env miss")
+
+test::check(?os::cwd! > 0, "cwd non-empty")
+test::check(os::pid! > 0, "pid positive")
+test::check(os::ppid! > 0, "ppid positive")
+
+out_str = os::run("printf 'edva_exec_ok'") | s => s | ""
+test::eq(out_str, "edva_exec_ok", "os::run stdout")
+
+// CLI module
+test::suite("cli")
+test::check(cli::count! !< 1, "cli count")
+test::check(?cli::program! > 0, "cli program")
+test::check(!cli::has_flag("--nonexistent-flag", "-Z"), "cli has_flag false")
+test::eq(cli::opt_or("--port", "-p", "8080"), "8080", "cli opt_or fallback")
+test::eq(cli::opt_int("--count", "-n", 42), 42, "cli opt_int fallback")
+test::approx(cli::opt_float("--scale", "-s", 2.5), 2.5, "cli opt_float fallback")
+
+// Bench module
+test::suite("bench")
+t0 = bench::start!
+b_res = bench::measure(100, i => i * i + 1)
+test::eq(b_res.iters, 100, "bench iters")
+test::check(b_res.total_ns > 0, "bench total_ns")
+test::check(b_res.ops_per_sec > 0.0, "bench ops_per_sec")
+test::check(bench::elapsed_ns(t0) !< 0, "bench elapsed_ns")
+test::check(str::starts_with(bench::format("sq", b_res), "sq: 100 iters,"), "bench format")
+
+test::summary!

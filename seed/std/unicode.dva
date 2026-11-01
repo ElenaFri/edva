@@ -673,6 +673,109 @@
    0x1d1d1c1c1c1c1c1c
 )
 
+#private case_up_runs = (
+   0x1ffc01900061, 0x205ce00000b5, 0x1ffc016000e0, 0x1ffc006000f8,
+   0x200f200000ff, 0x1ffff2e00101, 0x1fe300000131, 0x1ffff0400133,
+   0x1ffff0e0013a, 0x1ffff2c0014b, 0x1ffff040017a, 0x1fda8000017f,
+   0x201860000180, 0x1ffff0200183, 0x1fffe0000188, 0x1fffe000018c,
+   0x1fffe0000192, 0x200c20000195, 0x1fffe0000199, 0x20146000019a,
+   0x34c82000019b, 0x20104000019e, 0x1ffff04001a1, 0x1fffe00001a8,
+   0x1fffe00001ad, 0x1fffe00001b0, 0x1ffff02001b4, 0x1fffe00001b9,
+   0x1fffe00001bd, 0x2007000001bf, 0x1fffe00001c5, 0x1fffc00001c6,
+   0x1fffe00001c8, 0x1fffc00001c9, 0x1fffe00001cb, 0x1fffc00001cc,
+   0x1ffff0e001ce, 0x1ff6200001dd, 0x1ffff10001df, 0x1fffe00001f2,
+   0x1fffc00001f3, 0x1fffe00001f5, 0x1ffff26001f9, 0x1ffff1000223,
+   0x1fffe000023c, 0x2547e010023f, 0x1fffe0000242, 0x1ffff0800247,
+   0x2543e0000250, 0x254380000251, 0x2543c0000252, 0x1fe5c0000253,
+   0x1fe640000254, 0x1fe660100256, 0x1fe6c0000259, 0x1fe6a000025b,
+   0x34a9e000025c, 0x1fe660000260, 0x34a960000261, 0x1fe620000263,
+   0x34ace0000264, 0x34a500000265, 0x34a880000266, 0x1fe5e0000268,
+   0x1fe5a0000269, 0x34a88000026a, 0x253ee000026b, 0x34a82000026c,
+   0x1fe5a000026f, 0x253fa0000271, 0x1fe560000272, 0x1fe540000275,
+   0x253ce000027d, 0x1fe4c0000280, 0x34a860000282, 0x1fe4c0000283,
+   0x34a540000287, 0x1fe4c0000288, 0x1ff760000289, 0x1fe4e010028a,
+   0x1ff72000028c, 0x1fe4a0000292, 0x34a2a000029d, 0x34a24000029e,
+   0x200a80000345, 0x1ffff0200371, 0x1fffe0000377, 0x20104020037b,
+   0x1ffb400003ac, 0x1ffb602003ad, 0x1ffc010003b1, 0x1ffc200003c2,
+   0x1ffc008003c3, 0x1ff8000003cc, 0x1ff8201003cd, 0x1ff8400003d0,
+   0x1ff8e00003d1, 0x1ffa200003d5, 0x1ff9400003d6, 0x1fff000003d7,
+   0x1ffff16003d9, 0x1ff5400003f0, 0x1ff6000003f1, 0x2000e00003f2,
+   0x1ff1800003f3, 0x1ff4000003f5, 0x1fffe00003f8, 0x1fffe00003fb,
+   0x1ffc01f00430, 0x1ff600f00450, 0x1ffff2000461, 0x1ffff340048b,
+   0x1ffff0c004c2, 0x1ffe200004cf, 0x1ffff5e004d1, 0x1ffa02500561,
+   0x217802a010d0, 0x2178002010fd, 0x1fff005013f8, 0x1cf240001c80,
+   0x1cf260001c81, 0x1cf380001c82, 0x1cf3c0101c83, 0x1cf3a0001c85,
+   0x1cf480001c86, 0x1cfb60001c87, 0x313840001c88, 0x1fffe0001c8a,
+   0x314080001d79, 0x21dcc0001d7d, 0x314700001d8e, 0x1ffff9401e01,
+   0x1ff8a0001e9b, 0x1ffff5e01ea1, 0x200100701f00, 0x200100501f10,
+   0x200100701f20, 0x200100701f30, 0x200100501f40, 0x200110601f51,
+   0x200100701f60, 0x200940101f70, 0x200ac0301f72, 0x200c80101f76,
+   0x201000101f78, 0x200e00101f7a, 0x200fc0101f7c, 0x200100101fb0,
+   0x1c7b60001fbe, 0x200100101fd0, 0x200100101fe0, 0x2000e0001fe5,
+   0x1ffc8000214e, 0x1ffe00f02170, 0x1fffe0002184, 0x1ffcc19024d0,
+   0x1ffa02f02c30, 0x1fffe0002c61, 0x1abaa0002c65, 0x1abb00002c66,
+   0x1ffff0402c68, 0x1fffe0002c73, 0x1fffe0002c76, 0x1ffff6202c81,
+   0x1ffff0202cec, 0x1fffe0002cf3, 0x1c7402502d00, 0x1c7400002d27,
+   0x1c7400002d2d, 0x1ffff2c0a641, 0x1ffff1a0a681, 0x1ffff0c0a723,
+   0x1ffff3c0a733, 0x1ffff020a77a, 0x1ffff080a77f, 0x1fffe000a78c,
+   0x1ffff020a791, 0x20060000a794, 0x1ffff120a797, 0x1ffff0e0a7b5,
+   0x1ffff020a7c8, 0x1fffe000a7cd, 0x1fffe000a7d1, 0x1ffff040a7d7,
+   0x1fffe000a7f6, 0x1f8c0000ab53, 0xd0604f0ab70, 0x1ffc0190ff41,
+   0x1ffb02710428, 0x1ffb023104d8, 0x1ffb20a10597, 0x1ffb20e105a3,
+   0x1ffb206105b3, 0x1ffb201105bb, 0x1ff803210cc0, 0x1ffc01510d70,
+   0x1ffc01f118c0, 0x1ffc01f16e60, 0x1ffbc211e922
+)
+
+#private case_lo_runs = (
+   0x200401900041, 0x2004016000c0, 0x2004006000d8, 0x200032e00100,
+   0x200030400132, 0x200030e00139, 0x200032c0014a, 0x1ff0e0000178,
+   0x200030400179, 0x201a40000181, 0x200030200182, 0x2019c0000186,
+   0x200020000187, 0x2019a0100189, 0x20002000018b, 0x2009e000018e,
+   0x20194000018f, 0x201960000190, 0x200020000191, 0x2019a0000193,
+   0x2019e0000194, 0x201a60000196, 0x201a20000197, 0x200020000198,
+   0x201a6000019c, 0x201aa000019d, 0x201ac000019f, 0x2000304001a0,
+   0x201b400001a6, 0x2000200001a7, 0x201b400001a9, 0x2000200001ac,
+   0x201b400001ae, 0x2000200001af, 0x201b201001b1, 0x2000302001b3,
+   0x201b600001b7, 0x2000200001b8, 0x2000200001bc, 0x2000400001c4,
+   0x2000200001c5, 0x2000400001c7, 0x2000200001c8, 0x2000400001ca,
+   0x2000310001cb, 0x2000310001de, 0x2000400001f1, 0x2000302001f2,
+   0x1ff3e00001f6, 0x1ff9000001f7, 0x2000326001f8, 0x1fefc0000220,
+   0x200031000222, 0x25456000023a, 0x20002000023b, 0x1feba000023d,
+   0x25450000023e, 0x200020000241, 0x1fe7a0000243, 0x2008a0000244,
+   0x2008e0000245, 0x200030800246, 0x200030200370, 0x200020000376,
+   0x200e8000037f, 0x2004c0000386, 0x2004a0200388, 0x20080000038c,
+   0x2007e010038e, 0x200401000391, 0x2004008003a3, 0x2001000003cf,
+   0x2000316003d8, 0x1ff8800003f4, 0x2000200003f7, 0x1fff200003f9,
+   0x2000200003fa, 0x1fefc02003fd, 0x200a00f00400, 0x200401f00410,
+   0x200032000460, 0x20003340048a, 0x2001e00004c0, 0x200030c004c1,
+   0x200035e004d0, 0x200602500531, 0x238c025010a0, 0x238c000010c7,
+   0x238c000010cd, 0x32fa04f013a0, 0x2001005013f0, 0x200020001c89,
+   0x1e8802a01c90, 0x1e8800201cbd, 0x200039401e00, 0x1c4820001e9e,
+   0x200035e01ea0, 0x1fff00701f08, 0x1fff00501f18, 0x1fff00701f28,
+   0x1fff00701f38, 0x1fff00501f48, 0x1fff10601f59, 0x1fff00701f68,
+   0x1fff00701f88, 0x1fff00701f98, 0x1fff00701fa8, 0x1fff00101fb8,
+   0x1ff6c0101fba, 0x1ffee0001fbc, 0x1ff540301fc8, 0x1ffee0001fcc,
+   0x1fff00101fd8, 0x1ff380101fda, 0x1fff00101fe8, 0x1ff200101fea,
+   0x1fff20001fec, 0x1ff000101ff8, 0x1ff040101ffa, 0x1ffee0001ffc,
+   0x1c5460002126, 0x1be82000212a, 0x1bf74000212b, 0x200380002132,
+   0x200200f02160, 0x200020002183, 0x2003419024b6, 0x200602f02c00,
+   0x200020002c60, 0x1ac120002c62, 0x1e2340002c63, 0x1ac320002c64,
+   0x200030402c67, 0x1abc80002c6d, 0x1ac060002c6e, 0x1abc20002c6f,
+   0x1abc40002c70, 0x200020002c72, 0x200020002c75, 0x1ab820102c7e,
+   0x200036202c80, 0x200030202ceb, 0x200020002cf2, 0x200032c0a640,
+   0x200031a0a680, 0x200030c0a722, 0x200033c0a732, 0x20003020a779,
+   0xebf8000a77d, 0x20003080a77e, 0x20002000a78b, 0xb5b0000a78d,
+   0x20003020a790, 0x20003120a796, 0xb578000a7aa, 0xb562000a7ab,
+   0xb56a000a7ac, 0xb57e000a7ad, 0xb578000a7ae, 0xb5dc000a7b0, 0xb5ac000a7b1,
+   0xb5d6000a7b2, 0x20740000a7b3, 0x200030e0a7b4, 0x1ffa0000a7c4,
+   0xb57a000a7c5, 0xeb90000a7c6, 0x20003020a7c7, 0xb532000a7cb,
+   0x20002000a7cc, 0x20002000a7d0, 0x20003040a7d6, 0xb37e000a7dc,
+   0x20002000a7f5, 0x20040190ff21, 0x200502710400, 0x2005023104b0,
+   0x2004e0a10570, 0x2004e0e1057c, 0x2004e061058c, 0x2004e0110594,
+   0x200803210c80, 0x200401510d50, 0x200401f118a0, 0x200401f16e40,
+   0x20044211e900
+)
+
 #pragma integer default
 
 #public
@@ -699,39 +802,38 @@
 
    // Human-readable description of a Unicode general category.
    category_description: Category => String
-   category_description = c =>
-      c
-         [Lu] "Uppercase Letter"
-         [Ll] "Lowercase Letter"
-         [Lt] "Titlecase Letter"
-         [Lm] "Modifier Letter"
-         [Lo] "Other Letter"
-         [Mn] "Nonspacing Mark"
-         [Mc] "Spacing Mark"
-         [Me] "Enclosing Mark"
-         [Nd] "Decimal Number"
-         [Nl] "Letter Number"
-         [No] "Other Number"
-         [Pc] "Connector Punctuation"
-         [Pd] "Dash Punctuation"
-         [Ps] "Open Punctuation"
-         [Pe] "Close Punctuation"
-         [Pi] "Initial Punctuation"
-         [Pf] "Final Punctuation"
-         [Po] "Other Punctuation"
-         [Sm] "Math Symbol"
-         [Sc] "Currency Symbol"
-         [Sk] "Modifier Symbol"
-         [So] "Other Symbol"
-         [Zs] "Space Separator"
-         [Zl] "Line Separator"
-         [Zp] "Paragraph Separator"
-         [Cc] "Control"
-         [Cf] "Format"
-         [Cs] "Surrogate"
-         [Co] "Private Use"
-         [Cn] "Unassigned"
-         | "Unknown"
+   category_description =
+      [Lu] "Uppercase Letter"
+      [Ll] "Lowercase Letter"
+      [Lt] "Titlecase Letter"
+      [Lm] "Modifier Letter"
+      [Lo] "Other Letter"
+      [Mn] "Nonspacing Mark"
+      [Mc] "Spacing Mark"
+      [Me] "Enclosing Mark"
+      [Nd] "Decimal Number"
+      [Nl] "Letter Number"
+      [No] "Other Number"
+      [Pc] "Connector Punctuation"
+      [Pd] "Dash Punctuation"
+      [Ps] "Open Punctuation"
+      [Pe] "Close Punctuation"
+      [Pi] "Initial Punctuation"
+      [Pf] "Final Punctuation"
+      [Po] "Other Punctuation"
+      [Sm] "Math Symbol"
+      [Sc] "Currency Symbol"
+      [Sk] "Modifier Symbol"
+      [So] "Other Symbol"
+      [Zs] "Space Separator"
+      [Zl] "Line Separator"
+      [Zp] "Paragraph Separator"
+      [Cc] "Control"
+      [Cf] "Format"
+      [Cs] "Surrogate"
+      [Co] "Private Use"
+      [Cn] "Unassigned"
+      | "Unknown"
 
    // Alphabetic letters (Lu, Ll, Lt, Lm, Lo)
    is_alpha: Rune => <>
@@ -758,6 +860,59 @@
    is_title: Rune => <>
    is_title = cp =>
       category_id(cp) == 2
+
+   // Simple 1-to-1 Unicode uppercase mapping for a Rune.
+   to_upper: Rune => Rune
+   to_upper = cp =>
+      c = Int(cp)
+      c < 0x80 | --| Rune((c !< 'a' && c !> 'z') | c - 32 | c)
+      lo' = 0
+      hi' = 198
+      res' = c
+      0.. @
+         lo' > hi' | -->
+         mid = (lo' + hi') .>. 1
+         w = case_up_runs(mid)
+         start = w .&. 0xFFFFF
+         span = (w .>. 20) .&. 0xFF
+         c < start
+            | hi' = mid - 1
+            |
+               c > start + span
+                  | lo' = mid + 1
+                  |
+                     step2 = (w .>. 28) .&. 1
+                     (step2 == 0 || ((c - start) .&. 1) == 0)
+                        | res' = c + ((w .>. 29) - 65536)
+                     -->
+      Rune(res')
+
+   // Simple 1-to-1 Unicode lowercase mapping for a Rune.
+   to_lower: Rune => Rune
+   to_lower = cp =>
+      c = Int(cp)
+      c < 0x80 | --| Rune((c !< 'A' && c !> 'Z') | c + 32 | c)
+      c == 0x0130 | --| Rune(0x0069)
+      lo' = 0
+      hi' = 185
+      res' = c
+      0.. @
+         lo' > hi' | -->
+         mid = (lo' + hi') .>. 1
+         w = case_lo_runs(mid)
+         start = w .&. 0xFFFFF
+         span = (w .>. 20) .&. 0xFF
+         c < start
+            | hi' = mid - 1
+            |
+               c > start + span
+                  | lo' = mid + 1
+                  |
+                     step2 = (w .>. 28) .&. 1
+                     (step2 == 0 || ((c - start) .&. 1) == 0)
+                        | res' = c + ((w .>. 29) - 65536)
+                     -->
+      Rune(res')
 
    // Whitespace: space separators (Zs, Zl, Zp) plus ASCII whitespace
    // (\t, \n, \v, \f, \r)
@@ -841,7 +996,8 @@
 
    // Byte width of a rune's UTF-8 encoding.
    utf8_width: Rune => Int
-   utf8_width = [< 0x80] 1 [< 0x800] 2 [< 0x10000] 3 | 4
+   utf8_width =
+      [< 0x80] 1 [< 0x800] 2 [< 0x10000] 3 | 4
 
    // UAX #31: XID_Start characters (Lu, Ll, Lt, Lm, Lo, Nl)
    is_xid_start: Rune => <>

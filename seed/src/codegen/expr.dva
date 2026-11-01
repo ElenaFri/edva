@@ -3024,7 +3024,12 @@ coerce_val = cg, v, v_vt, target =>
 codegen_eval_coerce: types::Cg, ast::ValueType, ast::Expr => (Addr, ast::ValueType)
 codegen_eval_coerce = cg, target, arg =>
    ev = codegen_eval(cg, arg)
-   coerce_val(cg, ev.0, ev.1, target)
+   is_flag = target [Flag]
+   is_flag
+      |
+         arg_ti = types::member_target_ti(cg, arg)
+         (types::codegen_cond_value_with_ti(cg, ev.0, ev.1, arg_ti), ast::ValueType(Flag))
+      | coerce_val(cg, ev.0, ev.1, target)
 
 // Coerce a choice branch value into the phi type/target ValueType.
 coerce_phi_incoming: types::Cg, Addr, ast::ValueType, Addr, ast::ValueType => Addr
@@ -3879,6 +3884,7 @@ vt_to_type_key = cg, vt, dtype =>
             [Slice] "Slice"
             [Array] "Array"
             [Fn] "Fn"
+            [Unit] "Unit"
             | "Unknown"
 
 
@@ -4219,6 +4225,12 @@ codegen_eval_named_call = cg, t =>
          cg.discard_result = saved_discard'
          runtime_args = slice_exprs_from(t.args, val_param_count)
          tis = stmt::fn_signature_param_tis(types::g.pstmts, fname')
+         (n_call_args - val_param_count) + 1 == ?tis
+            |
+               cargs' += LLVMConstInt(LLVMInt64Type!, 0, 0)
+               cavts' += ast::ValueType(Unit)
+               cadts += ""
+               runtime_args += ast::Expr(Var, "")
          b_vts = ast::VTypes()
          b_tis = ast::VInfos()
          b_dts = ast::Names()

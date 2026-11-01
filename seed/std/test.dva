@@ -1,0 +1,219 @@
+// Standard Unit Testing & Assertion Module (std/test.dva)
+// Lightweight, zero-ceremony assertions and test runner utilities.
+
+#use io
+#use str
+#use sys
+
+#private
+
+passed_count: Int
+passed_count = 0
+
+failed_count: Int
+failed_count = 0
+
+current_suite: String
+current_suite = ""
+
+record_result: <>, String, String => <>
+record_result = is_ok, label, detail =>
+   is_ok
+      |
+         passed_count ::= passed_count + 1
+         <+>
+      |
+         failed_count ::= failed_count + 1
+         suite_pfx = ?current_suite > 0 | "[" + current_suite + "] " | ""
+         lbl_part = ?label > 0 | label + ": " | ""
+         det_part = ?detail > 0 | " (" + detail + ")" | ""
+         io::out("FAIL: " + suite_pfx + lbl_part + "assertion failed" + det_part)
+         <->
+
+abs_f64: Float => Float
+abs_f64 = x => x < 0.0 | 0.0 - x | x
+
+check_approx: Float, Float, Float, String => <>
+check_approx = actual, expected, eps, label =>
+   diff = abs_f64(actual - expected)
+   is_ok = diff !> eps
+   is_ok
+      | record_result(<+>, label, "")
+      |
+         detail = "got " + str::from_float(actual) + ", expected " +
+            str::from_float(expected) + " +/- " + str::from_float(eps)
+         record_result(<->, label, detail)
+
+check_eq_int: Int, Int, String => <>
+check_eq_int = actual, expected, label =>
+   actual == expected
+      | record_result(<+>, label, "")
+      | record_result(<->, label, "got " + str::from_int(actual) + ", expected " + str::from_int(expected))
+
+check_eq_float: Float, Float, String => <>
+check_eq_float = actual, expected, label =>
+   actual == expected
+      | record_result(<+>, label, "")
+      | record_result(<->, label, "got " + str::from_float(actual) + ", expected " + str::from_float(expected))
+
+check_eq_str: String, String, String => <>
+check_eq_str = actual, expected, label =>
+   actual == expected
+      | record_result(<+>, label, "")
+      | record_result(<->, label, "got \"" + actual + "\", expected \"" + expected + "\"")
+
+check_eq_flag: <>, <>, String => <>
+check_eq_flag = actual, expected, label =>
+   same = (actual && expected) || (!actual && !expected)
+   same
+      | record_result(<+>, label, "")
+      | record_result(<->, label, "got " + (actual | "<+>" | "<->") + ", expected " + (expected | "<+>" | "<->"))
+
+check_eq_val: #! T: Type, T, T, String => <>
+check_eq_val = #! T, actual, expected, label =>
+   T
+      [Int] check_eq_int(actual, expected, label)
+      [Float] check_eq_float(actual, expected, label)
+      [String] check_eq_str(actual, expected, label)
+      [<>] check_eq_flag(actual, expected, label)
+      | record_result(actual == expected, label, "values not equal")
+
+check_ne_int: Int, Int, String => <>
+check_ne_int = actual, unexpected, label =>
+   actual != unexpected
+      | record_result(<+>, label, "")
+      | record_result(<->, label, "got " + str::from_int(actual) + " (expected != " + str::from_int(unexpected) + ")")
+
+check_ne_float: Float, Float, String => <>
+check_ne_float = actual, unexpected, label =>
+   actual != unexpected
+      | record_result(<+>, label, "")
+      | record_result(<->, label, "got " + str::from_float(actual) + " (expected != " + str::from_float(unexpected) + ")")
+
+check_ne_str: String, String, String => <>
+check_ne_str = actual, unexpected, label =>
+   actual != unexpected
+      | record_result(<+>, label, "")
+      | record_result(<->, label, "got \"" + actual + "\" (expected != \"" + unexpected + "\")")
+
+check_ne_flag: <>, <>, String => <>
+check_ne_flag = actual, unexpected, label =>
+   diff = (actual && !unexpected) || (!actual && unexpected)
+   diff
+      | record_result(<+>, label, "")
+      | record_result(<->, label, "got " + (actual | "<+>" | "<->") + " (expected != " + (unexpected | "<+>" | "<->") + ")")
+
+check_ne_val: #! T: Type, T, T, String => <>
+check_ne_val = #! T, actual, unexpected, label =>
+   T
+      [Int] check_ne_int(actual, unexpected, label)
+      [Float] check_ne_float(actual, unexpected, label)
+      [String] check_ne_str(actual, unexpected, label)
+      [<>] check_ne_flag(actual, unexpected, label)
+      | record_result(actual != unexpected, label, "values unexpectedly equal")
+
+#public
+
+// Sets the current test suite name (prefixed on failure messages).
+suite: String => ()
+suite = name =>
+   current_suite ::= name
+
+// Resets all pass/fail counters and clears the current suite name.
+reset: () => ()
+reset = !=>
+   passed_count ::= 0
+   failed_count ::= 0
+   current_suite ::= ""
+
+// Returns the number of passed assertions so far.
+passed: () => Int
+passed = !=> passed_count
+
+// Returns the number of failed assertions so far.
+failed: () => Int
+failed = !=> failed_count
+
+// Returns the total number of assertions executed so far.
+total: () => Int
+total = !=> passed_count + failed_count
+
+// Returns `<+>` if no assertions have failed so far.
+all_passed: () => <>
+all_passed = !=> failed_count == 0
+
+// Checks a boolean condition (`<>`).
+// Accepts `test::check(cond)` or `test::check(cond, "label")`.
+check: #! L: Type, <>, L => <>
+check = #! L, cond, label =>
+   L
+      [String] record_result(cond, label, "")
+      | record_result(cond, "", "")
+
+// Checks that `actual == expected`.
+// Accepts `test::eq(actual, expected)` or `test::eq(actual, expected, "label")`.
+eq: #! T: Type, #! L: Type, T, T, L => <>
+eq = #! T, #! L, actual, expected, label =>
+   L
+      [String] check_eq_val(actual, expected, label)
+      | check_eq_val(actual, expected, "")
+
+// Checks that `actual != unexpected`.
+// Accepts `test::ne(actual, unexpected)` or `test::ne(actual, unexpected, "label")`.
+ne: #! T: Type, #! L: Type, T, T, L => <>
+ne = #! T, #! L, actual, unexpected, label =>
+   L
+      [String] check_ne_val(actual, unexpected, label)
+      | check_ne_val(actual, unexpected, "")
+
+// Checks that `|actual - expected| !> eps`.
+// Accepts:
+//   `test::approx(actual, expected)`           (eps = 1e-9)
+//   `test::approx(actual, expected, 1e-6)`     (custom eps)
+//   `test::approx(actual, expected, "label")`  (eps = 1e-9, with label)
+approx: #! A: Type, Float, Float, A => <>
+approx = #! A, actual, expected, arg =>
+   A
+      [Float] check_approx(actual, expected, arg, "")
+      [String] check_approx(actual, expected, 0.000000001, arg)
+      | check_approx(actual, expected, 0.000000001, "")
+
+// Checks that `|actual - expected| !> eps` with an explicit label.
+approx_eps: Float, Float, Float, String => <>
+approx_eps = actual, expected, eps, label =>
+   check_approx(actual, expected, eps, label)
+
+// Checks that a ramification or flag is positive (`<>(res)`).
+// Accepts `test::ok(res)` or `test::ok(res, "label")`.
+ok: #! T: Type, #! L: Type, T, L => <>
+ok = #! T, #! L, res, label =>
+   L
+      [String] record_result(<>(res), label, "expected positive ramification <+ ... +>")
+      | record_result(<>(res), "", "expected positive ramification <+ ... +>")
+
+// Checks that a ramification or flag is negative (`!<>(res)`).
+// Accepts `test::err(res)` or `test::err(res, "label")`.
+err: #! T: Type, #! L: Type, T, L => <>
+err = #! T, #! L, res, label =>
+   L
+      [String] record_result(!<>(res), label, "expected negative ramification <-- ... -->")
+      | record_result(!<>(res), "", "expected negative ramification <-- ... -->")
+
+// Prints a summary line and returns `<+>` if all assertions passed, or `<->` if any failed.
+summary: () => <>
+summary = !=>
+   tot = passed_count + failed_count
+   failed_count == 0
+      |
+         io::out("PASS: " + str::from_int(tot) + " passed, 0 failed")
+         <+>
+      |
+         io::out("FAIL: " + str::from_int(failed_count) + " failed, " +
+            str::from_int(passed_count) + " passed (total " + str::from_int(tot) + ")")
+         <->
+
+// Prints summary and exits with code 1 if any assertion failed.
+finish: () => ()
+finish = !=>
+   !summary!
+      | sys::exit(1)

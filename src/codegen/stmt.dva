@@ -2968,7 +2968,7 @@ param_ll_type = cg, i8p, pdtype, pvt, has_rec, is_arr, is_sl, is_clo =>
    is_clo || has_rec || is_arr || is_sl ||
       param_is_heap_ram(cg, pdtype)
       | i8p
-      | types::llvm_type_of_vt(pvt)
+      | (pvt [Unit] LLVMInt64Type! | types::llvm_type_of_vt(pvt))
 
 ti_is_array: ast::TypeInfo => <>
 ti_is_array = ti => ti [Array]
@@ -4073,10 +4073,10 @@ fn_signature_param_types_rev = cg, stmts, name, at =>
                      t.8
                         [Fn f] resolve_sig_param_types(cg, f.0, f.1)
                         |
-                           in_vts = fn_inline_param_vtypes(t.5)
-                           ?in_vts > 0
-                              | in_vts
-                              | fn_signature_param_types_rev(cg, stmts, name, at - 1)
+                           prev_vts = fn_signature_param_types_rev(cg, stmts, name, at - 1)
+                           ?prev_vts > 0
+                              | prev_vts
+                              | fn_inline_param_vtypes(t.5)
                   | fn_signature_param_types_rev(cg, stmts, name, at - 1)
             | fn_signature_param_types_rev(cg, stmts, name, at - 1)
 
@@ -4120,10 +4120,14 @@ fn_signature_param_dtypes_rev = stmts, name, at =>
                      t.8
                         [Fn f] resolve_sig_param_dtypes(f.1)
                         |
-                           in_tis = fn_inline_param_tis(t.5)
-                           ?in_tis > 0
-                              | resolve_sig_param_dtypes(in_tis)
-                              | fn_signature_param_dtypes_rev(stmts, name, at - 1)
+                           prev_dts = fn_signature_param_dtypes_rev(stmts, name, at - 1)
+                           ?prev_dts > 0
+                              | prev_dts
+                              |
+                                 in_tis = fn_inline_param_tis(t.5)
+                                 ?in_tis > 0
+                                    | resolve_sig_param_dtypes(in_tis)
+                                    | ast::Names()
                   | fn_signature_param_dtypes_rev(stmts, name, at - 1)
             | fn_signature_param_dtypes_rev(stmts, name, at - 1)
 
@@ -4148,10 +4152,10 @@ fn_signature_param_tis_rev = stmts, name, at =>
                      t.8
                         [Fn f] f.1
                         |
-                           in_tis = fn_inline_param_tis(t.5)
-                           ?in_tis > 0
-                              | in_tis
-                              | fn_signature_param_tis_rev(stmts, name, at - 1)
+                           prev_tis = fn_signature_param_tis_rev(stmts, name, at - 1)
+                           ?prev_tis > 0
+                              | prev_tis
+                              | fn_inline_param_tis(t.5)
                   | fn_signature_param_tis_rev(stmts, name, at - 1)
             | fn_signature_param_tis_rev(stmts, name, at - 1)
 
@@ -4509,7 +4513,7 @@ names_to_comma_str = names, i, acc =>
       | acc
       |
          n = names(i) | _ | ""
-         next = i == 0 | n | acc + ", " + n
+         next = i == 0 | n | acc + "," + n
          names_to_comma_str(names, i + 1, next)
 
 fn_ct_params_str: ast::Expr => String

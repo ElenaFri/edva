@@ -1,5 +1,5 @@
 // Standard OS Module (std/os.dva)
-// High-level safe abstractions for file handling and process execution
+// High-level safe abstractions for file handling, environment, and process execution
 
 #use libc
 #use mem
@@ -8,7 +8,32 @@
 #foreign
    environ: Addr
 
+#foreign "c"
+   c_getenv   = getenv:   (name: String) => Addr
+   c_setenv   = setenv:   (name: String, val: String, overwrite: i32) => i32
+   c_unsetenv = unsetenv: (name: String) => i32
+   c_getcwd   = getcwd:   (buf: Addr, size: Int) => Addr
+   c_chdir    = chdir:    (path: String) => i32
+   c_getpid   = getpid:   () => i32
+   c_getppid  = getppid:  () => i32
+   c_popen    = popen:    (command: String, mode: String) => Addr
+   c_pclose   = pclose:   (stream: Addr) => i32
+   c_fread    = fread:    (ptr: Addr, size: Int, nmemb: Int, stream: Addr) => Int
+
+// Extracts the exit code from a POSIX wait status word.
+decode_wait_status: Int => Int
+decode_wait_status = raw =>
+   raw < 0
+      | raw
+      |
+         sig = raw .&. 127
+         sig == 0
+            | (raw .>. 8) .&. 255
+            | 128 + sig
+
 #public
+   #type ExecResult (status: Int, output: String)
+
    open: String, Int => Int
    open  = path, flags => libc::open(path, flags)
    close: Int => Int
@@ -32,7 +57,7 @@
                   +b
                | ""
 
-   // Spawns a process. Acknowledges an argv array (Addr) and waits for exit
+   // Spawns a process. Accepts an argv array (Addr) and waits for exit.
    spawn: String, Addr => Int
    spawn = path, argv =>
       ar = mem::arena(64)
@@ -51,3 +76,107 @@
             result' = Int(@[status_ptr i32])
       mem::destroy(ar)
       result'
+
+   // --- Environment Variables -------------------------------------------------
+
+   // Looks up environment variable `name`, returning `<+ value +>` or `<-->`.
+   env: String => < String | >
+   env = name =>
+      raw = c_getenv(name)
+      raw == sys::addr_null
+         | <-->
+         | <+ sys::c_str(raw) +>
+
+   // Looks up environment variable `name`, returning `fallback` if not set.
+   env_or: String, String => String
+   env_or = name, fallback =>
+      raw = c_getenv(name)
+      raw == sys::addr_null
+         | fallback
+         | sys::c_str(raw)
+
+   // Sets environment variable `name` to `val` (overwriting any existing value).
+   setenv: String, String => <>
+   setenv = name, val =>
+      c_setenv(name, val, 1i32) == 0i32
+
+   // Removes environment variable `name`.
+   unsetenv: String => <>
+   unsetenv = name =>
+      c_unsetenv(name) == 0i32
+
+   // --- Working Directory & Process IDs ---------------------------------------
+
+   // Returns the current working directory, or `""` on error.
+   cwd: () => String
+   cwd = !=>
+      buf = {4096}
+      res = c_getcwd(&buf, 4096)
+      res == sys::addr_null
+         | ""
+         | sys::c_str(res)
+
+   // Changes the current working directory to `path`. Returns `<+>` on success.
+   chdir: String => <>
+   chdir = path =>
+      c_chdir(path) == 0i32
+
+   // Returns the process ID of the current process.
+   pid: () => Int
+   pid = !=> Int(c_getpid!)
+
+   // Returns the parent process ID of the current process.
+   ppid: () => Int
+   ppid = !=> Int(c_getppid!)
+
+   // --- Shell Command Execution -----------------------------------------------
+
+   // Runs `cmd` via `/bin/sh -c` and returns its decoded exit code.
+   system: String => Int
+   system = cmd =>
+      decode_wait_status(libc::system(cmd))
+
+   // Runs `cmd` via `popen`, captures its standard output, and returns
+   // `<+ (status = exit_code, output = stdout_str) +>` or `<-->` if popen fails.
+   exec: String => < ExecResult | >
+   exec = cmd =>
+      fp = c_popen(cmd, "r")
+      fp == sys::addr_null
+         | <-->
+         |
+            cap' = 1024
+            buf' = {cap'}
+            len' = 0
+            chunk = {512}
+            0.. @
+               n = c_fread(&chunk, 1, 512, fp)
+               n !> 0
+                  | -->
+                  |
+                     need = len' + n
+                     need > cap'
+                        |
+                           new_cap' = cap' * 2
+                           new_cap' < need @
+                              new_cap' = new_cap' * 2
+                           next_buf = {new_cap'}
+                           len' > 0
+                              | %memcpy(&next_buf, &buf', len')
+                              | sys::addr_null
+                           buf' = next_buf
+                           cap' = new_cap'
+                     %memcpy(&buf' + len', &chunk, n)
+                     len' = need
+            ?buf' = len'
+            raw_status = Int(c_pclose(fp))
+            <+ (status = decode_wait_status(raw_status), output = +buf') +>
+
+   // Runs `cmd` and returns `<+ output +>` if exit status is 0, or `<-->` on failure.
+   run: String => < String | >
+   run = cmd =>
+      exec(cmd)
+         | res =>
+            res.status == 0
+               | <+ res.output +>
+               | <-->
+         | <-->

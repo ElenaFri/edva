@@ -1,0 +1,563 @@
+// Standard Date & Time Module (std/time.dva)
+// Monotonic & wall-clock high-resolution timers, civil calendar conversion,
+// and polymorphic single-call formatting (`time::iso!`, `time::date!`,
+// `time::clock!`, `time::local!`, `time::utc!`, `time::format("%Y-%m-%d")`).
+
+#use str
+#use sys
+#use type
+
+#foreign "c"
+   clock_gettime: (clk_id: i32, tp: Addr) => i32
+   nanosleep: (req: Addr, rem: Addr) => i32
+   localtime_r: (timep: Addr, result: Addr) => Addr
+   gmtime_r: (timep: Addr, result: Addr) => Addr
+   mktime: (tm: Addr) => i64
+   strftime: (s: Addr, max: Int, format: String, tm: Addr) => Int
+
+#public
+
+// POSIX clock IDs
+CLOCK_REALTIME  = 0
+CLOCK_MONOTONIC = #! (os ["darwin"] 6 | 1)
+
+clock_realtime: () => i32
+clock_realtime = !=> 0i32
+
+clock_monotonic: () => i32
+clock_monotonic = !=> i32(CLOCK_MONOTONIC)
+
+// Common duration constants in nanoseconds
+NS_PER_US  = 1000
+NS_PER_MS  = 1000000
+NS_PER_SEC = 1000000000
+SEC_PER_MIN  = 60
+SEC_PER_HOUR = 3600
+SEC_PER_DAY  = 86400
+
+// POSIX struct timespec (16 bytes)
+#type Timespec: #packed (
+   sec:  i64
+   nsec: i64
+)
+
+// POSIX struct tm on Linux x86_64 and Darwin (56 bytes)
+#type TmRaw: #packed (
+   sec:    i32
+   min:    i32
+   hour:   i32
+   mday:   i32
+   mon:    i32
+   year:   i32
+   wday:   i32
+   yday:   i32
+   isdst:  i32
+   pad0:   i32
+   gmtoff: i64
+   zone:   Addr
+)
+
+// Broken-down civil calendar date and time (1-based month and day, full year)
+#type DateTime (
+   year:    Int
+   month:   Int
+   day:     Int
+   hour:    Int
+   min:     Int
+   sec:     Int
+   nsec:    Int
+   weekday: Int
+   yearday: Int
+   utc_off: Int
+)
+
+#private
+
+floor_div: Int, Int => Int
+floor_div = a, b =>
+   q = a / b
+   r = a % b
+   r < 0 | q - 1 | q
+
+floor_mod: Int, Int => Int
+floor_mod = a, b =>
+   r = a % b
+   r < 0 | r + b | r
+
+pad2: Builder, Int => ()
+pad2 = b, n =>
+   v = n < 0 | -n | n
+   b += 48 + ((v / 10) % 10)
+   b += 48 + (v % 10)
+
+pad3: Builder, Int => ()
+pad3 = b, n =>
+   v = n < 0 | -n | n
+   b += 48 + ((v / 100) % 10)
+   b += 48 + ((v / 10) % 10)
+   b += 48 + (v % 10)
+
+pad4: Builder, Int => ()
+pad4 = b, n =>
+   v = n < 0 | -n | n
+   b += 48 + ((v / 1000) % 10)
+   b += 48 + ((v / 100) % 10)
+   b += 48 + ((v / 10) % 10)
+   b += 48 + (v % 10)
+
+tm_to_datetime: TmRaw, Int => DateTime
+tm_to_datetime = tm, nsec =>
+   DateTime(
+      Int(tm.year) + 1900,
+      Int(tm.mon) + 1,
+      Int(tm.mday),
+      Int(tm.hour),
+      Int(tm.min),
+      Int(tm.sec),
+      nsec,
+      Int(tm.wday),
+      Int(tm.yday) + 1,
+      Int(tm.gmtoff)
+   )
+
+datetime_to_tm: DateTime => TmRaw
+datetime_to_tm = dt =>
+   TmRaw(
+      i32(dt.sec),
+      i32(dt.min),
+      i32(dt.hour),
+      i32(dt.day),
+      i32(dt.month - 1),
+      i32(dt.year - 1900),
+      i32(dt.weekday),
+      i32(dt.yearday - 1),
+      -1i32,
+      0i32,
+      i64(dt.utc_off),
+      sys::addr_null
+   )
+
+// Howard Hinnant's days_from_civil: days since 1970-01-01
+days_from_civil: Int, Int, Int => Int
+days_from_civil = year, month, day =>
+   y = month !> 2 | year - 1 | year
+   era = (y !< 0 | y | y - 399) / 400
+   yoe = y - era * 400
+   mp = month > 2 | month - 3 | month + 9
+   doy = (153 * mp + 2) / 5 + day - 1
+   doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+   era * 146097 + doe - 719468
+
+// Howard Hinnant's civil_from_days: (year, month, day, weekday, yearday)
+civil_from_days: Int => (Int, Int, Int, Int, Int)
+civil_from_days = z =>
+   z_s = z + 719468
+   era = (z_s !< 0 | z_s | z_s - 146096) / 146097
+   doe = z_s - era * 146097
+   yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+   y = yoe + era * 400
+   doy_mar = doe - (365 * yoe + yoe / 4 - yoe / 100)
+   mp = (5 * doy_mar + 2) / 153
+   d = doy_mar - (153 * mp + 2) / 5 + 1
+   m = mp < 10 | mp + 3 | mp - 9
+   year = m !> 2 | y + 1 | y
+   wday = floor_mod(z + 4, 7)
+   jan1 = days_from_civil(year, 1, 1)
+   yday = z - jan1 + 1
+   (year, m, d, wday, yday)
+
+short_weekday_name: Int => String
+short_weekday_name =
+   [0] "Sun"
+   [1] "Mon"
+   [2] "Tue"
+   [3] "Wed"
+   [4] "Thu"
+   [5] "Fri"
+   |   "Sat"
+
+full_weekday_name: Int => String
+full_weekday_name =
+   [0] "Sunday"
+   [1] "Monday"
+   [2] "Tuesday"
+   [3] "Wednesday"
+   [4] "Thursday"
+   [5] "Friday"
+   |   "Saturday"
+
+short_month_name: Int => String
+short_month_name =
+   [1]  "Jan"
+   [2]  "Feb"
+   [3]  "Mar"
+   [4]  "Apr"
+   [5]  "May"
+   [6]  "Jun"
+   [7]  "Jul"
+   [8]  "Aug"
+   [9]  "Sep"
+   [10] "Oct"
+   [11] "Nov"
+   |    "Dec"
+
+full_month_name: Int => String
+full_month_name =
+   [1]  "January"
+   [2]  "February"
+   [3]  "March"
+   [4]  "April"
+   [5]  "May"
+   [6]  "June"
+   [7]  "July"
+   [8]  "August"
+   [9]  "September"
+   [10] "October"
+   [11] "November"
+   |    "December"
+
+write_date_into: Builder, DateTime => ()
+write_date_into = b, dt =>
+   dt.year < 0 | b += '-'
+   pad4(b, dt.year)
+   b += '-'
+   pad2(b, dt.month)
+   b += '-'
+   pad2(b, dt.day)
+
+write_clock_into: Builder, DateTime => ()
+write_clock_into = b, dt =>
+   pad2(b, dt.hour)
+   b += ':'
+   pad2(b, dt.min)
+   b += ':'
+   pad2(b, dt.sec)
+
+write_tz_iso_into: Builder, Int => ()
+write_tz_iso_into = b, utc_off =>
+   utc_off == 0
+      | b += 'Z'
+      |
+         b += (utc_off < 0 | '-' | '+')
+         abs_off = utc_off < 0 | -utc_off | utc_off
+         pad2(b, abs_off / 3600)
+         b += ':'
+         pad2(b, (abs_off % 3600) / 60)
+
+write_tz_compact_into: Builder, Int => ()
+write_tz_compact_into = b, utc_off =>
+   b += (utc_off < 0 | '-' | '+')
+   abs_off = utc_off < 0 | -utc_off | utc_off
+   pad2(b, abs_off / 3600)
+   pad2(b, (abs_off % 3600) / 60)
+
+format_dt_iso: DateTime => String
+format_dt_iso = dt =>
+   b = {32}
+   write_date_into(b, dt)
+   b += 'T'
+   write_clock_into(b, dt)
+   write_tz_iso_into(b, dt.utc_off)
+   +b
+
+format_dt_date: DateTime => String
+format_dt_date = dt =>
+   b = {16}
+   write_date_into(b, dt)
+   +b
+
+format_dt_clock: DateTime => String
+format_dt_clock = dt =>
+   b = {16}
+   write_clock_into(b, dt)
+   +b
+
+#public
+
+// --- Wall-Clock & Monotonic Clocks ------------------------------------------
+
+// Current Unix epoch in seconds
+now: () => Int
+now = !=>
+   ts' = Timespec(0i64, 0i64)
+   clock_gettime(clock_realtime!, &ts')
+   Int(ts'.sec)
+
+// Current Unix epoch in milliseconds
+now_ms: () => Int
+now_ms = !=>
+   ts' = Timespec(0i64, 0i64)
+   clock_gettime(clock_realtime!, &ts')
+   Int(ts'.sec) * 1000 + Int(ts'.nsec) / 1000000
+
+// Current Unix epoch in nanoseconds
+now_ns: () => Int
+now_ns = !=>
+   ts' = Timespec(0i64, 0i64)
+   clock_gettime(clock_realtime!, &ts')
+   Int(ts'.sec) * 1000000000 + Int(ts'.nsec)
+
+// Current Unix epoch as fractional seconds
+now_f64: () => Float
+now_f64 = !=>
+   ts' = Timespec(0i64, 0i64)
+   clock_gettime(clock_realtime!, &ts')
+   Float(ts'.sec) + Float(ts'.nsec) * 1.0e-9
+
+// Monotonic clock in nanoseconds (for benchmarks, frame deltas, and timers)
+mono_ns: () => Int
+mono_ns = !=>
+   ts' = Timespec(0i64, 0i64)
+   clock_gettime(clock_monotonic!, &ts')
+   Int(ts'.sec) * 1000000000 + Int(ts'.nsec)
+
+// Monotonic clock in milliseconds
+mono_ms: () => Int
+mono_ms = !=>
+   ts' = Timespec(0i64, 0i64)
+   clock_gettime(clock_monotonic!, &ts')
+   Int(ts'.sec) * 1000 + Int(ts'.nsec) / 1000000
+
+// Monotonic clock as fractional seconds
+mono_f64: () => Float
+mono_f64 = !=>
+   ts' = Timespec(0i64, 0i64)
+   clock_gettime(clock_monotonic!, &ts')
+   Float(ts'.sec) + Float(ts'.nsec) * 1.0e-9
+
+// Elapsed milliseconds since a `mono_ns!` start timestamp
+elapsed_ms: Int => Int
+elapsed_ms = start_ns => (mono_ns! - start_ns) / 1000000
+
+// Elapsed fractional seconds since a `mono_ns!` start timestamp
+elapsed_f64: Int => Float
+elapsed_f64 = start_ns => Float(mono_ns! - start_ns) * 1.0e-9
+
+// --- Sleeping ---------------------------------------------------------------
+
+// Sleep for `ns` nanoseconds
+sleep_ns: Int => ()
+sleep_ns = ns =>
+   ns > 0
+      |
+         req' = Timespec(i64(ns / 1000000000), i64(ns % 1000000000))
+         rem' = Timespec(0i64, 0i64)
+         nanosleep(&req', &rem')
+
+// Sleep for `ms` milliseconds
+sleep_ms: Int => ()
+sleep_ms = ms => sleep_ns(ms * 1000000)
+
+// Sleep for fractional `sec` seconds
+sleep: Float => ()
+sleep = sec =>
+   sec > 0.0 | sleep_ns(Int(sec * 1.0e9))
+
+// --- Pure-Edva Civil Calendar Math ------------------------------------------
+
+// True (<+>) if `year` is a Gregorian leap year
+is_leap_year: Int => <>
+is_leap_year = year =>
+   (year % 4 == 0) && ((year % 100 != 0) || (year % 400 == 0))
+
+// Number of days (28..31) in `month` (1..12) of `year`
+days_in_month: Int, Int => Int
+days_in_month = year, month =>
+   month
+      [2] (is_leap_year(year) | 29 | 28)
+      [4, 6, 9, 11] 30
+      | 31
+
+// Pure-Edva conversion from Unix epoch seconds (+ nanoseconds) to UTC DateTime
+utc_from_epoch: Int, Int => DateTime
+utc_from_epoch = sec, nsec =>
+   days = floor_div(sec, 86400)
+   rem = floor_mod(sec, 86400)
+   hh = rem / 3600
+   mm = (rem % 3600) / 60
+   ss = rem % 60
+   civ = civil_from_days(days)
+   DateTime(civ.0, civ.1, civ.2, hh, mm, ss, nsec, civ.3, civ.4, 0)
+
+// Pure-Edva conversion from DateTime to Unix epoch seconds (adjusts for utc_off)
+epoch: DateTime => Int
+epoch = dt =>
+   days = days_from_civil(dt.year, dt.month, dt.day)
+   days * 86400 + dt.hour * 3600 + dt.min * 60 + dt.sec - dt.utc_off
+
+// Construct a UTC DateTime from (year, month, day, hour, min, sec)
+datetime_utc: Int, Int, Int, Int, Int, Int => DateTime
+datetime_utc = year, month, day, hour, min, sec =>
+   z = days_from_civil(year, month, day)
+   civ = civil_from_days(z)
+   DateTime(year, month, day, hour, min, sec, 0, civ.3, civ.4, 0)
+
+// --- Broken-Down Local & UTC DateTime (Single-Call or From Epoch) -----------
+
+#private
+
+local_from_sec: Int, Int => DateTime
+local_from_sec = sec, nsec =>
+   t_val' = i64(sec)
+   tm' = TmRaw(0i32, 0i32, 0i32, 0i32, 0i32, 0i32, 0i32, 0i32, 0i32, 0i32, 0i64, sys::addr_null)
+   res = localtime_r(&t_val', &tm')
+   res == sys::addr_null
+      | utc_from_epoch(sec, nsec)
+      | tm_to_datetime(tm', nsec)
+
+local_now_dt: () => DateTime
+local_now_dt = !=>
+   ts' = Timespec(0i64, 0i64)
+   clock_gettime(clock_realtime!, &ts')
+   local_from_sec(Int(ts'.sec), Int(ts'.nsec))
+
+utc_now_dt: () => DateTime
+utc_now_dt = !=>
+   ts' = Timespec(0i64, 0i64)
+   clock_gettime(clock_realtime!, &ts')
+   utc_from_epoch(Int(ts'.sec), Int(ts'.nsec))
+
+resolve_local_dt: #! T: Type, T => DateTime
+resolve_local_dt = #! T, x =>
+   T
+      [DateTime] x
+      [type::is_int] local_from_sec(Int(x), 0)
+      [type::is_float]
+         s = Int(%floor(Float(x)))
+         ns = Int((Float(x) - Float(s)) * 1.0e9)
+         local_from_sec(s, ns)
+      | local_now_dt!
+
+resolve_utc_dt: #! T: Type, T => DateTime
+resolve_utc_dt = #! T, x =>
+   T
+      [DateTime]
+         x.utc_off == 0
+            | x
+            | utc_from_epoch(epoch(x), x.nsec)
+      [type::is_int] utc_from_epoch(Int(x), 0)
+      [type::is_float]
+         s = Int(%floor(Float(x)))
+         ns = Int((Float(x) - Float(s)) * 1.0e9)
+         utc_from_epoch(s, ns)
+      | utc_now_dt!
+
+format_dt_pattern: String, DateTime => String
+format_dt_pattern = fmt, dt =>
+   len = ?fmt
+   b = {len + 32}
+   i' = 0
+   0.. @
+      i' !< len | -->
+      ch = fmt(i')
+      ch == '%' && (i' + 1 < len)
+         |
+            spec = fmt(i' + 1)
+            spec
+               ['Y'] pad4(b, dt.year)
+               ['y'] pad2(b, dt.year % 100)
+               ['m'] pad2(b, dt.month)
+               ['d'] pad2(b, dt.day)
+               ['e']
+                  dt.day < 10
+                     |
+                        b += ' '
+                        b += 48 + dt.day
+                     | pad2(b, dt.day)
+               ['H'] pad2(b, dt.hour)
+               ['I']
+                  h12 = dt.hour % 12
+                  pad2(b, h12 == 0 | 12 | h12)
+               ['M'] pad2(b, dt.min)
+               ['S'] pad2(b, dt.sec)
+               ['p'] b += (dt.hour < 12 | "AM" | "PM")
+               ['P'] b += (dt.hour < 12 | "am" | "pm")
+               ['F'] write_date_into(b, dt)
+               ['T'] write_clock_into(b, dt)
+               ['R']
+                  pad2(b, dt.hour)
+                  b += ':'
+                  pad2(b, dt.min)
+               ['a'] b += short_weekday_name(dt.weekday)
+               ['A'] b += full_weekday_name(dt.weekday)
+               ['b', 'h'] b += short_month_name(dt.month)
+               ['B'] b += full_month_name(dt.month)
+               ['j'] pad3(b, dt.yearday)
+               ['w'] b += 48 + dt.weekday
+               ['u'] b += 48 + (dt.weekday == 0 | 7 | dt.weekday)
+               ['z'] write_tz_compact_into(b, dt.utc_off)
+               ['Z']
+                  dt.utc_off == 0
+                     | b += "UTC"
+                     | write_tz_iso_into(b, dt.utc_off)
+               ['s'] b += str::from_int(epoch(dt))
+               ['n'] b += '\n'
+               ['t'] b += '\t'
+               ['%'] b += '%'
+               |
+                  b += '%'
+                  b += spec
+            i' = i' + 2
+         |
+            b += ch
+            i' = i' + 1
+   +b
+
+#public
+
+// Local DateTime: call as `time::local!` for now, or `time::local(ts)`
+local: #! T: Type, T => DateTime
+local = x => resolve_local_dt(x)
+
+// UTC DateTime: call as `time::utc!` for now, or `time::utc(ts)`
+utc: #! T: Type, T => DateTime
+utc = x => resolve_utc_dt(x)
+
+// --- Ergonomic Single-Call Formatting ---------------------------------------
+// All formatting functions accept:
+//   - `!` / `()` (current time)
+//   - `Int` / `Float` (Unix epoch seconds)
+//   - `DateTime` (broken-down date/time record)
+
+// Local ISO-8601 string ("2026-10-31T03:00:00+02:00"):
+//   `time::iso!`, `time::iso(ts)`, or `time::iso(dt)`
+iso: #! T: Type, T => String
+iso = x => format_dt_iso(resolve_local_dt(x))
+
+// UTC ISO-8601 string ("2026-10-31T01:00:00Z"):
+//   `time::utc_iso!`, `time::utc_iso(ts)`, or `time::utc_iso(dt)`
+utc_iso: #! T: Type, T => String
+utc_iso = x => format_dt_iso(resolve_utc_dt(x))
+
+// Local YYYY-MM-DD date string ("2026-10-31"):
+//   `time::date!`, `time::date(ts)`, or `time::date(dt)`
+date: #! T: Type, T => String
+date = x => format_dt_date(resolve_local_dt(x))
+
+// UTC YYYY-MM-DD date string ("2026-10-31"):
+//   `time::utc_date!`, `time::utc_date(ts)`, or `time::utc_date(dt)`
+utc_date: #! T: Type, T => String
+utc_date = x => format_dt_date(resolve_utc_dt(x))
+
+// Local HH:MM:SS clock string ("03:00:00"):
+//   `time::clock!`, `time::clock(ts)`, or `time::clock(dt)`
+clock: #! T: Type, T => String
+clock = x => format_dt_clock(resolve_local_dt(x))
+
+// UTC HH:MM:SS clock string ("01:00:00"):
+//   `time::utc_clock!`, `time::utc_clock(ts)`, or `time::utc_clock(dt)`
+utc_clock: #! T: Type, T => String
+utc_clock = x => format_dt_clock(resolve_utc_dt(x))
+
+// Custom pattern formatting (`%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, `%F`, `%T`, `%a`, `%b`, ...):
+//   `time::format("%Y-%m-%d %H:%M")`      (current local time)
+//   `time::format("%Y-%m-%d %H:%M", ts)`  (epoch seconds `ts` in local time)
+//   `time::format("%Y-%m-%d %H:%M", dt)`  (given `DateTime` `dt`)
+format: #! T: Type, String, T => String
+format = fmt, x => format_dt_pattern(fmt, resolve_local_dt(x))
+
+// Custom pattern formatting in UTC:
+//   `time::utc_format("%Y-%m-%d %H:%M")`
+//   `time::utc_format("%Y-%m-%d %H:%M", ts)`
+utc_format: #! T: Type, String, T => String
+utc_format = fmt, x => format_dt_pattern(fmt, resolve_utc_dt(x))

@@ -1,0 +1,63 @@
+// Standard Micro-Benchmarking Module (std/bench.dva)
+// High-resolution monotonic timing and micro-benchmarking utilities.
+
+#use io
+#use str
+#use time
+
+#public
+   #type BenchResult (
+      iters:       Int
+      total_ns:    Int
+      avg_ns:      Float
+      ops_per_sec: Float
+   )
+
+   // Captures a monotonic starting timestamp in nanoseconds.
+   start: () => Int
+   start = !=> time::mono_ns!
+
+   // Returns nanoseconds elapsed since `t0` (from `bench::start!`).
+   elapsed_ns: Int => Int
+   elapsed_ns = t0 => time::mono_ns! - t0
+
+   // Returns milliseconds elapsed since `t0` (from `bench::start!`).
+   elapsed_ms: Int => Float
+   elapsed_ms = t0 => Float(time::mono_ns! - t0) / 1000000.0
+
+   // Runs `fn(i)` for `iters` iterations (after a brief warmup pass) and
+   // returns a `BenchResult` with total_ns, avg_ns per iteration, and ops/sec.
+   measure: Int, (Int => Int) => BenchResult
+   measure = iters, fn =>
+      n = iters > 0 | iters | 1
+      warmup = n / 10
+      w = warmup < 1 | 1 | (warmup > 100 | 100 | warmup)
+      sink' = 0
+      w @ i =>
+         sink' = sink' .^. fn(i)
+      t0 = time::mono_ns!
+      n @ i =>
+         sink' = sink' .^. fn(i)
+      t1 = time::mono_ns!
+      raw_dt = t1 - t0
+      dt = raw_dt > 0 | raw_dt | 1
+      // Keep sink' live so the loop body is not dead-code eliminated
+      dt_adj = sink' == 0x7FFFFFFF12345678 | dt + 1 | dt
+      avg = Float(dt_adj) / Float(n)
+      ops = 1000000000.0 / avg
+      BenchResult(n, dt_adj, avg, ops)
+
+   // Formats a `BenchResult` with a label into a single summary line.
+   format: String, BenchResult => String
+   format = name, res =>
+      ops_i = Int(res.ops_per_sec)
+      name + ": " + str::from_int(res.iters) + " iters, " +
+         str::from_float(res.avg_ns) + " ns/op (" +
+         str::from_int(ops_i) + " ops/s)"
+
+   // Runs `measure(iters, fn)`, prints the formatted result, and returns `BenchResult`.
+   run: String, Int, (Int => Int) => BenchResult
+   run = name, iters, fn =>
+      res = measure(iters, fn)
+      io::out(format(name, res))
+      res

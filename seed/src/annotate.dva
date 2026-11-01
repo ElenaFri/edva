@@ -110,7 +110,7 @@ resolve_module_access = ctx, env, qn, line, col =>
    gen = type_env::lookup_generic(env, qn)
    gen
       | gen_ti =>
-         gut = instantiate_generic_ti(ctx, gen_ti)
+         gut = instantiate_generic_ti(ctx, env, type_env::decl_module(qn, 0), gen_ti)
          gti = unify::type_info_from_utype(ctx, gut)
          glay = layout::compute_layout(ctx, gut)
          --| tast::mk_typed_var(qn, 0, <->,
@@ -300,33 +300,50 @@ tv_get_or_create = ctx, tvm, name =>
 
 #type TiInstRes (tvm: TypeVarMap, ut: unify::UType)
 
-instantiate_ti_step: unify::Ctx, TypeVarMap, ast::TypeInfo => TiInstRes
-instantiate_ti_step = ctx, tvm, ti =>
+instantiate_ti_step: unify::Ctx, type_env::TypeEnv, String, TypeVarMap, ast::TypeInfo => TiInstRes
+instantiate_ti_step = ctx, env, fn_mod, tvm, ti =>
    ti
       [Prim vt]
          TiInstRes(tvm, unify::UType(Prim, unify::vt_to_uprim(vt)))
       [TypeVar name]
-         cast_opt = type_name_to_uprim(name)
-         cast_opt
-            | uprim => TiInstRes(tvm, unify::UType(Prim, uprim))
+         tv_opt = tv_lookup(tvm, name)
+         tv_opt
+            | tv_ut => TiInstRes(tvm, tv_ut)
             |
-               res = tv_get_or_create(ctx, tvm, name)
-               TiInstRes(res)
+               cast_opt = type_name_to_uprim(name)
+               cast_opt
+                  | uprim => TiInstRes(tvm, unify::UType(Prim, uprim))
+                  |
+                     ut_opt0 = type_env::lookup_user_type(env, name)
+                     ut_opt = <>(ut_opt0)
+                        | ut_opt0
+                        |
+                           (fn_mod != "" && !type_env::name_is_qualified(name, 0))
+                              | type_env::lookup_user_type_exact(env, fn_mod + "::" + name)
+                              | <-->
+                     ut_opt
+                        | udef => TiInstRes(tvm, udef.ut)
+                        |
+                           res = tv_get_or_create(ctx, tvm, name)
+                           TiInstRes(res)
       [Fn f]
          cur_tvm' = tvm
          vinfos = f.1
          params = unify::UTypes()
          f.4 @ cp =>
-            cp.1 != ast::ValueType(Type)
+            cp.1 == ast::ValueType(Type)
                |
-                  cp_res = instantiate_ti_step(ctx, cur_tvm', cp.2)
+                  tv_res = tv_get_or_create(ctx, cur_tvm', cp.0)
+                  cur_tvm' = tv_res.0
+               |
+                  cp_res = instantiate_ti_step(ctx, env, fn_mod, cur_tvm', cp.2)
                   cur_tvm' = cp_res.tvm
                   params += cp_res.ut
          vinfos @ pi =>
-            p_res = instantiate_ti_step(ctx, cur_tvm', pi)
+            p_res = instantiate_ti_step(ctx, env, fn_mod, cur_tvm', pi)
             cur_tvm' = p_res.tvm
             params += p_res.ut
-         ret_res = instantiate_ti_step(ctx, cur_tvm', f.3)
+         ret_res = instantiate_ti_step(ctx, env, fn_mod, cur_tvm', f.3)
          cur_tvm' = ret_res.tvm
          TiInstRes(cur_tvm', unify::UType(Fn,
             unify::UFn(params, ret_res.ut)))
@@ -340,14 +357,14 @@ instantiate_ti_step = ctx, tvm, ti =>
                p_ut' = unify::UType(None)
                s0.has_payload
                   |
-                     res0 = instantiate_ti_step(ctx, cur_tvm2',
+                     res0 = instantiate_ti_step(ctx, env, fn_mod, cur_tvm2',
                         s0.payload_record)
                      cur_tvm2' = res0.tvm
                      p_ut' = res0.ut
                n_ut' = unify::UType(None)
                s1.has_payload
                   |
-                     res1 = instantiate_ti_step(ctx, cur_tvm2',
+                     res1 = instantiate_ti_step(ctx, env, fn_mod, cur_tvm2',
                         s1.payload_record)
                      cur_tvm2' = res1.tvm
                      n_ut' = res1.ut
@@ -368,7 +385,7 @@ instantiate_ti_step = ctx, tvm, ti =>
                         ast::ValueType(Unknown),
                         ast::TypeInfo(Prim, ast::ValueType(Unknown)),
                         <->, ast::Expr(Int, 0))
-                     res0 = instantiate_ti_step(ctx, cur_tvm3', f0.rec_type)
+                     res0 = instantiate_ti_step(ctx, env, fn_mod, cur_tvm3', f0.rec_type)
                      cur_tvm3' = res0.tvm
                      elem_ut' = res0.ut
                   | elem_ut' = unify::UType(Prim, unify::vt_to_uprim(r.3))
@@ -382,12 +399,12 @@ instantiate_ti_step = ctx, tvm, ti =>
                      ast::ValueType(Unknown),
                      ast::TypeInfo(Prim, ast::ValueType(Unknown)),
                      <->, ast::Expr(Int, 0))
-                  res_i = instantiate_ti_step(ctx, cur_tvm4', ft.rec_type)
+                  res_i = instantiate_ti_step(ctx, env, fn_mod, cur_tvm4', ft.rec_type)
                   cur_tvm4' = res_i.tvm
                   flds += unify::UField(ft.name, res_i.ut)
                TiInstRes(cur_tvm4', unify::UType(Rec, flds))
       [Align a]
-         instantiate_ti_step(ctx, tvm, a.1)
+         instantiate_ti_step(ctx, env, fn_mod, tvm, a.1)
       [Bitfield b]
          flds = unify::UFields()
          ?b.fields @ i =>
@@ -396,12 +413,12 @@ instantiate_ti_step = ctx, tvm, ti =>
                unify::vt_to_uprim(b.backing_type)))
          TiInstRes(tvm, unify::UType(Rec, flds))
       [Array a]
-         res_a = instantiate_ti_step(ctx, tvm, a.1)
+         res_a = instantiate_ti_step(ctx, env, fn_mod, tvm, a.1)
          TiInstRes(res_a.tvm, unify::UType(Array,
             unify::UArray(res_a.ut, a.2)))
       [Map m]
          k_ut = unify::UType(Prim, unify::vt_to_uprim(m.0))
-         res_v = instantiate_ti_step(ctx, tvm, m.2)
+         res_v = instantiate_ti_step(ctx, env, fn_mod, tvm, m.2)
          v_val = res_v.ut
          v_ut = v_val [None] unify::UType(Prim, unify::vt_to_uprim(m.1)) | v_val
          TiInstRes(res_v.tvm, unify::UType(Map, unify::UMap(k_ut, v_ut)))
@@ -456,9 +473,9 @@ instantiate_unbound_fn = ctx, ut =>
          res.ut
       | ut
 
-instantiate_generic_ti: unify::Ctx, ast::TypeInfo => unify::UType
-instantiate_generic_ti = ctx, ti =>
-   res = instantiate_ti_step(ctx, TypeVarMap(), ti)
+instantiate_generic_ti: unify::Ctx, type_env::TypeEnv, String, ast::TypeInfo => unify::UType
+instantiate_generic_ti = ctx, env, fn_mod, ti =>
+   res = instantiate_ti_step(ctx, env, fn_mod, TypeVarMap(), ti)
    res.ut
 
 utype_from_ti_env: type_env::TypeEnv, ast::TypeInfo => unify::UType
@@ -1322,7 +1339,7 @@ annotate_expr = ctx, env, expr =>
                   | gen_ti =>
                      gen_ut =
                         instantiate_generic_ti(
-                           ctx, gen_ti)
+                           ctx, env, type_env::decl_module(name, 0), gen_ti)
                      ti =
                         unify::type_info_from_utype(
                            ctx, gen_ut)
@@ -4096,7 +4113,7 @@ annotate_call_normal = ctx, env, ce =>
                      gen_opt = type_env::lookup_generic(env, ce.fn_name)
                      gen_opt
                         | gen_ti =>
-                           fn_ut' = instantiate_generic_ti(ctx, gen_ti)
+                           fn_ut' = instantiate_generic_ti(ctx, env, type_env::decl_module(ce.fn_name, 0), gen_ti)
                         |
                            unify::add_error(ctx, 3004,
                               "Undefined function: " + ce.fn_name)
@@ -4197,6 +4214,14 @@ annotate_call_normal = ctx, env, ce =>
                   |
                      c_fn
                         [Fn f_sig]
+                           ?arg_uts + 1 == ?f_sig.params
+                              |
+                                 p_last = unify::canon(ctx, f_sig.params(?arg_uts)!!)
+                                 is_gen_fn = ce.fn_name != "" && <>(type_env::lookup_generic(env, ce.fn_name))
+                                 (p_last [Var]) && is_gen_fn
+                                    |
+                                       typed_args += tast::mk_lit_unit(ce.line, ce.col)
+                                       arg_uts += unify::prim_unit()
                            ?arg_uts @ ai =>
                               ai < ?f_sig.params
                                  |

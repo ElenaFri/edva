@@ -1,0 +1,251 @@
+// Standard CLI Argument Parsing Module (std/cli.dva)
+// Ergonomic command-line argument, flag, and option helpers over sys::argc / sys::argv.
+
+#use sys
+#use str
+
+#private
+
+// Internal helper: checks if `arg` equals `flag` (when `flag` is non-empty).
+matches_flag: String, String => <>
+matches_flag = arg, flag =>
+   ?flag > 0 && arg == flag
+
+// Internal helper: checks if `arg` starts with `flag + "="` and returns the value after `=`.
+extract_eq_val: String, String => < String | >
+extract_eq_val = arg, flag =>
+   ?flag == 0
+      | <-->
+      |
+         prefix = flag + "="
+         str::starts_with(arg, prefix)
+            | <+ arg(?prefix..?arg) +>
+            | <-->
+
+// Internal helper: looks up option `name` / `short` across argv.
+// Supports both `--opt val` and `--opt=val` (as well as `-o val` and `-o=val`),
+// stopping option scanning at `--`.
+find_opt: String, String => < String | >
+find_opt = name, short =>
+   n = sys::argc
+   i' = 1
+   res' = <-->
+   i' < n @
+      arg = sys::argv_string(i')
+      arg == "--"
+         | -->
+         |
+            matches_flag(arg, name) || matches_flag(arg, short)
+               |
+                  i' + 1 < n
+                     |
+                        res' = <+ sys::argv_string(i' + 1) +>
+                        -->
+                     | -->
+               |
+                  extract_eq_val(arg, name)
+                     | v =>
+                        res' = <+ v +>
+                        -->
+                     |
+                        extract_eq_val(arg, short)
+                           | v2 =>
+                              res' = <+ v2 +>
+                              -->
+      i' = i' + 1
+   res'
+
+find_opt_or: String, String, String => String
+find_opt_or = name, short, fallback =>
+   find_opt(name, short)
+      | v => v
+      | fallback
+
+has_opt: String, String => <>
+has_opt = name, short => <>(find_opt(name, short))
+
+find_opt_int: String, String, Int => Int
+find_opt_int = name, short, fallback =>
+   find_opt(name, short)
+      | s =>
+         str::parse_int(s)
+            | v => v
+            | fallback
+      | fallback
+
+find_opt_float: String, String, Float => Float
+find_opt_float = name, short, fallback =>
+   find_opt(name, short)
+      | s =>
+         str::parse_float(s)
+            | v => v
+            | fallback
+      | fallback
+
+find_opt_int_str: #! B: Type, String, String, B => Int
+find_opt_int_str = #! B, name, short, b =>
+   B
+      [Int] find_opt_int(name, short, b)
+      | 0
+
+find_opt_float_str: #! B: Type, String, String, B => Float
+find_opt_float_str = #! B, name, short, b =>
+   B
+      [Float] find_opt_float(name, short, b)
+      | 0.0
+
+// Internal helper: checks if boolean flag `name` or `short` is present before `--`.
+find_flag: String, String => <>
+find_flag = name, short =>
+   n = sys::argc
+   i' = 1
+   found' = <->
+   i' < n @
+      arg = sys::argv_string(i')
+      arg == "--"
+         | -->
+         |
+            matches_flag(arg, name) || matches_flag(arg, short)
+               |
+                  found' = <+>
+                  -->
+      i' = i' + 1
+   found'
+
+// Internal helper: checks if `s` is contained in `list`.
+in_list: String, str::Strings => <>
+in_list = s, list =>
+   found' = <->
+   ?list @ i =>
+      list(i)!! == s
+         |
+            found' = <+>
+            -->
+   found'
+
+// Internal helper: collects positional arguments, skipping the value after any flag in `skip_opts`.
+collect_positionals: str::Strings => str::Strings
+collect_positionals = skip_opts =>
+   out = String{}
+   n = sys::argc
+   i' = 1
+   after_sep' = <->
+   i' < n @
+      arg = sys::argv_string(i')
+      after_sep'
+         |
+            out += arg
+            i' = i' + 1
+         |
+            arg == "--"
+               |
+                  after_sep' = <+>
+                  i' = i' + 1
+               |
+                  is_flag = ?arg > 1 && arg(0) == '-'
+                  is_flag
+                     |
+                        step = in_list(arg, skip_opts) | 2 | 1
+                        i' = i' + step
+                     |
+                        out += arg
+                        i' = i' + 1
+   out
+
+#public
+
+#type Args String{}
+
+// Returns total argument count (including program name at index 0).
+count: () => Int
+count = !=> sys::argc
+
+// Returns the program name (`argv[0]`), or `""` if unavailable.
+program: () => String
+program = !=>
+   sys::argc > 0
+      | sys::argv_string(0)
+      | ""
+
+// Returns argument at index `idx` (0-based) as `<+ str +>`, or `<-->` if out of bounds.
+arg: Int => < String | >
+arg = idx => sys::argv(idx)
+
+// Returns argument at index `idx` (0-based), or `fallback` if out of bounds.
+arg_or: Int, String => String
+arg_or = idx, fallback =>
+   idx !< 0 && idx < sys::argc
+      | sys::argv_string(idx)
+      | fallback
+
+// Returns all command-line arguments after the program name (`argv[1..argc]`).
+args: () => Args
+args = !=>
+   out = String{}
+   n = sys::argc
+   1..n @ i =>
+      out += sys::argv_string(i)
+   out
+
+// Returns all command-line arguments including the program name (`argv[0..argc]`).
+all_args: () => Args
+all_args = !=>
+   out = String{}
+   n = sys::argc
+   0..n @ i =>
+      out += sys::argv_string(i)
+   out
+
+// Checks if a flag is present on the command line (before `--`).
+// Accepts `cli::has_flag("--verbose")` or `cli::has_flag("--verbose", "-v")`.
+has_flag: #! T: Type, String, T => <>
+has_flag = #! T, name, short =>
+   T
+      [String] find_flag(name, short)
+      | find_flag(name, "")
+
+// Looks up a named option value (`--key val` or `--key=val`).
+// Accepts `cli::opt("--output")` or `cli::opt("--output", "-o")`.
+opt: #! T: Type, String, T => < String | >
+opt = #! T, name, short =>
+   s = T
+      [String] short
+      | ""
+   has_opt(name, s)
+      | <+ find_opt_or(name, s, "") +>
+      | <-->
+
+// Looks up a named option value with a default fallback string.
+// Accepts `cli::opt_or("--port", "8080")` or `cli::opt_or("--port", "-p", "8080")`.
+opt_or: #! T: Type, String, String, T => String
+opt_or = #! T, name, a, b =>
+   T
+      [String] find_opt_or(name, a, b)
+      | find_opt_or(name, "", a)
+
+// Looks up an integer option with a default fallback Int.
+// Accepts `cli::opt_int("--count", 10)` or `cli::opt_int("--count", "-n", 10)`.
+opt_int: #! A: Type, #! B: Type, String, A, B => Int
+opt_int = #! A, #! B, name, a, b =>
+   A
+      [Int] find_opt_int(name, "", a)
+      [String] find_opt_int_str(name, a, b)
+      | 0
+
+// Looks up a floating-point option with a default fallback Float.
+// Accepts `cli::opt_float("--scale", 1.0)` or `cli::opt_float("--scale", "-s", 1.0)`.
+opt_float: #! A: Type, #! B: Type, String, A, B => Float
+opt_float = #! A, #! B, name, a, b =>
+   A
+      [Float] find_opt_float(name, "", a)
+      [String] find_opt_float_str(name, a, b)
+      | 0.0
+
+// Collects positional arguments (non-flag arguments before `--`, plus all arguments after `--`).
+// Accepts `cli::positionals!` or `cli::positionals(value_taking_flags)` where `value_taking_flags`
+// is a `String{}` of flags (e.g. `{"--output", "-o"}`) whose following argument should be skipped.
+positionals: #! T: Type, T => Args
+positionals = #! T, skip_opts =>
+   T
+      [Args] collect_positionals(skip_opts)
+      | collect_positionals(String{})

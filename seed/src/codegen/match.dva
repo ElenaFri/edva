@@ -2364,7 +2364,8 @@ codegen_payload_extractor_error = cg =>
 codegen_eval_choice_bare_valid: types::Cg, ast::ChoiceExpr, Addr, ast::ValueType, String => (Addr, ast::ValueType)
 codegen_eval_choice_bare_valid = cg, c, cond_val, cond_type, dtype =>
    is_typed_mode = types::g.is_typed_pipeline
-   ti = types::typedef_ti(cg, dtype)
+   ti0 = types::typedef_ti(cg, dtype)
+   ti = ti0 [Prim p] (p [Unknown] types::member_target_ti(cg, c.cond) | ti0) | ti0
    niche = is_typed_mode | types::is_niche_ram_ti(cg, ti) |
       (<->, <->, ast::ValueType(Unknown))
    i1t = LLVMInt1Type!

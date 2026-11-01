@@ -1,0 +1,247 @@
+// Standard Random & Procedural Noise Module (std/rand.dva)
+// Provides:
+//   1. Zero-setup global one-call random generation (`rand::float!`, `rand::int!`,
+//      `rand::int(100)`, `rand::between(1, 10)`, `rand::coin!`, `rand::srand(s)`)
+//   2. Explicit `Rng` PRNG instances (`rng = rand::new!` or `rand::seed(42)`)
+//   3. Stateless SplitMix64 hashing and smooth 1D/2D procedural noise
+//      (`rand::hash`, `rand::noise1d`, `rand::fbm1d`, `rand::noise2d`) — pure
+//      Edva, works on both native targets and `wasm32`.
+
+#use time
+#use type
+
+#public
+
+#type Rng (
+   state: u64
+   inc:   u64
+)
+
+#private
+
+DEFAULT_INC = 0x9E3779B97F4A7C15u64
+
+global_state: u64
+global_state = 0u64
+
+// SplitMix64 finalizer (stateless 64-bit bijective mixer)
+mix64: u64 => u64
+mix64 = z0 =>
+   z1 = (z0 .^. (z0 .>. 30)) * 0xBF58476D1CE4E5B9u64
+   z2 = (z1 .^. (z1 .>. 27)) * 0x94D049BB133111EBu64
+   z2 .^. (z2 .>. 31)
+
+// Advance a SplitMix64 state and return the mixed output
+step_state: u64, u64 => (u64, u64)
+step_state = s, inc =>
+   next_s = s + inc
+   (next_s, mix64(next_s))
+
+u64_to_unit_f64: u64 => Float
+u64_to_unit_f64 = v =>
+   Float(v .>. 11) * (1.0 / 9007199254740992.0)
+
+entropy_seed_u64: () => u64
+entropy_seed_u64 = !=>
+   t_mono = u64(time::mono_ns!)
+   t_wall = u64(time::now_ns!)
+   s = mix64(t_mono .^. (t_wall * DEFAULT_INC))
+   s == 0u64 | 0xCAFEBABE12345678u64 | s
+
+global_next_u64: () => u64
+global_next_u64 = !=>
+   s0 = global_state == 0u64 | entropy_seed_u64! | global_state
+   step = step_state(s0, DEFAULT_INC)
+   global_state ::= step.0
+   step.1
+
+#public
+
+// --- Stateless Hashing & Procedural Noise (Pure Edva, Wasm-safe) ------------
+
+// Bijective 64-bit SplitMix64 hash of an unsigned 64-bit integer
+hash_u64: u64 => u64
+hash_u64 = x => mix64(x + 0x9E3779B97F4A7C15u64)
+
+// Bijective 64-bit hash of an `Int`
+hash: Int => Int
+hash = x => Int(hash_u64(u64(x)))
+
+// Deterministic float in [0.0, 1.0) from a 1D integer coordinate + seed
+hash1d: Int, Int => Float
+hash1d = x, s =>
+   h = mix64(u64(x) * 0x9E3779B97F4A7C15u64 + u64(s) * 0xBF58476D1CE4E5B9u64)
+   u64_to_unit_f64(h)
+
+// Deterministic float in [0.0, 1.0) from 2D integer coordinates + seed
+hash2d: Int, Int, Int => Float
+hash2d = x, y, s =>
+   hx = u64(x) * 0x9E3779B97F4A7C15u64
+   hy = u64(y) * 0xBF58476D1CE4E5B9u64
+   hs = u64(s) * 0x94D049BB133111EBu64
+   u64_to_unit_f64(mix64(hx .^. hy .^. hs))
+
+// Smooth 1D value noise in [-1.0, 1.0] (cubic Hermite smoothstep)
+noise1d: Float, Int => Float
+noise1d = x, s =>
+   xf = %floor(x)
+   xi = Int(xf)
+   f = x - xf
+   u = f * f * (3.0 - 2.0 * f)
+   v0 = hash1d(xi, s) * 2.0 - 1.0
+   v1 = hash1d(xi + 1, s) * 2.0 - 1.0
+   v0 + (v1 - v0) * u
+
+// 3-octave 1D Fractal Brownian Motion (fBm) in [-1.0, 1.0]
+// Ideal for organic, chaotic non-repeating motion and oscillations.
+fbm1d: Float, Int => Float
+fbm1d = x, s =>
+   n0 = noise1d(x, s) * 0.57142857
+   n1 = noise1d(x * 2.03 + 17.3, s + 101) * 0.28571429
+   n2 = noise1d(x * 4.11 + 31.7, s + 211) * 0.14285714
+   n0 + n1 + n2
+
+// Smooth 2D value noise in [-1.0, 1.0]
+noise2d: Float, Float, Int => Float
+noise2d = x, y, s =>
+   xf = %floor(x)
+   yf = %floor(y)
+   xi = Int(xf)
+   yi = Int(yf)
+   fx = x - xf
+   fy = y - yf
+   ux = fx * fx * (3.0 - 2.0 * fx)
+   uy = fy * fy * (3.0 - 2.0 * fy)
+   v00 = hash2d(xi, yi, s) * 2.0 - 1.0
+   v10 = hash2d(xi + 1, yi, s) * 2.0 - 1.0
+   v01 = hash2d(xi, yi + 1, s) * 2.0 - 1.0
+   v11 = hash2d(xi + 1, yi + 1, s) * 2.0 - 1.0
+   nx0 = v00 + (v10 - v00) * ux
+   nx1 = v01 + (v11 - v01) * ux
+   nx0 + (nx1 - nx0) * uy
+
+// --- Explicit Stateful PRNG (`Rng`) -----------------------------------------
+
+// Create a deterministic `Rng` from an integer seed
+seed: Int => Rng
+seed = s =>
+   m = mix64(u64(s) + DEFAULT_INC)
+   Rng(m == 0u64 | DEFAULT_INC | m, DEFAULT_INC)
+
+// Create an `Rng`:
+//   `rand::new!`    -> auto-seeded from monotonic & wall-clock nanoseconds
+//   `rand::new(42)` -> deterministically seeded with `42`
+new: #! T: Type, T => Rng
+new = #! T, x =>
+   T
+      [type::is_int] seed(Int(x))
+      | Rng(entropy_seed_u64!, DEFAULT_INC)
+
+// Next 64-bit unsigned integer from `rng`
+next_u64: Rng => u64
+next_u64 = rng =>
+   step = step_state(rng.state, rng.inc)
+   rng.state = step.0
+   step.1
+
+// Next 32-bit unsigned integer from `rng`
+next_u32: Rng => u32
+next_u32 = rng => u32(next_u64(rng) .>. 32)
+
+// Next non-negative 63-bit `Int` from `rng`
+next_int: Rng => Int
+next_int = rng => Int(next_u64(rng) .>. 1)
+
+// Uniform `Float` in [0.0, 1.0) from `rng`
+next_f64: Rng => Float
+next_f64 = rng => u64_to_unit_f64(next_u64(rng))
+
+// Uniform `f32` in [0.0, 1.0) from `rng`
+next_f32: Rng => f32
+next_f32 = rng => f32(next_f64(rng))
+
+// Uniform signed `Float` in [-1.0, 1.0) from `rng`
+next_signed: Rng => Float
+next_signed = rng => next_f64(rng) * 2.0 - 1.0
+
+// Uniform random boolean Flag (`<+>` or `<->`) from `rng`
+next_bool: Rng => <>
+next_bool = rng => (next_u64(rng) .&. 1u64) != 0u64
+
+// True (`<+>`) with probability `prob` in [0.0, 1.0]
+chance: Rng, Float => <>
+chance = rng, prob => next_f64(rng) < prob
+
+// Uniform `Int` in half-open interval `[lo, hi)`
+range: Rng, Int, Int => Int
+range = rng, lo, hi =>
+   span = hi - lo
+   span !> 0
+      | lo
+      | lo + Int(next_u64(rng) % u64(span))
+
+// Uniform `Int` in closed interval `[lo, hi]`
+inclusive: Rng, Int, Int => Int
+inclusive = rng, lo, hi =>
+   hi < lo
+      | lo
+      | lo + Int(next_u64(rng) % u64(hi - lo + 1))
+
+// Uniform `Float` in `[lo, hi)`
+range_f64: Rng, Float, Float => Float
+range_f64 = rng, lo, hi => lo + next_f64(rng) * (hi - lo)
+
+// --- Zero-Setup Global PRNG One-Liners --------------------------------------
+
+// Seed the global PRNG deterministically
+srand: Int => ()
+srand = s =>
+   r = seed(s)
+   global_state ::= r.state
+
+// Random 64-bit unsigned integer from the global PRNG (`rand::bits!`)
+bits: () => u64
+bits = !=> global_next_u64!
+
+// Random `Int` from the global PRNG:
+//   `rand::int!`    -> non-negative 63-bit `Int`
+//   `rand::int(max)` -> uniform `Int` in `0 .. max-1`
+int: #! T: Type, T => Int
+int = #! T, x =>
+   v = global_next_u64!
+   T
+      [type::is_int]
+         bound = Int(x)
+         bound !> 0 | 0 | Int(v % u64(bound))
+      | Int(v .>. 1)
+
+// Random `Float` from the global PRNG:
+//   `rand::float!`     -> uniform `Float` in `[0.0, 1.0)`
+//   `rand::float(max)` -> uniform `Float` in `[0.0, max)`
+float: #! T: Type, T => Float
+float = #! T, x =>
+   u = u64_to_unit_f64(global_next_u64!)
+   T
+      [type::is_numeric] u * Float(x)
+      | u
+
+// Random value in `[lo, hi]` (for `Int`) or `[lo, hi)` (for `Float`):
+//   `rand::between(1, 6)`      -> dice roll 1..6 (`Int`)
+//   `rand::between(-1.0, 1.0)` -> uniform `Float` in `[-1.0, 1.0)`
+between: #! T: Type, T, T => T
+between = #! T, lo, hi =>
+   T
+      [Float]
+         u = u64_to_unit_f64(global_next_u64!)
+         lo + u * (hi - lo)
+      [f32]
+         u = f32(u64_to_unit_f64(global_next_u64!))
+         lo + u * (hi - lo)
+      |
+         hi < lo
+            | lo
+            | lo + Int(global_next_u64! % u64(hi - lo + 1))
+
+// Random coin flip (`<+>` or `<->`) from the global PRNG (`rand::coin!`)
+coin: () => <>
+coin = !=> (global_next_u64! .&. 1u64) != 0u64
