@@ -1,0 +1,386 @@
+// Standard Path Module (std/path.dva)
+// Pure lexical path manipulation with zero filesystem or libc dependencies.
+// Uses compile-time target inspection (#! os) to select Windows vs. POSIX
+// separator and drive-prefix semantics, and also exposes explicit posix_*
+// and win_* variants for cross-platform path handling.
+
+#use ascii
+#use str
+
+#public
+
+// --- Target-Specific Separators ---
+
+SEP = #! (os ["windows"] '\\' | '/')
+SEP_STR = #! (os ["windows"] "\\" | "/")
+LIST_SEP = #! (os ["windows"] ';' | ':')
+LIST_SEP_STR = #! (os ["windows"] ";" | ":")
+IS_WIN = #! (os == "windows")
+
+is_posix_sep: Int => <>
+is_posix_sep = ['/']
+
+is_win_sep: Int => <>
+is_win_sep = ['/', '\\']
+
+is_sep: Int => <>
+is_sep = c => #! (os == "windows") | is_win_sep(c) | is_posix_sep(c)
+
+// --- Root & Prefix Inspection ---
+
+// Returns the byte length of the root/drive prefix in a Windows path:
+//   "C:\" or "C:/" -> 3
+//   "C:"           -> 2
+//   "\\" (UNC)     -> 2
+//   "\" or "/"     -> 1
+//   relative       -> 0
+win_root_len: String => Int
+win_root_len = p =>
+   len = ?p
+   len == 0 | --| 0
+   len !< 2 && ascii::is_alpha(p(0)) && p(1) == ':'
+      | (len !< 3 && is_win_sep(p(2)) | 3 | 2)
+      | is_win_sep(p(0))
+         | (len !< 2 && is_win_sep(p(1)) | 2 | 1)
+         | 0
+
+posix_root_len: String => Int
+posix_root_len = p =>
+   ?p > 0 && p(0) == '/' | 1 | 0
+
+root_len: String => Int
+root_len = p => #! (os == "windows") | win_root_len(p) | posix_root_len(p)
+
+posix_is_abs: String => <>
+posix_is_abs = p => ?p > 0 && p(0) == '/'
+
+win_is_abs: String => <>
+win_is_abs = p =>
+   len = ?p
+   (len > 0 && is_win_sep(p(0))) ||
+      (len !< 3 && ascii::is_alpha(p(0)) && p(1) == ':' && is_win_sep(p(2)))
+
+is_abs: String => <>
+is_abs = p => #! (os == "windows") | win_is_abs(p) | posix_is_abs(p)
+
+is_rel: String => <>
+is_rel = p => !is_abs(p)
+
+// Strips trailing separators while preserving root prefixes ("/", "C:\").
+posix_strip_trailing_sep: String => String
+posix_strip_trailing_sep = p =>
+   end' = ?p
+   0.. @
+      end' > 1 && p(end' - 1) == '/'
+         | end' = end' - 1
+         | -->
+   end' == ?p | p | p(..end')
+
+win_strip_trailing_sep: String => String
+win_strip_trailing_sep = p =>
+   rlen = win_root_len(p)
+   min_len = rlen > 0 | rlen | 1
+   end' = ?p
+   0.. @
+      end' > min_len && is_win_sep(p(end' - 1))
+         | end' = end' - 1
+         | -->
+   end' == ?p | p | p(..end')
+
+strip_trailing_sep: String => String
+strip_trailing_sep = p =>
+   #! (os == "windows") | win_strip_trailing_sep(p) | posix_strip_trailing_sep(p)
+
+// --- Joining ---
+
+posix_join: String, String => String
+posix_join = a, b =>
+   ?b == 0 | --| a
+   ?a == 0 || posix_is_abs(b) | --| b
+   a(?a - 1) == '/' | a + b | a + "/" + b
+
+win_join: String, String => String
+win_join = a, b =>
+   ?b == 0 | --| a
+   ?a == 0 || win_is_abs(b) | --| b
+   is_win_sep(a(?a - 1)) | a + b | a + "\\" + b
+
+join: String, String => String
+join = a, b => #! (os == "windows") | win_join(a, b) | posix_join(a, b)
+
+// --- Parent / Dirname / Basename ---
+
+posix_parent: String => String
+posix_parent = p =>
+   len = ?p
+   len == 0 | --| "."
+   clean = posix_strip_trailing_sep(p)
+   clean == "/" | --| "/"
+   clen = ?clean
+   last_sep' = -1
+   clen @ i =>
+      idx = clen - 1 - i
+      clean(idx) == '/' && last_sep' < 0 | last_sep' = idx
+   last_sep' < 0
+      | "."
+      | last_sep' == 0
+         | "/"
+         | clean(..last_sep')
+
+win_parent: String => String
+win_parent = p =>
+   len = ?p
+   len == 0 | --| "."
+   clean = win_strip_trailing_sep(p)
+   rlen = win_root_len(clean)
+   clen = ?clean
+   rlen > 0 && clen == rlen | --| clean
+   last_sep' = -1
+   clen @ i =>
+      idx = clen - 1 - i
+      is_win_sep(clean(idx)) && last_sep' < 0 | last_sep' = idx
+   last_sep' < 0
+      | (rlen == 2 | clean(..2) | ".")
+      | last_sep' < rlen
+         | clean(..rlen)
+         | clean(..last_sep')
+
+parent: String => String
+parent = p => #! (os == "windows") | win_parent(p) | posix_parent(p)
+
+// Like `parent`, but returns "" instead of "." when `p` has no directory part.
+dirname: String => String
+dirname = p =>
+   par = parent(p)
+   par == "." | "" | par
+
+posix_basename: String => String
+posix_basename = p =>
+   len = ?p
+   len == 0 | --| ""
+   clean = posix_strip_trailing_sep(p)
+   clean == "/" | --| "/"
+   clen = ?clean
+   last_sep' = -1
+   clen @ i =>
+      idx = clen - 1 - i
+      clean(idx) == '/' && last_sep' < 0 | last_sep' = idx
+   last_sep' < 0 | clean | clean((last_sep' + 1)..)
+
+win_basename: String => String
+win_basename = p =>
+   len = ?p
+   len == 0 | --| ""
+   clean = win_strip_trailing_sep(p)
+   rlen = win_root_len(clean)
+   clen = ?clean
+   rlen > 0 && clen == rlen | --| clean
+   last_sep' = -1
+   clen @ i =>
+      idx = clen - 1 - i
+      is_win_sep(clean(idx)) && last_sep' < 0 | last_sep' = idx
+   start = last_sep' < 0
+      | (rlen == 2 | 2 | 0)
+      | last_sep' + 1
+   start !< clen | "" | clean(start..)
+
+basename: String => String
+basename = p => #! (os == "windows") | win_basename(p) | posix_basename(p)
+
+base: String => String
+base = p => basename(p)
+
+// --- Extensions & Stems ---
+
+// Finds the index of the extension dot within a basename `b` (-1 if none).
+// Leading dots on dotfiles (".bashrc") are part of the stem, not an extension.
+ext_dot_index: String => Int
+ext_dot_index = b =>
+   len = ?b
+   dot' = -1
+   len @ i =>
+      idx = len - 1 - i
+      b(idx) == '.' && dot' < 0 && idx > 0 | dot' = idx
+   dot'
+
+// Returns the file extension including the leading dot (e.g. ".dva", ".gz", "").
+ext: String => String
+ext = p =>
+   b = basename(p)
+   dot = ext_dot_index(b)
+   dot < 0 || dot == ?b - 1 | "" | b(dot..)
+
+// Returns the file extension without the leading dot (e.g. "dva", "gz", "").
+get_ext: String => String
+get_ext = p =>
+   b = basename(p)
+   dot = ext_dot_index(b)
+   dot < 0 || dot !< ?b - 1 | "" | b((dot + 1)..)
+
+// Returns the lowercase file extension without the leading dot.
+ext_lower: String => String
+ext_lower = p => str::lower(get_ext(p))
+
+// Returns the filename without its final extension (e.g. "/a/b/foo.dva" -> "foo").
+stem: String => String
+stem = p =>
+   b = basename(p)
+   dot = ext_dot_index(b)
+   dot < 0 || dot == ?b - 1 | b | b(..dot)
+
+// Replaces (or appends) the extension on `p`. `new_ext` may be "o", ".o", or "".
+with_ext: String, String => String
+with_ext = p, new_ext =>
+   par = dirname(p)
+   st = stem(p)
+   suf = ?new_ext == 0
+      | ""
+      | (new_ext(0) == '.' | new_ext | "." + new_ext)
+   par == "" | st + suf | join(par, st + suf)
+
+// --- Splitting, Normalization, Relative Paths & Prefix Queries ---
+
+// Splits a path into non-empty segment strings by separator.
+split: String => str::Strings
+split = p =>
+   out = str::Strings()
+   cur = {32}
+   ?p @ i =>
+      c = p(i)
+      is_sep(c)
+         |
+            ?cur > 0 | out += +cur
+         | cur += c
+   ?cur > 0 | out += +cur
+   out
+
+// Pure lexical normalization: collapses duplicate separators, resolves "." and ".."
+// segments without touching the filesystem.
+posix_normalize: String => String
+posix_normalize = p =>
+   ?p == 0 | --| "."
+   abs = posix_is_abs(p)
+   segs = str::Strings()
+   cur = {32}
+   len = ?p
+   (len + 1) @ i =>
+      is_end = i == len
+      c = is_end | '/' | p(i)
+      c == '/'
+         |
+            seg = +cur
+            seg != "" && seg != "."
+               |
+                  seg == ".."
+                     |
+                        n_segs = ?segs
+                        n_segs > 0 && (segs(n_segs - 1) | _ | "") != ".."
+                           |
+                              kept = str::Strings()
+                              (n_segs - 1) @ k => kept += (segs(k) | _ | "")
+                              segs = kept
+                           | !abs
+                              | segs += ".."
+                     | segs += seg
+         | cur += c
+   out = {?p + 2}
+   abs | out += '/'
+   ?segs @ idx =>
+      idx > 0 | out += '/'
+      out += (segs(idx) | _ | "")
+   ?out == 0 | "." | +out
+
+win_normalize: String => String
+win_normalize = p =>
+   ?p == 0 | --| "."
+   rlen = win_root_len(p)
+   abs = win_is_abs(p)
+   prefix = rlen == 3
+      | p(..2) + "\\"
+      | rlen == 2
+         | (is_win_sep(p(0)) | "\\\\" | p(..2))
+         | rlen == 1
+            | "\\"
+            | ""
+   segs = str::Strings()
+   cur = {32}
+   len = ?p
+   (len - rlen + 1) @ k =>
+      i = rlen + k
+      is_end = i == len
+      c = is_end | '\\' | p(i)
+      is_win_sep(c)
+         |
+            seg = +cur
+            seg != "" && seg != "."
+               |
+                  seg == ".."
+                     |
+                        n_segs = ?segs
+                        n_segs > 0 && (segs(n_segs - 1) | _ | "") != ".."
+                           |
+                              kept = str::Strings()
+                              (n_segs - 1) @ m => kept += (segs(m) | _ | "")
+                              segs = kept
+                           | !abs
+                              | segs += ".."
+                     | segs += seg
+         | cur += c
+   out = {?p + 2}
+   out += prefix
+   ?segs @ idx =>
+      idx > 0 | out += '\\'
+      out += (segs(idx) | _ | "")
+   ?out == 0 | "." | +out
+
+normalize: String => String
+normalize = p => #! (os == "windows") | win_normalize(p) | posix_normalize(p)
+
+// Relative path from directory `from_dir` to `to_path`.
+rel: String, String => String
+rel = from_dir, to_path =>
+   fa = split(from_dir)
+   ta = split(to_path)
+   common' = 0
+   0.. @
+      common' !< ?fa || common' !< ?ta | -->
+      (fa(common') | _ | "") != (ta(common') | _ | "") | -->
+      common' = common' + 1
+   b = {64}
+   common'..?fa @ i =>
+      (fa(i) | _ | "") != "" |
+         ?b > 0 | b += SEP_STR
+         b += ".."
+   common'..?ta @ i =>
+      seg = ta(i) | _ | ""
+      seg != "" |
+         ?b > 0 | b += SEP_STR
+         b += seg
+   ?b == 0 | "." | +b
+
+// Component-aware prefix check: true if `p == prefix` or `p` is inside `prefix`.
+has_prefix: String, String => <>
+has_prefix = p, prefix =>
+   clean_pre = strip_trailing_sep(prefix)
+   lp = ?clean_pre
+   lp == 0 | --| <->
+   p == clean_pre || (?p > lp && p(..lp) == clean_pre && is_sep(p(lp)))
+
+// Returns true if `p` contains any ".." traversal segment.
+has_traversal: String => <>
+has_traversal = p =>
+   len = ?p
+   found' = <->
+   start' = 0
+   (len + 1) @ i =>
+      is_end = i == len
+      c = is_end | '/' | p(i)
+      is_win_sep(c)
+         |
+            seg_len = i - start'
+            seg_len == 2 && p(start') == '.' && p(start' + 1) == '.'
+               |
+                  found' = <+>
+                  -->
+            start' = i + 1
+   found'

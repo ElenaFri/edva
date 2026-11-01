@@ -9,6 +9,7 @@
 #use "ast"
 #use "codegen"
 #use "fs"
+#use "path"
 #use "libc"
 #use "parser"
 #use "show"
@@ -105,24 +106,14 @@
    history: ast::Names
 )
 
-find_last_slash: String, Int, Int => Int
-find_last_slash = path, i, last =>
-   i < ?path
-      |
-         next_last = path(i) == '/' | i | last
-         find_last_slash(path, i + 1, next_last)
-      | last
-
 dirname: String => String
-dirname = path =>
-   p = fs::parent(path)
-   p == "." | "" | p
+dirname = p => path::dirname(p)
 
 path_join: String, String => String
-path_join = a, b => fs::join(a, b)
+path_join = a, b => path::join(a, b)
 
 canonical_path: String => String
-canonical_path = path => fs::resolve(path)
+canonical_path = p => fs::resolve(p)
 
 compiler_std_dir: String
 compiler_std_dir = "std"
@@ -169,7 +160,7 @@ init_compiler_paths = !=>
                         | compiler_std_dir ::= cand_share
 
 is_dva_file: String => <>
-is_dva_file = name => ?name > 4 && name(-4..) == ".dva"
+is_dva_file = name => path::ext(name) == ".dva"
 
 sort_names: ast::Names => ()
 sort_names = names =>
@@ -461,9 +452,7 @@ string_contains: String, String => <>
 string_contains = s, sub => has_substr(s, sub)
 
 starts_with_path: String, String => <>
-starts_with_path = path, prefix =>
-   lp = ?prefix
-   ?path > lp && path(0..lp) == prefix && path(lp) == '/'
+starts_with_path = p, prefix => path::has_prefix(p, prefix)
 
 get_dir_instance: ImportMapState, String => PkgInstance
 get_dir_instance = map, dir =>
@@ -474,12 +463,12 @@ get_dir_instance = map, dir =>
       !is_found' && inst.id != "root" && inst.src != ""
          |
             canon_src = canonical_path(inst.src)
-            match = canon_dir == canon_src || starts_with_path(canon_dir, canon_src)
+            match = path::has_prefix(canon_dir, canon_src)
             match | (found' = inst; is_found' = <+>)
    !is_found' && map.root_dir != ""
       |
          canon_root = canonical_path(map.root_dir)
-         match_root = canon_dir == canon_root || starts_with_path(canon_dir, canon_root)
+         match_root = path::has_prefix(canon_dir, canon_root)
          match_root
             |
                map.instances @ inst =>
@@ -490,10 +479,9 @@ compute_eff_root: String, String => String
 compute_eff_root = map_root, map_dir =>
    map_root == "" || map_root == "."
       | map_dir
-      |
-         map_root(0) == '/'
-            | map_root
-            | path_join(map_dir, map_root)
+      | path::is_abs(map_root)
+         | map_root
+         | path_join(map_dir, map_root)
 
 find_and_load_import_map: String, String => < ImportMapState | >
 find_and_load_import_map = target_path, explicit_map_path =>
@@ -561,7 +549,7 @@ find_and_load_import_map = target_path, explicit_map_path =>
                               entry.val
                                  [Block b]
                                     isrc_raw = ccl::get(b, "src") | _ | ""
-                                    is_rel = isrc_raw != "" && isrc_raw(0) != '/'
+                                    is_rel = isrc_raw != "" && path::is_rel(isrc_raw)
                                     isrc = is_rel | path_join(eff_root, isrc_raw) | isrc_raw
                                     iname_raw = ccl::get(b, "name") | _ | ""
                                     use_root_name = inst_id == "root" && iname_raw == ""
@@ -1393,20 +1381,15 @@ load_all = target, target_prefix, is_modular, import_map_arg =>
             ast::Names())
 
 strip_trailing_slash: String => String
-strip_trailing_slash = s =>
-   n = ?s
-   n > 0 && s(n - 1) == '/' | s(..-1) | s
+strip_trailing_slash = s => path::strip_trailing_sep(s)
 
 basename: String => String
-basename = path =>
-   s = strip_trailing_slash(path)
-   last = find_last_slash(s, 0, -1)
-   last < 0 | s | s(last + 1..)
+basename = p => path::basename(p)
 
 derive_base_name: String => String
 derive_base_name = target_path =>
-   b = basename(target_path)
-   b(-4..) == ".dva" | b(..-4) | b
+   b = path::basename(target_path)
+   path::ext(b) == ".dva" | path::stem(b) | b
 
 build_argv: mem::Arena, ast::Names, Int, Int, Addr => ()
 build_argv = a, args, i, n, buf =>
@@ -1572,9 +1555,8 @@ c_guard_char = ch =>
             | 95
 
 c_header_guard: String => String
-c_header_guard = path =>
-   slash = find_last_slash(path, 0, -1)
-   base = slash !< 0 | path(slash + 1..?path) | path
+c_header_guard = p =>
+   base = path::basename(p)
    b = {?base + 8}
    ?base @ i =>
       b += c_guard_char(base(i))
@@ -3081,7 +3063,7 @@ run_eval = opts =>
    eval_run_default || opts.run_exec
       |
          run_args = ast::Names()
-         is_abs_e = (?out_bin > 0 && out_bin(0) == '/') || out_bin(..2) == "./"
+         is_abs_e = path::is_abs(out_bin) || out_bin(..2) == "./"
          exec_e = is_abs_e | out_bin | "./" + out_bin
          run_args += exec_e
          rres = run_cmd(run_args)
@@ -3220,12 +3202,12 @@ run_driver = ignored =>
    opts.run_exec
       |
          print $ "--- Running Executable ---"
-         exec_bin = (?output_bin > 0 && output_bin(0) == '/') ||
+         exec_bin = path::is_abs(output_bin) ||
             output_bin(..2) == "./"
             | output_bin
             | "./" + output_bin
          is_wasm_exec = is_wasm_triple(target_triple) ||
-            (?output_bin !< 5 && output_bin(?output_bin - 5..) == ".wasm")
+            path::ext(output_bin) == ".wasm"
          run_args = ast::Names()
          is_wasm_exec
             |

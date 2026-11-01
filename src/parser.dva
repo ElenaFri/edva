@@ -8,6 +8,7 @@
 
 #use "lexer"
 #use "ast"
+#use "path"
 #use "str"
 #use "operators"
 #use "diag"
@@ -4436,19 +4437,8 @@ parse_import = p, is_dyn, is_imp =>
    <+ ast::Expr(Import, ast::ImportStmt(parsed.0, parsed.1,
       is_dyn, is_imp)) +>
 
-last_segment_find: String, Int, Int => Int
-last_segment_find = path, i, last =>
-   i < ?path
-      |
-         next_last = path(i) == '/' | i + 1 | last
-         last_segment_find(path, i + 1, next_last)
-      | last
-
 last_segment: String => String
-last_segment = path =>
-   n = ?path
-   last = last_segment_find(path, 0, 0)
-   path(last..n)
+last_segment = p => path::basename(p)
 
 // --- postfix (call / member / module / key) --------------------------------
 

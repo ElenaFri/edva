@@ -4,6 +4,7 @@
 #use "../ast"
 #use "../diag"
 #use "const"
+#use "path"
 #use "str"
 #use "../tast"
 #use "../unify"
@@ -1811,13 +1812,7 @@ codegen_eval_error_construct = cg, call =>
 // Builds a core Error record (the construction is inert — the panic happens
 // when it is unwrapped from a ram).
 source_basename: String => String
-source_basename = path =>
-   last' = -1
-   n = ?path
-   n @ i =>
-      path(i) == '/'
-         | last' = i
-   last' < 0 | path | path(last' + 1..n)
+source_basename = p => path::basename(p)
 
 codegen_build_error: types::Cg, Addr, String, Int, Int, Addr, Addr => Addr
 codegen_build_error = cg, code, msg, line, col, ctx0, ctx1 =>

@@ -11,6 +11,7 @@
 #use ccl
 #use fs
 #use libc
+#use path
 #use str
 #use sys
 #use unicode
@@ -138,15 +139,13 @@
    dir_exists = path => fs::is_dir(path)
 
    path_join: String, String => String
-   path_join = a, b => fs::join(a, b)
+   path_join = a, b => path::join(a, b)
 
    dirname: String => String
-   dirname = path =>
-      p = fs::parent(path)
-      p == "." | "" | p
+   dirname = p => path::dirname(p)
 
    canonical_path: String => String
-   canonical_path = path => fs::resolve(path)
+   canonical_path = p => fs::resolve(p)
 
    mkdir_p: String => <>
    mkdir_p = path => fs::create_dir_all(path)
@@ -185,7 +184,7 @@
    ends_with = s, suf => ?s !< ?suf && s(?s - ?suf..) == suf
 
    basename: String => String
-   basename = path => fs::basename(path)
+   basename = p => path::basename(p)
 
    clean_pkg_name: String => String
    clean_pkg_name = s =>
@@ -254,26 +253,7 @@
 
    // The path of `to` relative to directory `from` (both absolute).
    relpath: String, String => String
-   relpath = from, to =>
-      fa = split_char(from, '/')
-      ta = split_char(to, '/')
-      common' = 0
-      0.. @
-         common' !< ?fa || common' !< ?ta | -->
-         (fa(common') | _ | "") != (ta(common') | _ | "") | -->
-         common' = common' + 1
-      b = {64}
-      common'..?fa @ i =>
-         (fa(i) | _ | "") != "" |
-            ?b > 0 | b += "/"
-            b += ".."
-      common'..?ta @ i =>
-         seg = ta(i) | _ | ""
-         seg != "" |
-            ?b > 0 | b += "/"
-            b += seg
-      ?b == 0 | --| "."
-      +b
+   relpath = from, to => path::rel(from, to)
 
    // FNV-1a-style hash of the bytes as 16 hex digits: stable store names.
    fnv_hex: String => String

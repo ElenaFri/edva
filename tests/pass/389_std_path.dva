@@ -1,0 +1,68 @@
+// Test std/path (POSIX + Windows + #! os target dispatch)
+
+#use path
+#use test
+
+// 1. POSIX path operations
+test::eq(path::posix_join("/usr", "local/bin"), "/usr/local/bin", "posix_join")
+test::eq(path::posix_join("/usr/", "bin"), "/usr/bin", "posix_join trailing")
+test::eq(path::posix_join("/usr", "/etc"), "/etc", "posix_join abs")
+test::eq(path::posix_parent("/a/b/c"), "/a/b", "posix_parent")
+test::eq(path::posix_parent("/a/b/c/"), "/a/b", "posix_parent trailing")
+test::eq(path::posix_parent("/a"), "/", "posix_parent root child")
+test::eq(path::posix_parent("/"), "/", "posix_parent root")
+test::eq(path::posix_parent("foo.dva"), ".", "posix_parent relative")
+test::eq(path::posix_basename("/a/b/file.dva"), "file.dva", "posix_basename")
+test::eq(path::posix_basename("/a/b/dir/"), "dir", "posix_basename trailing")
+test::eq(path::posix_basename("/"), "/", "posix_basename root")
+test::eq(path::posix_normalize("/a/b/../c/./d//e"), "/a/c/d/e", "posix_normalize abs")
+test::eq(path::posix_normalize("/../../etc"), "/etc", "posix_normalize clamp root")
+test::eq(path::posix_normalize("a/b/../../c"), "c", "posix_normalize rel")
+test::eq(path::posix_normalize("../a/./b"), "../a/b", "posix_normalize leading ..")
+
+// 2. Windows path operations
+test::check(path::win_is_abs("C:\\Users\\ike"), "win_is_abs drive backslash")
+test::check(path::win_is_abs("d:/work/edva"), "win_is_abs drive slash")
+test::check(path::win_is_abs("\\\\server\\share"), "win_is_abs UNC")
+test::check(!path::win_is_abs("C:relative"), "win_is_abs drive relative false")
+test::check(!path::win_is_abs("src\\main.dva"), "win_is_abs rel false")
+test::eq(path::win_join("C:\\Users", "ike\\project"), "C:\\Users\\ike\\project", "win_join")
+test::eq(path::win_join("C:\\Users\\", "ike"), "C:\\Users\\ike", "win_join trailing")
+test::eq(path::win_join("C:\\Users", "D:\\Data"), "D:\\Data", "win_join abs override")
+test::eq(path::win_parent("C:\\Users\\ike\\file.dva"), "C:\\Users\\ike", "win_parent")
+test::eq(path::win_parent("C:\\Users"), "C:\\", "win_parent drive root child")
+test::eq(path::win_parent("C:\\"), "C:\\", "win_parent drive root")
+test::eq(path::win_basename("C:\\Users\\ike\\file.dva"), "file.dva", "win_basename")
+test::eq(path::win_basename("C:/Users/ike/dir/"), "dir", "win_basename mixed sep")
+test::eq(path::win_basename("C:\\"), "C:\\", "win_basename drive root")
+test::eq(path::win_normalize("C:/Users/ike/../admin/./docs//readme.md"), "C:\\Users\\admin\\docs\\readme.md", "win_normalize")
+
+// 3. Target-dispatched (#! os) operations & extensions/stems
+test::eq(path::dirname("/a/b/c.dva"), "/a/b", "dirname with dir")
+test::eq(path::dirname("c.dva"), "", "dirname bare file")
+test::eq(path::ext("/dir.with.dots/archive.tar.gz"), ".gz", "ext with dot")
+test::eq(path::ext("/dir.with.dots/Makefile"), "", "ext none in dir with dots")
+test::eq(path::ext(".bashrc"), "", "ext dotfile")
+test::eq(path::get_ext("archive.tar.GZ"), "GZ", "get_ext without dot")
+test::eq(path::ext_lower("archive.tar.GZ"), "gz", "ext_lower")
+test::eq(path::stem("/a/b/hello.dva"), "hello", "stem simple")
+test::eq(path::stem("archive.tar.gz"), "archive.tar", "stem multi-dot")
+test::eq(path::stem(".bashrc"), ".bashrc", "stem dotfile")
+test::eq(path::with_ext("/a/b/main.dva", "o"), "/a/b/main.o", "with_ext bare")
+test::eq(path::with_ext("main.dva", ".ll"), "main.ll", "with_ext dotted")
+test::eq(path::with_ext("main.dva", ""), "main", "with_ext strip")
+
+// 4. Relative paths, prefixes & traversal detection
+test::eq(path::rel("/a/b/c", "/a/d/e"), "../../d/e", "rel sibling")
+test::eq(path::rel("/a/b", "/a/b/c/d"), "c/d", "rel child")
+test::eq(path::rel("/a/b", "/a/b"), ".", "rel same")
+test::check(path::has_prefix("/home/ike/edva/src", "/home/ike/edva"), "has_prefix child")
+test::check(path::has_prefix("/home/ike/edva", "/home/ike/edva/"), "has_prefix exact")
+test::check(!path::has_prefix("/home/ike/edva-ware", "/home/ike/edva"), "has_prefix partial seg false")
+test::check(path::has_traversal(".."), "has_traversal bare ..")
+test::check(path::has_traversal("../etc/passwd"), "has_traversal leading")
+test::check(path::has_traversal("/a/b/../../c"), "has_traversal mid")
+test::check(path::has_traversal("a\\..\\b"), "has_traversal win sep")
+test::check(!path::has_traversal("/a/..hidden/b...c/file.txt"), "has_traversal false on ..hidden")
+
+test::summary!

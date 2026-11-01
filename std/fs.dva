@@ -2,6 +2,7 @@
 // High-level safe abstractions for paths, file I/O, directory traversal, and filesystem stats.
 
 #use libc
+#use path
 #use str
 #use sys
 
@@ -186,64 +187,22 @@ empty_statvfs = !=> Statvfs(..default)
    available_bytes: Int
 )
 
-// --- Path Primitives ---
+// --- Path Primitives (delegated to std/path) ---
 
 is_abs: String => <>
-is_abs = p => ?p > 0 && p(0) == '/'
+is_abs = p => path::is_abs(p)
 
 join: String, String => String
-join = a, b =>
-   ?b == 0 | --| a
-   ?a == 0 || is_abs(b) | --| b
-   a(?a - 1) == '/' | a + b | a + "/" + b
+join = a, b => path::join(a, b)
 
 parent: String => String
-parent = p =>
-   len = ?p
-   len == 0 | --| "."
-   p == "/" | --| "/"
-   end' = len
-   p(end' - 1) == '/' && end' > 1 | end' = end' - 1
-   last_slash' = -1
-   end' @ i =>
-      idx = end' - 1 - i
-      p(idx) == '/' && last_slash' < 0 | last_slash' = idx
-   last_slash' < 0 | "." |
-      last_slash' == 0 | "/" |
-         b = {last_slash'}
-         last_slash' @ k => b += p(k)
-         +b
+parent = p => path::parent(p)
 
 basename: String => String
-basename = p =>
-   len = ?p
-   len == 0 | --| ""
-   p == "/" | --| "/"
-   end' = len
-   p(end' - 1) == '/' && end' > 1 | end' = end' - 1
-   last_slash' = -1
-   end' @ i =>
-      idx = end' - 1 - i
-      p(idx) == '/' && last_slash' < 0 | last_slash' = idx
-   start' = last_slash' < 0 | 0 | last_slash' + 1
-   n = end' - start'
-   n !> 0 | --| ""
-   b = {n}
-   n @ k => b += p(start' + k)
-   +b
+basename = p => path::basename(p)
 
 ext: String => String
-ext = name =>
-   len = ?name
-   dot' = -1
-   len @ i =>
-      idx = len - 1 - i
-      name(idx) == '.' && dot' < 0 && idx > 0 | dot' = idx
-   dot' < 0 | "" |
-      n = len - dot'
-      b = {n}
-      n @ k => b += name(dot' + k)
-      +b
+ext = name => path::ext(name)
 
 cwd: () => String
 cwd = !=>
@@ -261,8 +220,8 @@ resolve = p =>
    len = ?p
    len == 0 | --| cwd!
    p == "~" | --| home!
-   p(..2) == "~/" | --| join(home!, p(2..))
-   full = is_abs(p) | p | join(cwd!, p)
+   len !< 2 && p(..2) == "~/" | --| path::join(home!, p(2..))
+   full = path::is_abs(p) | p | path::join(cwd!, p)
    real = libc::realpath(full, sys::addr_null)
    real == sys::addr_null | full |
       s = sys::c_str(real)
@@ -271,10 +230,10 @@ resolve = p =>
 
 // Compatibility Path Aliases
 join_path: String, String => String
-join_path = a, b => join(a, b)
+join_path = a, b => path::join(a, b)
 
 parent_path: String => String
-parent_path = p => parent(p)
+parent_path = p => path::parent(p)
 
 resolve_path: String => String
 resolve_path = p => resolve(p)
@@ -283,19 +242,7 @@ get_home: () => String
 get_home = !=> home!
 
 get_ext: String => String
-get_ext = name =>
-   len = ?name
-   last_dot' = -1
-   len @ i =>
-      idx = len - 1 - i
-      name(idx) == '.' && last_dot' < 0 | last_dot' = idx
-   last_dot' > 0 && last_dot' < (len - 1)
-      |
-         n = len - (last_dot' + 1)
-         b = {n}
-         n @ k => b += name(last_dot' + 1 + k)
-         +b
-      | ""
+get_ext = name => path::get_ext(name)
 
 // --- Metadata & Queries ---
 
@@ -667,24 +614,14 @@ octal_perms = mode =>
 
 auto_rename_path: String => String
 auto_rename_path = full_p =>
-   dir_raw = parent(full_p)
-   dir_part = dir_raw == "." | "" | dir_raw
-   name_part = basename(full_p)
-
-   dot_idx' = -1
-   n_len = ?name_part
-   n_len @ j =>
-      j_idx = n_len - 1 - j
-      name_part(j_idx) == '.' && dot_idx' < 0 && j_idx > 0 | dot_idx' = j_idx
-
-   base_name = dot_idx' !< 0 | name_part(..dot_idx') | name_part
-   ext_part = dot_idx' !< 0 | name_part(dot_idx'..) | ""
+   dir_part = path::dirname(full_p)
+   base_name = path::stem(full_p)
+   ext_part = path::ext(full_p)
 
    cand_path' = full_p
    1..1000 @ num =>
-      cand = dir_part != ""
-         | "${dir_part}/${base_name} (${num})${ext_part}"
-         | "${base_name} (${num})${ext_part}"
+      cand_name = "${base_name} (${num})${ext_part}"
+      cand = dir_part != "" | path::join(dir_part, cand_name) | cand_name
       !exists(cand) |
          cand_path' = cand
          -->
