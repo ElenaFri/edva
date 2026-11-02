@@ -8,6 +8,7 @@
 
 #use libc
 #use str
+#use utf
 
 #public
    STDIN  = 0
@@ -90,27 +91,7 @@
    // renders via str::*; a record renders its fields space-separated (the
    // 0..?T cycle is unrolled, so each field's type is known).
    show_rune: Rune => String
-   show_rune = r =>
-      r
-         [< 0x80] str::from_byte(Int(r))
-         [< 0x800]
-            b = {2}
-            b += 0xC0 + Int(r .>. 6)
-            b += 0x80 + Int(r .&. 0x3F)
-            +b
-         [< 0x10000]
-            b = {3}
-            b += 0xE0 + Int(r .>. 12)
-            b += 0x80 + Int((r .>. 6) .&. 0x3F)
-            b += 0x80 + Int(r .&. 0x3F)
-            +b
-         |
-            b = {4}
-            b += 0xF0 + Int(r .>. 18)
-            b += 0x80 + Int((r .>. 12) .&. 0x3F)
-            b += 0x80 + Int((r .>. 6) .&. 0x3F)
-            b += 0x80 + Int(r .&. 0x3F)
-            +b
+   show_rune = r => utf::encode_rune(r)
 
    show: #! T: Type, T => String
    show = #! T, x =>

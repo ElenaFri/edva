@@ -1,0 +1,88 @@
+#use io
+#use str
+#use cli
+#use log
+#use test
+
+#type Mode <
+   Fast,
+   Custom(String)
+>
+
+#type ServerFlags (
+   host: String = "127.0.0.1",
+   max_conns: Int = 100,
+   verbose: <> = <->,
+   config_file: < String | >,
+   tag: cli::Args
+)
+
+#type Point (
+   x: Int,
+   y: Int
+)
+
+#type UserEvent (
+   user: String,
+   code: Int,
+   mode: Mode,
+   note: < String | >
+)
+
+// --- 1. cli::into and cli::parse_into ---
+io::out("--- test 1: cli::into & cli::parse_into ---")
+opts = cli::Opts(
+   cli::opt("H:host", "127.0.0.1", "Bind host"),
+   cli::opt("m:max-conns", 100, "Max connections"),
+   cli::opt("v:verbose", <->, "Verbose mode"),
+   cli::opt("c:config-file", "", "Optional config file"),
+   cli::opt("t:tag", cli::Args(), "Tags")
+)
+argv1 = cli::Args("-H", "0.0.0.0", "--max-conns=250", "-v", "--tag", "alpha", "-t", "beta", "serve", "now")
+cli::parse_into(ServerFlags, opts, argv1)
+   | f =>
+      io::out(f.host)
+      io::out(str::from_int(f.max_conns))
+      io::out(f.verbose | "true" | "false")
+      io::out(f.config_file | c => c | "none")
+      io::out(str::from_int(?f.tag))
+      io::out(f.tag(0)!!)
+      io::out(f.tag(1)!!)
+   | err =>
+      io::out("FAIL1: " + err)
+
+// Derive opts automatically via opts_for(ServerFlags)
+argv2 = cli::Args("--config-file", "app.ccl", "run")
+cli::parse_into(ServerFlags, cli::Opts(), argv2)
+   | f2 =>
+      io::out(f2.host)
+      io::out(str::from_int(f2.max_conns))
+      io::out(f2.config_file | c => c | "none")
+   | err =>
+      io::out("FAIL2: " + err)
+
+// --- 2. log::field & log::fields_of ---
+io::out("--- test 2: log::field & log::fields_of ---")
+log::set_timestamps(<->)
+log::set_color(<->)
+ev = UserEvent("alice", 200, Mode(Custom, "turbo"), <+ "ok note" +>)
+io::out(log::field("point", Point(3, 4)))
+io::out(log::field("mode", Mode(Fast)))
+io::out(log::field("event", ev))
+flds = log::fields_of(ev)
+io::out(log::format_kv(log::Level(Info), "handled", flds))
+
+ev2 = UserEvent("bob", 404, Mode(Fast), <-->)
+io::out(log::format_kv(log::Level(Warn), "missing", log::fields_of(ev2)))
+
+// --- 3. test::eq & test::neq structural comparisons ---
+io::out("--- test 3: test::eq & test::neq ---")
+test::reset!
+test::suite("structural")
+test::eq(Point(10, 20), Point(10, 20), "point eq")
+test::neq(Point(10, 20), Point(10, 21), "point neq")
+test::eq(Mode(Custom, "abc"), Mode(Custom, "abc"), "enum eq")
+test::neq(Mode(Fast), Mode(Custom, "abc"), "enum neq")
+test::eq(ev, UserEvent("alice", 200, Mode(Custom, "turbo"), <+ "ok note" +>), "record eq")
+test::neq(ev, ev2, "record neq")
+test::summary!

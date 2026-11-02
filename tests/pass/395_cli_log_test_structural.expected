@@ -1,0 +1,19 @@
+--- test 1: cli::into & cli::parse_into ---
+0.0.0.0
+250
+true
+none
+2
+alpha
+beta
+127.0.0.1
+100
+app.ccl
+--- test 2: log::field & log::fields_of ---
+point={x=3,y=4}
+mode=Fast
+event={user=alice,code=200,mode=Custom(turbo),note="ok note"}
+[INFO] handled user=alice code=200 mode=Custom(turbo) note="ok note"
+[WARN] missing user=bob code=404 mode=Fast
+--- test 3: test::eq & test::neq ---
+PASS: 6 passed, 0 failed

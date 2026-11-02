@@ -1,0 +1,674 @@
+// Standard Binary Packing, Endian I/O & LEB128 Module (std/binary.dva)
+// Endian-aware scalar readers/writers, unsigned/signed LEB128 varints, and
+// `#!` compile-time structural binary serialization (`encode_le`/`decode_le`,
+// `encode_be`/`decode_be`).
+
+#private
+
+bin_err: String, Int => Error
+bin_err = msg, off =>
+   Error(400, "binary: " + msg, "std/binary.dva", 1, off + 1, (off, 0))
+
+raw_u16_le: String, Int => u16
+raw_u16_le = buf, off =>
+   b0 = u16(buf(off) .&. 0xFF)
+   b1 = u16(buf(off + 1) .&. 0xFF) .<. 8u16
+   b0 .|. b1
+
+raw_u16_be: String, Int => u16
+raw_u16_be = buf, off =>
+   b0 = u16(buf(off) .&. 0xFF) .<. 8u16
+   b1 = u16(buf(off + 1) .&. 0xFF)
+   b0 .|. b1
+
+raw_u32_le: String, Int => u32
+raw_u32_le = buf, off =>
+   b0 = u32(buf(off) .&. 0xFF)
+   b1 = u32(buf(off + 1) .&. 0xFF) .<. 8u32
+   b2 = u32(buf(off + 2) .&. 0xFF) .<. 16u32
+   b3 = u32(buf(off + 3) .&. 0xFF) .<. 24u32
+   b0 .|. b1 .|. b2 .|. b3
+
+raw_u32_be: String, Int => u32
+raw_u32_be = buf, off =>
+   b0 = u32(buf(off) .&. 0xFF) .<. 24u32
+   b1 = u32(buf(off + 1) .&. 0xFF) .<. 16u32
+   b2 = u32(buf(off + 2) .&. 0xFF) .<. 8u32
+   b3 = u32(buf(off + 3) .&. 0xFF)
+   b0 .|. b1 .|. b2 .|. b3
+
+raw_u64_le: String, Int => u64
+raw_u64_le = buf, off =>
+   lo = u64(raw_u32_le(buf, off))
+   hi = u64(raw_u32_le(buf, off + 4)) .<. 32u64
+   lo .|. hi
+
+raw_u64_be: String, Int => u64
+raw_u64_be = buf, off =>
+   hi = u64(raw_u32_be(buf, off)) .<. 32u64
+   lo = u64(raw_u32_be(buf, off + 4))
+   hi .|. lo
+
+#public
+
+// --- Scalar Writers (into Builder) ------------------------------------------
+
+write_u8: Builder, u8 => ()
+write_u8 = b, v =>
+   b += (Int(v) .&. 0xFF)
+   --|
+
+write_i8: Builder, i8 => ()
+write_i8 = b, v =>
+   b += (Int(v) .&. 0xFF)
+   --|
+
+write_u16_le: Builder, u16 => ()
+write_u16_le = b, v =>
+   iv = Int(v)
+   b += (iv .&. 0xFF)
+   b += ((iv .>. 8) .&. 0xFF)
+   --|
+
+write_u16_be: Builder, u16 => ()
+write_u16_be = b, v =>
+   iv = Int(v)
+   b += ((iv .>. 8) .&. 0xFF)
+   b += (iv .&. 0xFF)
+   --|
+
+write_i16_le: Builder, i16 => ()
+write_i16_le = b, v =>
+   write_u16_le(b, u16(Int(v) .&. 0xFFFF))
+
+write_i16_be: Builder, i16 => ()
+write_i16_be = b, v =>
+   write_u16_be(b, u16(Int(v) .&. 0xFFFF))
+
+write_u32_le: Builder, u32 => ()
+write_u32_le = b, v =>
+   iv = Int(v)
+   b += (iv .&. 0xFF)
+   b += ((iv .>. 8) .&. 0xFF)
+   b += ((iv .>. 16) .&. 0xFF)
+   b += ((iv .>. 24) .&. 0xFF)
+   --|
+
+write_u32_be: Builder, u32 => ()
+write_u32_be = b, v =>
+   iv = Int(v)
+   b += ((iv .>. 24) .&. 0xFF)
+   b += ((iv .>. 16) .&. 0xFF)
+   b += ((iv .>. 8) .&. 0xFF)
+   b += (iv .&. 0xFF)
+   --|
+
+write_i32_le: Builder, i32 => ()
+write_i32_le = b, v =>
+   write_u32_le(b, u32(Int(v) .&. 0xFFFFFFFF))
+
+write_i32_be: Builder, i32 => ()
+write_i32_be = b, v =>
+   write_u32_be(b, u32(Int(v) .&. 0xFFFFFFFF))
+
+write_u64_le: Builder, u64 => ()
+write_u64_le = b, v =>
+   b += Int(v .&. 0xFFu64)
+   b += Int((v .>. 8u64) .&. 0xFFu64)
+   b += Int((v .>. 16u64) .&. 0xFFu64)
+   b += Int((v .>. 24u64) .&. 0xFFu64)
+   b += Int((v .>. 32u64) .&. 0xFFu64)
+   b += Int((v .>. 40u64) .&. 0xFFu64)
+   b += Int((v .>. 48u64) .&. 0xFFu64)
+   b += Int((v .>. 56u64) .&. 0xFFu64)
+   --|
+
+write_u64_be: Builder, u64 => ()
+write_u64_be = b, v =>
+   b += Int((v .>. 56u64) .&. 0xFFu64)
+   b += Int((v .>. 48u64) .&. 0xFFu64)
+   b += Int((v .>. 40u64) .&. 0xFFu64)
+   b += Int((v .>. 32u64) .&. 0xFFu64)
+   b += Int((v .>. 24u64) .&. 0xFFu64)
+   b += Int((v .>. 16u64) .&. 0xFFu64)
+   b += Int((v .>. 8u64) .&. 0xFFu64)
+   b += Int(v .&. 0xFFu64)
+   --|
+
+write_i64_le: Builder, Int => ()
+write_i64_le = b, v =>
+   write_u64_le(b, u64(v))
+
+write_i64_be: Builder, Int => ()
+write_i64_be = b, v =>
+   write_u64_be(b, u64(v))
+
+write_f32_le: Builder, f32 => ()
+write_f32_le = b, v =>
+   bits = %bitcast(u32, v)
+   write_u32_le(b, bits)
+
+write_f32_be: Builder, f32 => ()
+write_f32_be = b, v =>
+   bits = %bitcast(u32, v)
+   write_u32_be(b, bits)
+
+write_f64_le: Builder, Float => ()
+write_f64_le = b, v =>
+   bits = %bitcast(u64, v)
+   write_u64_le(b, bits)
+
+write_f64_be: Builder, Float => ()
+write_f64_be = b, v =>
+   bits = %bitcast(u64, v)
+   write_u64_be(b, bits)
+
+// --- Scalar Readers (from String buffer at byte offset) ---------------------
+
+read_u8: String, Int => < u8 | Error >
+read_u8 = buf, off =>
+   off < 0 || off + 1 > ?buf
+      | <- bin_err("unexpected EOF reading u8", off) +>
+      | <+ u8(buf(off) .&. 0xFF) ->
+
+read_i8: String, Int => < i8 | Error >
+read_i8 = buf, off =>
+   off < 0 || off + 1 > ?buf
+      | <- bin_err("unexpected EOF reading i8", off) +>
+      |
+         raw = buf(off) .&. 0xFF
+         signed = raw !< 128 | raw - 256 | raw
+         <+ i8(signed) ->
+
+read_u16_le: String, Int => < u16 | Error >
+read_u16_le = buf, off =>
+   off < 0 || off + 2 > ?buf
+      | <- bin_err("unexpected EOF reading u16", off) +>
+      | <+ raw_u16_le(buf, off) ->
+
+read_u16_be: String, Int => < u16 | Error >
+read_u16_be = buf, off =>
+   off < 0 || off + 2 > ?buf
+      | <- bin_err("unexpected EOF reading u16", off) +>
+      | <+ raw_u16_be(buf, off) ->
+
+read_i16_le: String, Int => < i16 | Error >
+read_i16_le = buf, off =>
+   off < 0 || off + 2 > ?buf
+      | <- bin_err("unexpected EOF reading i16", off) +>
+      |
+         raw = Int(raw_u16_le(buf, off))
+         signed = raw !< 0x8000 | raw - 0x10000 | raw
+         <+ i16(signed) ->
+
+read_i16_be: String, Int => < i16 | Error >
+read_i16_be = buf, off =>
+   off < 0 || off + 2 > ?buf
+      | <- bin_err("unexpected EOF reading i16", off) +>
+      |
+         raw = Int(raw_u16_be(buf, off))
+         signed = raw !< 0x8000 | raw - 0x10000 | raw
+         <+ i16(signed) ->
+
+read_u32_le: String, Int => < u32 | Error >
+read_u32_le = buf, off =>
+   off < 0 || off + 4 > ?buf
+      | <- bin_err("unexpected EOF reading u32", off) +>
+      | <+ raw_u32_le(buf, off) ->
+
+read_u32_be: String, Int => < u32 | Error >
+read_u32_be = buf, off =>
+   off < 0 || off + 4 > ?buf
+      | <- bin_err("unexpected EOF reading u32", off) +>
+      | <+ raw_u32_be(buf, off) ->
+
+read_i32_le: String, Int => < i32 | Error >
+read_i32_le = buf, off =>
+   off < 0 || off + 4 > ?buf
+      | <- bin_err("unexpected EOF reading i32", off) +>
+      |
+         raw = Int(raw_u32_le(buf, off))
+         signed = raw !< 0x80000000 | raw - 0x100000000 | raw
+         <+ i32(signed) ->
+
+read_i32_be: String, Int => < i32 | Error >
+read_i32_be = buf, off =>
+   off < 0 || off + 4 > ?buf
+      | <- bin_err("unexpected EOF reading i32", off) +>
+      |
+         raw = Int(raw_u32_be(buf, off))
+         signed = raw !< 0x80000000 | raw - 0x100000000 | raw
+         <+ i32(signed) ->
+
+read_u64_le: String, Int => < u64 | Error >
+read_u64_le = buf, off =>
+   off < 0 || off + 8 > ?buf
+      | <- bin_err("unexpected EOF reading u64", off) +>
+      | <+ raw_u64_le(buf, off) ->
+
+read_u64_be: String, Int => < u64 | Error >
+read_u64_be = buf, off =>
+   off < 0 || off + 8 > ?buf
+      | <- bin_err("unexpected EOF reading u64", off) +>
+      | <+ raw_u64_be(buf, off) ->
+
+read_i64_le: String, Int => < Int | Error >
+read_i64_le = buf, off =>
+   off < 0 || off + 8 > ?buf
+      | <- bin_err("unexpected EOF reading i64", off) +>
+      | <+ Int(raw_u64_le(buf, off)) ->
+
+read_i64_be: String, Int => < Int | Error >
+read_i64_be = buf, off =>
+   off < 0 || off + 8 > ?buf
+      | <- bin_err("unexpected EOF reading i64", off) +>
+      | <+ Int(raw_u64_be(buf, off)) ->
+
+read_f32_le: String, Int => < f32 | Error >
+read_f32_le = buf, off =>
+   off < 0 || off + 4 > ?buf
+      | <- bin_err("unexpected EOF reading f32", off) +>
+      |
+         bits = raw_u32_le(buf, off)
+         <+ %bitcast(f32, bits) ->
+
+read_f32_be: String, Int => < f32 | Error >
+read_f32_be = buf, off =>
+   off < 0 || off + 4 > ?buf
+      | <- bin_err("unexpected EOF reading f32", off) +>
+      |
+         bits = raw_u32_be(buf, off)
+         <+ %bitcast(f32, bits) ->
+
+read_f64_le: String, Int => < Float | Error >
+read_f64_le = buf, off =>
+   off < 0 || off + 8 > ?buf
+      | <- bin_err("unexpected EOF reading f64", off) +>
+      |
+         bits = raw_u64_le(buf, off)
+         <+ %bitcast(Float, bits) ->
+
+read_f64_be: String, Int => < Float | Error >
+read_f64_be = buf, off =>
+   off < 0 || off + 8 > ?buf
+      | <- bin_err("unexpected EOF reading f64", off) +>
+      |
+         bits = raw_u64_be(buf, off)
+         <+ %bitcast(Float, bits) ->
+
+// --- LEB128 / Varint --------------------------------------------------------
+
+// Appends unsigned LEB128 encoding of `val` into `b`.
+write_uleb128: Builder, u64 => ()
+write_uleb128 = b, val =>
+   v' = val
+   more' = <+>
+   more' @
+      byte_v = Int(v' .&. 0x7Fu64)
+      v' = v' .>. 7u64
+      v' != 0u64
+         | b += (byte_v .|. 0x80)
+         |
+            b += byte_v
+            more' = <->
+   --|
+
+// Reads an unsigned LEB128 varint starting at `off`, returning `(value, next_offset)`.
+read_uleb128: String, Int => < (u64, Int) | Error >
+read_uleb128 = buf, off =>
+   n = ?buf
+   cur' = off
+   res' = 0u64
+   shift' = 0u64
+   done' = <->
+   ovf' = <->
+   (!done' && !ovf' && cur' < n) @
+      byte_v = u64(buf(cur') .&. 0xFF)
+      cur' = cur' + 1
+      shift' !< 64u64
+         | ovf' = <+>
+         |
+            res' = res' .|. ((byte_v .&. 0x7Fu64) .<. shift')
+            (byte_v .&. 0x80u64) == 0u64
+               | done' = <+>
+               | shift' = shift' + 7u64
+   ovf'
+      | <- bin_err("uleb128 overflow", off) +>
+      |
+         !done'
+            | <- bin_err("unexpected EOF in uleb128", cur') +>
+            | <+ (res', cur') ->
+
+// Appends signed LEB128 encoding of `val` into `b`.
+write_sleb128: Builder, Int => ()
+write_sleb128 = b, val =>
+   v' = val
+   more' = <+>
+   more' @
+      byte_v = v' .&. 0x7F
+      // Arithmetic shift right by 7
+      v' = v' < 0 | 0 - ((0 - v' - 1) .>. 7) - 1 | v' .>. 7
+      sign_bit = (byte_v .&. 0x40) != 0
+      (v' == 0 && !sign_bit) || (v' == -1 && sign_bit)
+         |
+            b += byte_v
+            more' = <->
+         |
+            b += (byte_v .|. 0x80)
+   --|
+
+// Reads a signed LEB128 varint starting at `off`, returning `(value, next_offset)`.
+read_sleb128: String, Int => < (Int, Int) | Error >
+read_sleb128 = buf, off =>
+   n = ?buf
+   cur' = off
+   res' = 0u64
+   shift' = 0u64
+   last_byte' = 0u64
+   done' = <->
+   ovf' = <->
+   (!done' && !ovf' && cur' < n) @
+      byte_v = u64(buf(cur') .&. 0xFF)
+      cur' = cur' + 1
+      shift' !< 64u64
+         | ovf' = <+>
+         |
+            res' = res' .|. ((byte_v .&. 0x7Fu64) .<. shift')
+            shift' = shift' + 7u64
+            last_byte' = byte_v
+            (byte_v .&. 0x80u64) == 0u64 | done' = <+>
+   ovf'
+      | <- bin_err("sleb128 overflow", off) +>
+      |
+         !done'
+            | <- bin_err("unexpected EOF in sleb128", cur') +>
+            |
+               (shift' < 64u64 && (last_byte' .&. 0x40u64) != 0u64)
+                  |
+                     mask = 0xFFFFFFFFFFFFFFFFu64 .<. shift'
+                     res' = res' .|. mask
+               <+ (Int(res'), cur') ->
+
+// --- Structural Binary Packing (#!) -----------------------------------------
+
+#private
+
+pack_into: #! T: Type, Builder, T, <> => ()
+pack_into = b, val, is_be =>
+   T
+      [u8] write_u8(b, val)
+      [i8] write_i8(b, val)
+      [u16] (is_be | write_u16_be(b, val) | write_u16_le(b, val))
+      [i16] (is_be | write_i16_be(b, val) | write_i16_le(b, val))
+      [u32] (is_be | write_u32_be(b, val) | write_u32_le(b, val))
+      [i32] (is_be | write_i32_be(b, val) | write_i32_le(b, val))
+      [u64] (is_be | write_u64_be(b, val) | write_u64_le(b, val))
+      [Int, i64] (is_be | write_i64_be(b, Int(val)) | write_i64_le(b, Int(val)))
+      [f32] (is_be | write_f32_be(b, val) | write_f32_le(b, val))
+      [Float, f64] (is_be | write_f64_be(b, Float(val)) | write_f64_le(b, Float(val)))
+      [<>] write_u8(b, (val | 1u8 | 0u8))
+      [Rune] (is_be | write_u32_be(b, u32(Int(val))) | write_u32_le(b, u32(Int(val))))
+      [String]
+         slen = u32(?val)
+         is_be | write_u32_be(b, slen) | write_u32_le(b, slen)
+         b += val
+      [<P|>]
+         val
+            | inner =>
+               write_u8(b, 1u8)
+               pack_into(P, b, inner, is_be)
+            |
+               write_u8(b, 0u8)
+      [E{}]
+         cnt = u32(?val)
+         is_be | write_u32_be(b, cnt) | write_u32_le(b, cnt)
+         val @ elem =>
+            pack_into(E, b, elem, is_be)
+      [E[]]
+         cnt = u32(?val)
+         is_be | write_u32_be(b, cnt) | write_u32_le(b, cnt)
+         val @ elem =>
+            pack_into(E, b, elem, is_be)
+      [(..)]
+         T @ f =>
+            f.type
+               [<P|>]
+                  vf = val.(f)
+                  vf
+                     | inner =>
+                        write_u8(b, 1u8)
+                        pack_into(P, b, inner, is_be)
+                     |
+                        write_u8(b, 0u8)
+               |
+                  pack_into(f.type, b, val.(f), is_be)
+      [<..>]
+         T @ v =>
+            val.(v)
+               | pay =>
+                  write_u8(b, u8(v.idx))
+                  v.type
+                     [()] b += ""
+                     | pack_into(v.type, b, pay, is_be)
+   --|
+
+#type OffsetCursor (
+   pos: Int,
+   len: Int
+)
+
+unpack_at: #! T: Type, String, OffsetCursor, <> => < T | Error >
+unpack_at = buf, cur, is_be =>
+   off_in = cur.pos
+   T
+      [u8]
+         read_u8(buf, off_in)
+            | v =>
+               cur.pos = off_in + 1
+               <+ v ->
+            | err => <- err +>
+      [i8]
+         read_i8(buf, off_in)
+            | v =>
+               cur.pos = off_in + 1
+               <+ v ->
+            | err => <- err +>
+      [u16]
+         r = is_be | read_u16_be(buf, off_in) | read_u16_le(buf, off_in)
+         r
+            | v =>
+               cur.pos = off_in + 2
+               <+ v ->
+            | err => <- err +>
+      [i16]
+         r = is_be | read_i16_be(buf, off_in) | read_i16_le(buf, off_in)
+         r
+            | v =>
+               cur.pos = off_in + 2
+               <+ v ->
+            | err => <- err +>
+      [u32]
+         r = is_be | read_u32_be(buf, off_in) | read_u32_le(buf, off_in)
+         r
+            | v =>
+               cur.pos = off_in + 4
+               <+ v ->
+            | err => <- err +>
+      [i32]
+         r = is_be | read_i32_be(buf, off_in) | read_i32_le(buf, off_in)
+         r
+            | v =>
+               cur.pos = off_in + 4
+               <+ v ->
+            | err => <- err +>
+      [u64]
+         r = is_be | read_u64_be(buf, off_in) | read_u64_le(buf, off_in)
+         r
+            | v =>
+               cur.pos = off_in + 8
+               <+ v ->
+            | err => <- err +>
+      [Int]
+         r = is_be | read_i64_be(buf, off_in) | read_i64_le(buf, off_in)
+         r
+            | v =>
+               cur.pos = off_in + 8
+               <+ v ->
+            | err => <- err +>
+      [f32]
+         r = is_be | read_f32_be(buf, off_in) | read_f32_le(buf, off_in)
+         r
+            | v =>
+               cur.pos = off_in + 4
+               <+ v ->
+            | err => <- err +>
+      [Float]
+         r = is_be | read_f64_be(buf, off_in) | read_f64_le(buf, off_in)
+         r
+            | v =>
+               cur.pos = off_in + 8
+               <+ v ->
+            | err => <- err +>
+      [<>]
+         read_u8(buf, off_in)
+            | b =>
+               cur.pos = off_in + 1
+               Int(b) != 0
+                  | <+ <+> ->
+                  | <+ <-> ->
+            | err => <- err +>
+      [Rune]
+         r = is_be | read_u32_be(buf, off_in) | read_u32_le(buf, off_in)
+         r
+            | v =>
+               cur.pos = off_in + 4
+               <+ Rune(Int(v)) ->
+            | err => <- err +>
+      [String]
+         r = is_be | read_u32_be(buf, off_in) | read_u32_le(buf, off_in)
+         r
+            | slen_u32 =>
+               slen = Int(slen_u32)
+               start = off_in + 4
+               end = start + slen
+               end > ?buf
+                  | <- bin_err("unexpected EOF reading string payload", start) +>
+                  |
+                     cur.pos = end
+                     <+ buf(start..end) ->
+            | err => <- err +>
+      [<P|>]
+         read_u8(buf, off_in)
+            | tag =>
+               cur.pos = off_in + 1
+               Int(tag) == 0
+                  | <+ <--> ->
+                  |
+                     dec_p = unpack_at(P, buf, cur, is_be)
+                     dec_p
+                        | pv => <+ <+ pv +> ->
+                        | err => <- err +>
+            | err => <- err +>
+      [E{}]
+         r = is_be | read_u32_be(buf, off_in) | read_u32_le(buf, off_in)
+         r
+            | cnt_u32 =>
+               cnt = Int(cnt_u32)
+               cur.pos = off_in + 4
+               arr' = T.zero
+               has_err' = <->
+               err_val' = bin_err(+"", 0)
+               cnt @
+                  !has_err' |
+                     dec_e = unpack_at(E, buf, cur, is_be)
+                     dec_e
+                        | elem => arr' += elem
+                        | err =>
+                           has_err' = <+>
+                           err_val' = err
+               has_err'
+                  | <- err_val' +>
+                  | <+ arr' ->
+            | err => <- err +>
+      [(..)]
+         rec' = T.zero
+         has_err' = <->
+         err_val' = bin_err(+"", 0)
+         T @ f =>
+            !has_err' |
+               dec_fv = unpack_at(f.type, buf, cur, is_be)
+               dec_fv
+                  | fv => rec'.(f) = fv
+                  | err =>
+                     has_err' = <+>
+                     err_val' = err
+         has_err'
+            | <- err_val' +>
+            | <+ rec' ->
+      [<..>]
+         read_u8(buf, off_in)
+            | tag_u8 =>
+               tag = Int(tag_u8)
+               cur.pos = off_in + 1
+               out' = T.zero
+               matched' = <->
+               has_err' = <->
+               err_val' = bin_err(+"", 0)
+               T @ v =>
+                  v.idx == tag |
+                     matched' = <+>
+                     v.type
+                        [()] out' = T(v)
+                        |
+                           dec_pv = unpack_at(v.type, buf, cur, is_be)
+                           dec_pv
+                              | pv => out' = T(v, pv)
+                              | err =>
+                                 has_err' = <+>
+                                 err_val' = err
+               has_err'
+                  | <- err_val' +>
+                  |
+                     !matched'
+                        | <- bin_err("invalid enum tag for " + T.name, off_in) +>
+                        | <+ out' ->
+            | err => <- err +>
+      | <- bin_err("unsupported type " + T.name + " in binary::decode", off_in) +>
+
+#public
+
+// Packs `val` into a binary byte string in little-endian byte order.
+encode_le: #! T: Type, T => String
+encode_le = val =>
+   b = {64}
+   pack_into(b, val, <->)
+   +b
+
+// Packs `val` into a binary byte string in big-endian (network) byte order.
+encode_be: #! T: Type, T => String
+encode_be = val =>
+   b = {64}
+   pack_into(b, val, <+>)
+   +b
+
+// Unpacks target type `T` from little-endian `bytes`.
+decode_le: #! T: Type, String => < T | Error >
+decode_le = bytes =>
+   cur = OffsetCursor(0, ?bytes)
+   unpack_at(T, bytes, cur, <->)
+
+// Unpacks target type `T` from big-endian `bytes`.
+decode_be: #! T: Type, String => < T | Error >
+decode_be = bytes =>
+   cur = OffsetCursor(0, ?bytes)
+   unpack_at(T, bytes, cur, <+>)
+
+// Canonical alias for `encode_le`.
+encode: #! T: Type, T => String
+encode = val =>
+   encode_le(val)
+
+// Canonical alias for `decode_le`.
+decode: #! T: Type, String => < T | Error >
+decode = bytes =>
+   decode_le(T, bytes)

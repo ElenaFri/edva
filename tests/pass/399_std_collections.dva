@@ -1,0 +1,188 @@
+// Test: std/deque.dva, std/heap.dva, and std/set.dva
+// Covers ring-buffer double-ended queue, binary min/max/custom priority queue,
+// and hash-backed + structural array-backed generic sets.
+
+#use deque
+#use heap
+#use set
+#use sort
+#use test
+
+#type Job (
+   priority: Int,
+   name: String
+)
+
+#type JobDeque (
+   buf: Job{},
+   head: Int,
+   tail: Int,
+   count: Int
+)
+
+#type JobHeap (
+   data: Job{},
+   size: Int
+)
+
+#type Point (
+   x: Int,
+   y: Int
+)
+
+#type PointSet Point{}
+#type IntArr Int{}
+
+test::reset!
+test::suite("deque")
+
+// --- 1. IntDeque: push_back, push_front, wrap-around, doubling, pop_front, pop_back ---
+dq = deque::new_int!
+test::check(deque::is_empty(dq), "dq initially empty")
+test::eq(deque::len(dq), 0, "dq initial len 0")
+test::err(deque::pop_front(dq), "pop_front on empty")
+test::err(deque::pop_back(dq), "pop_back on empty")
+
+deque::push_back(dq, 20)
+deque::push_back(dq, 30)
+deque::push_front(dq, 10)
+deque::push_front(dq, 5)
+// Logical order: [5, 10, 20, 30]
+test::eq(deque::len(dq), 4, "dq len 4")
+test::check(!deque::is_empty(dq), "dq not empty")
+test::eq(deque::peek_front(dq)!!, 5, "peek_front 5")
+test::eq(deque::peek_back(dq)!!, 30, "peek_back 30")
+test::eq(deque::get(dq, 0)!!, 5, "get(0) == 5")
+test::eq(deque::get(dq, 1)!!, 10, "get(1) == 10")
+test::eq(deque::get(dq, 2)!!, 20, "get(2) == 20")
+test::eq(deque::get(dq, 3)!!, 30, "get(3) == 30")
+test::err(deque::get(dq, 4), "get(4) out of bounds")
+
+// Force ring-buffer growth across wrapped head
+20 @ k =>
+   deque::push_back(dq, 100 + k)
+test::eq(deque::len(dq), 24, "dq len 24 after growth")
+test::eq(deque::pop_front(dq)!!, 5, "pop_front 5")
+test::eq(deque::pop_front(dq)!!, 10, "pop_front 10")
+test::eq(deque::pop_back(dq)!!, 119, "pop_back 119")
+test::eq(deque::len(dq), 21, "dq len 21")
+
+deque::clear(dq)
+test::check(deque::is_empty(dq), "dq empty after clear")
+deque::push_back(dq, 1)
+deque::push_back(dq, 2)
+deque::push_front(dq, 0)
+arr_dq = deque::to_array(dq)
+test::eq(arr_dq, Int{}(0, 1, 2), "deque::to_array [0, 1, 2]")
+
+// Custom record deque
+jdq = deque::new(JobDeque)
+deque::push_back(jdq, Job(2, "build"))
+deque::push_front(jdq, Job(1, "parse"))
+test::eq(deque::len(jdq), 2, "JobDeque len 2")
+test::eq(deque::pop_front(jdq)!!, Job(1, "parse"), "JobDeque pop_front")
+test::eq(deque::pop_back(jdq)!!, Job(2, "build"), "JobDeque pop_back")
+
+test::suite("heap")
+
+// --- 2. IntHeap (min-heap & max-heap) + custom record JobHeap + push_by/pop_by ---
+h = heap::new_int!
+test::check(heap::is_empty(h), "heap initially empty")
+heap::push(h, 40)
+heap::push(h, 10)
+heap::push(h, 50)
+heap::push(h, 20)
+heap::push(h, 30)
+test::eq(heap::len(h), 5, "heap len 5")
+test::eq(heap::peek(h)!!, 10, "heap peek 10")
+test::eq(heap::pop(h)!!, 10, "heap pop 10")
+test::eq(heap::pop(h)!!, 20, "heap pop 20")
+test::eq(heap::pop(h)!!, 30, "heap pop 30")
+test::eq(heap::pop(h)!!, 40, "heap pop 40")
+test::eq(heap::pop(h)!!, 50, "heap pop 50")
+test::err(heap::pop(h), "heap pop on empty")
+
+// Max-heap
+hmax = heap::new_int!
+heap::push_max(hmax, 15)
+heap::push_max(hmax, 99)
+heap::push_max(hmax, 42)
+test::eq(heap::pop_max(hmax)!!, 99, "max-heap pop 99")
+test::eq(heap::pop_max(hmax)!!, 42, "max-heap pop 42")
+test::eq(heap::pop_max(hmax)!!, 15, "max-heap pop 15")
+
+// Composite record heap (lexicographical default order: priority, then name)
+jh = heap::new(JobHeap)
+heap::push(jh, Job(3, "link"))
+heap::push(jh, Job(1, "lex"))
+heap::push(jh, Job(2, "typecheck"))
+heap::push(jh, Job(1, "ast"))
+test::eq(heap::pop(jh)!!, Job(1, "ast"), "JobHeap pop (1, ast)")
+test::eq(heap::pop(jh)!!, Job(1, "lex"), "JobHeap pop (1, lex)")
+test::eq(heap::pop(jh)!!, Job(2, "typecheck"), "JobHeap pop (2, typecheck)")
+test::eq(heap::pop(jh)!!, Job(3, "link"), "JobHeap pop (3, link)")
+
+// Custom comparator push_by / pop_by (descending priority)
+desc_job: Job, Job => <>
+desc_job = a, b => a.priority > b.priority
+heap::push_by(jh, Job(10, "low"), desc_job)
+heap::push_by(jh, Job(90, "critical"), desc_job)
+heap::push_by(jh, Job(50, "medium"), desc_job)
+test::eq(heap::pop_by(jh, desc_job)!!, Job(90, "critical"), "pop_by critical")
+test::eq(heap::pop_by(jh, desc_job)!!, Job(50, "medium"), "pop_by medium")
+test::eq(heap::pop_by(jh, desc_job)!!, Job(10, "low"), "pop_by low")
+
+test::suite("set")
+
+// --- 3. Hash-backed IntSet / StrSet & structural PointSet ---
+a = set::new_int!
+test::check(set::is_empty(a), "set a initially empty")
+test::check(set::add(a, 10), "add 10 fresh")
+test::check(set::add(a, 20), "add 20 fresh")
+test::check(set::add(a, 30), "add 30 fresh")
+test::check(!set::add(a, 20), "add 20 duplicate returns <->")
+test::eq(set::len(a), 3, "set a len 3")
+test::check(set::contains(a, 20), "a contains 20")
+test::check(!set::contains(a, 99), "a !contains 99")
+
+b = set::from_array(set::IntSet, Int{}(20, 30, 40, 50))
+test::eq(set::len(b), 4, "set b len 4")
+
+u_ab = set::union(a, b)
+test::eq(set::len(u_ab), 5, "union len 5")
+test::check(set::contains(u_ab, 10) && set::contains(u_ab, 50), "union contains 10 and 50")
+
+i_ab = set::intersect(a, b)
+test::eq(set::len(i_ab), 2, "intersect len 2")
+test::check(set::contains(i_ab, 20) && set::contains(i_ab, 30), "intersect contains 20 and 30")
+
+d_ab = set::diff(a, b)
+test::eq(set::len(d_ab), 1, "diff len 1")
+test::check(set::contains(d_ab, 10), "diff contains 10")
+
+sd_ab = set::symmetric_diff(a, b)
+test::eq(set::len(sd_ab), 3, "symmetric_diff len 3 (10, 40, 50)")
+test::check(set::contains(sd_ab, 10) && set::contains(sd_ab, 40) && set::contains(sd_ab, 50), "symmetric_diff elements")
+
+test::check(set::is_subset(i_ab, a), "intersect is subset of a")
+test::check(set::is_superset(a, i_ab), "a is superset of intersect")
+test::check(set::is_disjoint(d_ab, b), "a\\b is disjoint from b")
+test::check(set::equals(u_ab, set::union(b, a)), "union is commutative")
+
+test::check(set::remove(a, 20), "remove 20 from a")
+test::check(!set::contains(a, 20), "20 no longer in a")
+arr_a = sort::ints(set::to_array(IntArr, a))
+test::eq(arr_a, Int{}(10, 30), "set::to_array sorted [10, 30]")
+
+set::clear(a)
+test::check(set::is_empty(a), "set a empty after clear")
+
+// Structural PointSet
+ps = set::new(PointSet)
+test::check(set::add(ps, Point(1, 2)), "PointSet add (1,2)")
+test::check(set::add(ps, Point(3, 4)), "PointSet add (3,4)")
+test::check(!set::add(ps, Point(1, 2)), "PointSet duplicate (1,2)")
+test::eq(set::len(ps), 2, "PointSet len 2")
+test::check(set::contains(ps, Point(3, 4)), "PointSet contains (3,4)")
+
+test::summary!

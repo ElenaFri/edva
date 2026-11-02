@@ -1,0 +1,214 @@
+// Standard Double-Ended Ring-Buffer Queue Module (std/deque.dva)
+// O(1) amortized `push_front`, `push_back`, `pop_front`, `pop_back`, and random-access `get`.
+// Works with `IntDeque`, `StrDeque`, `FloatDeque`, or any user record matching
+// `(buf: T{}, head: Int, tail: Int, count: Int)`.
+
+#public
+
+#type IntDeque (
+   buf: Int{},
+   head: Int,
+   tail: Int,
+   count: Int
+)
+
+#type StrDeque (
+   buf: String{},
+   head: Int,
+   tail: Int,
+   count: Int
+)
+
+#type FloatDeque (
+   buf: Float{},
+   head: Int,
+   tail: Int,
+   count: Int
+)
+
+#private
+
+make_empty_like: #! A: Type, A => A
+make_empty_like = _sample =>
+   A.zero
+
+arr_len: #! T: Type, T{} => Int
+arr_len = arr =>
+   ?arr
+
+arr_get: #! T: Type, T{}, Int => T
+arr_get = arr, idx =>
+   arr(idx)!!
+
+arr_set: #! T: Type, T{}, Int, T => ()
+arr_set = arr, idx, val =>
+   arr(idx) = val
+   --|
+
+arr_push: #! T: Type, T{}, T => ()
+arr_push = arr, val =>
+   arr += val
+   --|
+
+ensure_cap: #! T: Type, (buf: T{}, head: Int, tail: Int, count: Int), T => ()
+ensure_cap = d, fill_val =>
+   old_cap = arr_len(T, d.buf)
+   d.count == old_cap |
+      old_cap == 0
+         |
+            8 @ _k =>
+               arr_push(T, d.buf, fill_val)
+            d.head = 0
+            d.tail = 0
+         |
+            // Double capacity in place: unwrap [0..head) to [old_cap..old_cap+head),
+            // then pad [old_cap+head..2*old_cap) with fill_val.
+            h = d.head
+            h @ k =>
+               arr_push(T, d.buf, arr_get(T, d.buf, k))
+            (old_cap - h) @ _k =>
+               arr_push(T, d.buf, fill_val)
+            d.tail = (h + old_cap) % (old_cap * 2)
+   --|
+
+#public
+
+// Creates a new empty `IntDeque`.
+new_int: () => IntDeque
+new_int = !=>
+   IntDeque(Int{}(), 0, 0, 0)
+
+// Creates a new empty `StrDeque`.
+new_str: () => StrDeque
+new_str = !=>
+   StrDeque(String{}(), 0, 0, 0)
+
+// Creates a new empty `FloatDeque`.
+new_float: () => FloatDeque
+new_float = !=>
+   FloatDeque(Float{}(), 0, 0, 0)
+
+// Creates a new empty deque of any deque record type `D` (e.g. `deque::new(deque::IntDeque)`).
+new: #! D: Type => D
+new = !=>
+   D.zero
+
+// Returns the number of elements in `d`.
+len: #! T: Type, (buf: T{}, head: Int, tail: Int, count: Int) => Int
+len = d =>
+   d.count
+
+// Returns `<+>` if `d` contains no elements.
+is_empty: #! T: Type, (buf: T{}, head: Int, tail: Int, count: Int) => <>
+is_empty = d =>
+   d.count == 0
+
+// Removes all elements from `d` in O(1) time while retaining allocated capacity.
+clear: #! T: Type, (buf: T{}, head: Int, tail: Int, count: Int) => ()
+clear = d =>
+   d.head = 0
+   d.tail = 0
+   d.count = 0
+   --|
+
+// Appends `val` to the back of `d` in O(1) amortized time.
+push_back: #! T: Type, (buf: T{}, head: Int, tail: Int, count: Int), T => ()
+push_back = d, val =>
+   ensure_cap(T, d, val)
+   cap = arr_len(T, d.buf)
+   arr_set(T, d.buf, d.tail, val)
+   d.tail = (d.tail + 1) % cap
+   d.count = d.count + 1
+   --|
+
+// Prepends `val` to the front of `d` in O(1) amortized time.
+push_front: #! T: Type, (buf: T{}, head: Int, tail: Int, count: Int), T => ()
+push_front = d, val =>
+   ensure_cap(T, d, val)
+   cap = arr_len(T, d.buf)
+   new_head = (d.head - 1 + cap) % cap
+   arr_set(T, d.buf, new_head, val)
+   d.head = new_head
+   d.count = d.count + 1
+   --|
+
+// Removes and returns the front element of `d`, or `<-->` if empty.
+pop_front: #! T: Type, (buf: T{}, head: Int, tail: Int, count: Int) => < T | >
+pop_front = d =>
+   d.count == 0
+      | <-->
+      |
+         cap = arr_len(T, d.buf)
+         val = arr_get(T, d.buf, d.head)
+         d.head = (d.head + 1) % cap
+         d.count = d.count - 1
+         d.count == 0
+            |
+               d.head = 0
+               d.tail = 0
+         <+ val +>
+
+// Removes and returns the back element of `d`, or `<-->` if empty.
+pop_back: #! T: Type, (buf: T{}, head: Int, tail: Int, count: Int) => < T | >
+pop_back = d =>
+   d.count == 0
+      | <-->
+      |
+         cap = arr_len(T, d.buf)
+         new_tail = (d.tail - 1 + cap) % cap
+         val = arr_get(T, d.buf, new_tail)
+         d.tail = new_tail
+         d.count = d.count - 1
+         d.count == 0
+            |
+               d.head = 0
+               d.tail = 0
+         <+ val +>
+
+// Returns the front element of `d` without removing it, or `<-->` if empty.
+peek_front: #! T: Type, (buf: T{}, head: Int, tail: Int, count: Int) => < T | >
+peek_front = d =>
+   d.count == 0
+      | <-->
+      | <+ arr_get(T, d.buf, d.head) +>
+
+// Returns the back element of `d` without removing it, or `<-->` if empty.
+peek_back: #! T: Type, (buf: T{}, head: Int, tail: Int, count: Int) => < T | >
+peek_back = d =>
+   d.count == 0
+      | <-->
+      |
+         cap = arr_len(T, d.buf)
+         idx = (d.tail - 1 + cap) % cap
+         <+ arr_get(T, d.buf, idx) +>
+
+// Returns the element at logical index `idx` (`0 !> idx < len(d)`), or `<-->` if out of bounds.
+get: #! T: Type, (buf: T{}, head: Int, tail: Int, count: Int), Int => < T | >
+get = d, idx =>
+   (idx < 0 || idx !< d.count)
+      | <-->
+      |
+         cap = arr_len(T, d.buf)
+         phys = (d.head + idx) % cap
+         <+ arr_get(T, d.buf, phys) +>
+
+// Overwrites the element at logical index `idx` (`0 !> idx < len(d)`). Returns `<+>` on success.
+set: #! T: Type, (buf: T{}, head: Int, tail: Int, count: Int), Int, T => <>
+set = d, idx, val =>
+   (idx < 0 || idx !< d.count)
+      | <->
+      |
+         cap = arr_len(T, d.buf)
+         phys = (d.head + idx) % cap
+         arr_set(T, d.buf, phys, val)
+         <+>
+
+// Copies the elements of `d` in logical front-to-back order into a new growable array `T{}`.
+to_array: #! T: Type, (buf: T{}, head: Int, tail: Int, count: Int) => T{}
+to_array = d =>
+   out = make_empty_like(d.buf)
+   cap = arr_len(T, d.buf)
+   d.count @ idx =>
+      phys = (d.head + idx) % cap
+      arr_push(T, out, arr_get(T, d.buf, phys))
+   out

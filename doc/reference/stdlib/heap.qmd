@@ -1,0 +1,49 @@
+---
+meta:
+  audience: "Edva developers using binary heaps and priority queues"
+  status: "current reference"
+  audited: "fb4fbc2"
+  evidence: "`std/heap.dva`, `tests/pass/399_std_collections.dva`"
+---
+
+# `heap` standard library
+
+The `heap` module provides a generic binary priority queue with $O(\log n)$ `push`,
+`pop`, `push_max`, `pop_max`, `push_by`, `pop_by`, and $O(1)$ `peek`. It works with
+`heap::IntHeap`, `heap::StrHeap`, `heap::FloatHeap`, or any user record matching
+`(data: T{}, size: Int)`. Composite records and tuples default to lexicographical
+field comparison via `#!` structural introspection.
+
+```{.dva .run}
+#use heap
+#use io
+#use str
+
+h = heap::new_int!
+heap::push(h, 30)
+heap::push(h, 10)
+heap::push(h, 20)
+io::out $ str::from_int(heap::pop(h)!!)
+io::out $ str::from_int(heap::pop(h)!!)
+```
+
+## Types and Function catalog
+
+| Symbol / Function | Signature | Description |
+|---|---|---|
+| `heap::IntHeap` | Record `(data: Int{}, size: Int)` | Binary heap of `Int` |
+| `heap::StrHeap` | Record `(data: String{}, size: Int)` | Binary heap of `String` |
+| `heap::FloatHeap` | Record `(data: Float{}, size: Int)` | Binary heap of `Float` |
+| `heap::new_int!` / `new_str!` / `new_float!` | `() => IntHeap / StrHeap / FloatHeap` | Creates an empty typed heap |
+| `heap::new(H)` | `#! H: Type => H` | Creates a new empty heap of any heap record type `H` |
+| `heap::len(h)` | `#! T: Type, Heap(T) => Int` | Returns the number of active elements in `h` |
+| `heap::is_empty(h)` | `#! T: Type, Heap(T) => <>` | Returns `<+>` if `h` is empty |
+| `heap::clear(h)` | `#! T: Type, Heap(T) => ()` | Resets `h` to empty in $O(1)$ time while keeping capacity |
+| `heap::peek(h)` | `#! T: Type, Heap(T) => < T | >` | Returns the top element without removing it, or `<-->` if empty |
+| `heap::push(h, val)` | `#! T: Type, Heap(T), T => ()` | Inserts `val` into min-heap `h` in $O(\log n)$ time |
+| `heap::pop(h)` | `#! T: Type, Heap(T) => < T | >` | Removes and returns the minimum element of min-heap `h` |
+| `heap::push_max(h, val)` | `#! T: Type, Heap(T), T => ()` | Inserts `val` into max-heap `h` in $O(\log n)$ time |
+| `heap::pop_max(h)` | `#! T: Type, Heap(T) => < T | >` | Removes and returns the maximum element of max-heap `h` |
+| `heap::push_by(h, val, less)` | `#! T: Type, Heap(T), T, (T, T => <>) => ()` | Inserts `val` using custom comparator `less(a, b)` |
+| `heap::pop_by(h, less)` | `#! T: Type, Heap(T), (T, T => <>) => < T | >` | Removes and returns the top element using custom comparator `less(a, b)` |
+| `heap::to_array(h)` | `#! T: Type, Heap(T) => T{}` | Returns a copy of active elements `0..h.size` as `T{}` |

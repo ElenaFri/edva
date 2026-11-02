@@ -3,8 +3,9 @@
 <language name="Dva" version="1" kateversion="5.0" section="Sources" extensions="*.dva" mimetype="text/x-dva" author="baldgeorge" license="BSD-2-Clause">
   <highlighting>
     <list name="directives">
-      <item>#use</item>
       <item>#type</item>
+      <item>#packed</item>
+      <item>#align</item>
       <item>#foreign</item>
       <item>#pragma</item>
       <item>#public</item>
@@ -13,13 +14,16 @@
       <item>#export</item>
       <item>#spawn</item>
       <item>#join</item>
-      <item>#!</item>
+      <item>#exit</item>
+      <item>#error</item>
+      <item>#warn</item>
       <item>#size</item>
     </list>
     <list name="types">
       <item>Int</item>
       <item>Float</item>
       <item>String</item>
+      <item>Addr</item>
       <item>Address</item>
       <item>Rune</item>
       <item>Builder</item>
@@ -41,42 +45,51 @@
       <item>void</item>
       <item>ptr</item>
     </list>
-    <list name="constants">
-      <item>&lt;+&gt;</item>
-      <item>&lt;-&gt;</item>
-      <item>&lt;++&gt;</item>
-      <item>&lt;--&gt;</item>
-      <item>&lt;&gt;</item>
-    </list>
     <contexts>
       <context name="Normal" attribute="Normal Text" lineEndContext="#stay">
         <Detect2Chars attribute="Comment" context="LineComment" char="/" char1="/" />
         <Detect2Chars attribute="Comment" context="BlockComment" char="/" char1="*" beginRegion="BlockComment" />
         <StringDetect attribute="String" context="TripleString" String="&quot;&quot;&quot;" />
         <DetectChar attribute="String" context="String" char="&quot;" />
+        <!-- #use directive: highlight module path/string uniformly -->
+        <RegExpr attribute="Directive" context="UseDirective" String="#use(-dynamic)?\b" />
+        <!-- #! compile-time directive (matched before '#' and '!') -->
+        <StringDetect attribute="Directive" context="#stay" String="#!" />
+        <keyword attribute="Directive" context="#stay" String="directives" />
+
         <!-- Mutables: foo', x', total'' (highlighted in reddish) -->
         <RegExpr attribute="Mutable" context="#stay" String="\b[a-zA-Z_][a-zA-Z0-9_]*'+" />
         <!-- Runes: 'a', '\n', '\'', '\x1b', 'λ' -->
         <RegExpr attribute="Char" context="#stay" String="'(\\([xX][0-9a-fA-F]+|[uU][0-9a-fA-F]+|.)|[^'\\\n])'" />
-        <keyword attribute="Directive" context="#stay" String="directives" />
+
+        <!-- Symbolic & structural types: <>, <|>, <..>, (..), (), <P | N>, (E * ..), (E * N), K ^ V -->
+        <StringDetect attribute="Type" context="#stay" String="&lt;&gt;" />
+        <StringDetect attribute="Type" context="#stay" String="&lt;|&gt;" />
+        <StringDetect attribute="Type" context="#stay" String="&lt;..&gt;" />
+        <StringDetect attribute="Type" context="#stay" String="(..)" />
+        <StringDetect attribute="Type" context="#stay" String="()" />
+        <RegExpr attribute="Type" context="#stay" String="&lt;\s*(([a-z_][a-z0-9_]*::)?(Int|Float|String|Addr|Address|Rune|Builder|Error|Type|i1|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|ptr|[A-Z][a-zA-Z0-9_]*)(\{[0-9]*\}|\[\])*|\(\))?\s*\|\s*(([a-z_][a-z0-9_]*::)?(Int|Float|String|Addr|Address|Rune|Builder|Error|Type|i1|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|ptr|[A-Z][a-zA-Z0-9_]*)(\{[0-9]*\}|\[\])*|\(\))?\s*&gt;" />
+        <RegExpr attribute="Type" context="#stay" String="\(\s*(Int|Float|String|Addr|Address|Rune|Builder|Error|Type|i1|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|ptr|[A-Z][a-zA-Z0-9_]*)\s*\*\s*(\.\.|[0-9]+)\s*\)" />
+        <!-- Built-in, PascalCase, and Map (K ^ V) types (with optional array {} or slice [] suffixes) -->
+        <RegExpr attribute="Type" context="#stay" String="\b(Int|Float|String|Addr|Address|Rune|Builder|Error|Type|i1|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|float|double|void|ptr|[A-Z][a-zA-Z0-9_]*)\b(\{[0-9]*\}|\[\])*(\s*\^\s*(Int|Float|String|Addr|Address|Rune|Builder|Error|Type|i1|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|float|double|void|ptr|[A-Z][a-zA-Z0-9_]*)\b(\{[0-9]*\}|\[\])*)*" />
         <keyword attribute="Type" context="#stay" String="types" />
 
-        <!-- Ramification sugared returns: |->, |+>, |==>, |++> (matched before choice | and ||) -->
+        <!-- Lowercase identifiers (prevent trailing digits in v0, utf8 from matching as numbers) -->
+        <RegExpr attribute="Normal Text" context="#stay" String="\b[a-z_][a-zA-Z0-9_]*\b" />
+
+        <!-- Ramification sugared returns: |->, |+>, |-->, |++> (matched before choice | and ||) -->
         <StringDetect attribute="Constant" context="#stay" String="|++&gt;" />
         <StringDetect attribute="Constant" context="#stay" String="|--&gt;" />
         <StringDetect attribute="Constant" context="#stay" String="|+&gt;" />
         <StringDetect attribute="Constant" context="#stay" String="|-&gt;" />
 
-        <!-- Ramification unit constants: <+>, <->, <++>, <--> -->
-        <StringDetect attribute="Constant" context="#stay" String="&lt;++&gt;" />
-        <StringDetect attribute="Constant" context="#stay" String="&lt;--&gt;" />
-        <StringDetect attribute="Constant" context="#stay" String="&lt;+&gt;" />
-        <StringDetect attribute="Constant" context="#stay" String="&lt;-&gt;" />
+        <!-- Ramification unit literals: <+>, <->, <++>, <--> (literals just like numbers) -->
+        <StringDetect attribute="Decimal" context="#stay" String="&lt;++&gt;" />
+        <StringDetect attribute="Decimal" context="#stay" String="&lt;--&gt;" />
+        <StringDetect attribute="Decimal" context="#stay" String="&lt;+&gt;" />
+        <StringDetect attribute="Decimal" context="#stay" String="&lt;-&gt;" />
 
-        <!-- Built-in Flag / Unit ramification type: <> -->
-        <StringDetect attribute="Type" context="#stay" String="&lt;&gt;" />
-
-        <!-- Branching and jumps: cycle breaks, continues, escapes, returns (matched before arrow delimiter) -->
+        <!-- Branching and jumps: cycle breaks, continues, escapes, returns (matched before '-' and '->') -->
         <RegExpr attribute="Control" context="#stay" String="--[&gt;^][0-9]*" />
         <StringDetect attribute="Control" context="#stay" String="&gt;--" />
         <StringDetect attribute="Control" context="#stay" String="--:" />
@@ -90,29 +103,43 @@
         <StringDetect attribute="Constant" context="#stay" String="&lt;-" />
         <StringDetect attribute="Constant" context="#stay" String="-&gt;" />
 
+        <!-- Postfix --! matched before '-' -->
+        <StringDetect attribute="Operator" context="#stay" String="--!" />
+        <StringDetect attribute="Operator" context="#stay" String="!!" />
+
+        <!-- Numeric literals (including negative numbers like -42, -3.14; matched before '-') -->
+        <RegExpr attribute="Float" context="#stay" String="-?[0-9][0-9_]*\.[0-9][0-9_]*([eE][-+]?[0-9_]+)?(f32|f64|f|F)?" />
+        <RegExpr attribute="Hex" context="#stay" String="-?0x[0-9a-fA-F_]+(i8|i16|i32|i64|u8|u16|u32|u64)?" />
+        <RegExpr attribute="Octal" context="#stay" String="-?0o[0-7_]+(i8|i16|i32|i64|u8|u16|u32|u64)?" />
+        <RegExpr attribute="Binary" context="#stay" String="-?0b[01_]+(i8|i16|i32|i64|u8|u16|u32|u64)?" />
+        <RegExpr attribute="Decimal" context="#stay" String="-?[0-9][0-9_]*(i8|i16|i32|i64|u8|u16|u32|u64)?" />
+
+        <!-- Range operators: ..., ..=, .. (matched in longest-first order) -->
+        <StringDetect attribute="Operator" context="#stay" String="..." />
+        <StringDetect attribute="Operator" context="#stay" String="..=" />
+        <StringDetect attribute="Operator" context="#stay" String=".." />
+
         <!-- Branching: logical OR || before choice branch |, choice abort !|, and brackets [ ] -->
         <StringDetect attribute="Operator" context="#stay" String="||" />
         <StringDetect attribute="Control" context="#stay" String="!|" />
         <DetectChar attribute="Control" context="#stay" char="|" />
         <DetectChar attribute="Control" context="#stay" char="[" />
         <DetectChar attribute="Control" context="#stay" char="]" />
-        <StringDetect attribute="Operator" context="#stay" String="!!" />
-        <StringDetect attribute="Operator" context="#stay" String="--!" />
+        <StringDetect attribute="Operator" context="#stay" String="!=" />
+        <StringDetect attribute="Operator" context="#stay" String="!&lt;" />
+        <StringDetect attribute="Operator" context="#stay" String="!&gt;" />
+        <StringDetect attribute="Operator" context="#stay" String="!==&gt;" />
+        <StringDetect attribute="Operator" context="#stay" String="!=&gt;" />
         <StringDetect attribute="Operator" context="#stay" String="=&gt;" />
         <StringDetect attribute="Operator" context="#stay" String="::=" />
         <StringDetect attribute="Operator" context="#stay" String=":=" />
         <StringDetect attribute="Operator" context="#stay" String="+=" />
         <StringDetect attribute="Operator" context="#stay" String="::" />
-        <StringDetect attribute="Operator" context="#stay" String=".." />
         <StringDetect attribute="Operator" context="#stay" String="$&gt;&gt;" />
         <StringDetect attribute="Operator" context="#stay" String="$&gt;" />
         <DetectChar attribute="Operator" context="#stay" char="$" />
         <StringDetect attribute="Operator" context="#stay" String="&amp;&amp;" />
-        <StringDetect attribute="Operator" context="#stay" String="||" />
         <StringDetect attribute="Operator" context="#stay" String="==" />
-        <StringDetect attribute="Operator" context="#stay" String="!=" />
-        <StringDetect attribute="Operator" context="#stay" String="!&lt;" />
-        <StringDetect attribute="Operator" context="#stay" String="!&gt;" />
         <StringDetect attribute="Operator" context="#stay" String=".&lt;." />
         <StringDetect attribute="Operator" context="#stay" String=".&gt;." />
         <StringDetect attribute="Operator" context="#stay" String=".|." />
@@ -122,6 +149,7 @@
         <StringDetect attribute="Operator" context="#stay" String="++" />
         <StringDetect attribute="Operator" context="#stay" String="~~" />
         <StringDetect attribute="Operator" context="#stay" String="??" />
+        <StringDetect attribute="Operator" context="#stay" String="^?" />
         <DetectChar attribute="Operator" context="#stay" char="?" />
         <DetectChar attribute="Operator" context="#stay" char="&amp;" />
         <DetectChar attribute="Operator" context="#stay" char="+" />
@@ -134,11 +162,15 @@
         <DetectChar attribute="Operator" context="#stay" char="&lt;" />
         <DetectChar attribute="Operator" context="#stay" char="&gt;" />
         <DetectChar attribute="Operator" context="#stay" char="^" />
-        <RegExpr attribute="Float" context="#stay" String="-?[0-9]+\.[0-9]+([eE][-+]?[0-9]+)?(f32|f|F)?" />
-        <RegExpr attribute="Hex" context="#stay" String="0x[0-9a-fA-F]+(i8|i16|i32|i64|u8|u16|u32|u64)?" />
-        <RegExpr attribute="Octal" context="#stay" String="0o[0-7]+(i8|i16|i32|i64|u8|u16|u32|u64)?" />
-        <RegExpr attribute="Binary" context="#stay" String="0b[01]+(i8|i16|i32|i64|u8|u16|u32|u64)?" />
-        <RegExpr attribute="Decimal" context="#stay" String="-?[0-9]+(i8|i16|i32|i64|u8|u16|u32|u64)?" />
+      </context>
+      <context name="UseDirective" attribute="Normal Text" lineEndContext="#pop">
+        <DetectSpaces attribute="Normal Text" context="#stay" />
+        <Detect2Chars attribute="Comment" context="LineComment" char="/" char1="/" />
+        <Detect2Chars attribute="Comment" context="BlockComment" char="/" char1="*" beginRegion="BlockComment" />
+        <RegExpr attribute="Directive" context="#stay" String="\((dynamic|import|,|\s)*\)" />
+        <DetectChar attribute="Operator" context="#stay" char="=" />
+        <DetectChar attribute="Normal Text" context="#pop" char=";" />
+        <RegExpr attribute="String" context="#stay" String="&quot;[^&quot;]*&quot;|[^\s;]+" />
       </context>
       <context name="LineComment" attribute="Comment" lineEndContext="#pop" />
       <context name="BlockComment" attribute="Comment" lineEndContext="#stay">

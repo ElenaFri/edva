@@ -23,6 +23,7 @@ target triple = "x86_64-unknown-linux-gnu"
 @"var.const::ln10" = external global double
 @"var.const::max_i64" = external global i64
 @"var.const::min_i64" = external global i64
+@"var.const::max_safe_int" = external global i64
 @"var.const::max_i32" = external global i32
 @"var.const::min_i32" = external global i32
 @"var.const::max_i16" = external global i16

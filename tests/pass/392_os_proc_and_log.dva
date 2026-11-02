@@ -1,0 +1,149 @@
+#use fs
+#use io
+#use log
+#use os
+#use str
+#use test
+
+// --- 1. std/os: process helpers & direct argument-array execution ---
+
+test::ok(?os::hostname! > 0, "os::hostname non-empty")
+sh_path = os::which("sh") | p => p | ""
+test::ok(?sh_path > 0 && str::ends_with(sh_path, "/sh"), "os::which finds sh")
+test::ok(!<>(os::which("nonexistent_binary_edva_xyz_999")), "os::which absent for missing binary")
+
+code0 = os::spawn_args("true", String{})
+test::eq(code0, 0, "os::spawn_args true exits 0")
+
+code1 = os::spawn_args("false", String{})
+test::eq(code1, 1, "os::spawn_args false exits 1")
+
+code_bad = os::spawn_args("nonexistent_binary_edva_xyz_999", String{})
+test::eq(code_bad, -1, "os::spawn_args missing binary returns -1")
+
+// Direct argv without shell expansion (special characters stay literal)
+echo_out = os::run_args("printf", os::Args("%s:%s", "a b", "$HOME;rm")) | s => s | ""
+test::eq(echo_out, "a b:$HOME;rm", "os::run_args passes literal arguments without shell expansion")
+
+// Separate stdout and stderr capture via os::exec_args
+res_both = os::exec_args("sh", os::Args("-c", "printf 'out_msg'; printf 'err_msg' >&2; exit 7"))
+test::ok(<>(res_both), "os::exec_args succeeds")
+r_both = res_both | r => r | os::ProcResult(-1, "", "")
+test::eq(r_both.status, 7, "os::exec_args exit status 7")
+test::eq(r_both.stdout, "out_msg", "os::exec_args stdout")
+test::eq(r_both.stderr, "err_msg", "os::exec_args stderr")
+
+// Feeding stdin and capturing stdout via os::exec_input
+res_in = os::exec_input("tr", os::Args("a-z", "A-Z"), "hello edva world")
+r_in = res_in | r => r | os::ProcResult(-1, "", "")
+test::eq(r_in.status, 0, "os::exec_input tr status 0")
+test::eq(r_in.stdout, "HELLO EDVA WORLD", "os::exec_input tr transformed stdin")
+
+// Missing binary in exec_args / spawn_piped returns absence
+test::ok(!<>(os::exec_args("nonexistent_binary_edva_xyz_999", os::Args("arg"))), "os::exec_args missing binary is absent")
+test::ok(!<>(os::spawn_piped("nonexistent_binary_edva_xyz_999", os::Args("arg"))), "os::spawn_piped missing binary is absent")
+
+// Piped child with manual write + wait_child
+ch_opt = os::spawn_piped("cat", os::Args())
+test::ok(<>(ch_opt), "os::spawn_piped cat")
+ch_opt
+   | ch =>
+      os::write(ch.stdin_fd, "piped_payload", 13)
+      os::close(ch.stdin_fd)
+      ch_closed = os::Child(ch.pid, -1, ch.stdout_fd, ch.stderr_fd)
+      wres = os::wait_child(ch_closed) | r => r | os::ProcResult(-1, "", "")
+      test::eq(wres.status, 0, "os::wait_child status 0")
+      test::eq(wres.stdout, "piped_payload", "os::wait_child stdout")
+
+// Background process + kill_pid + wait_pid
+bg_opt = os::spawn_bg("sleep", os::Args("10"))
+test::ok(<>(bg_opt), "os::spawn_bg sleep")
+bg_opt
+   | cpid =>
+      test::ok(!<>(os::try_wait_pid(cpid)), "os::try_wait_pid running child is absent")
+      test::ok(os::kill_pid(cpid, os::SIGKILL), "os::kill_pid SIGKILL")
+      kstatus = os::wait_pid(cpid) | code => code | -1
+      test::eq(kstatus, 128 + os::SIGKILL, "os::wait_pid killed child status 137")
+
+// --- 2. std/log: structured leveled logging ---
+
+test::eq(log::level_rank(log::Level(Debug)), 0, "log::level_rank Debug")
+test::eq(log::level_rank(log::Level(Error)), 3, "log::level_rank Error")
+test::eq(log::level_name(log::Level(Warn)), "WARN", "log::level_name Warn")
+
+pl_dbg = log::parse_level("  DeBuG ") | l => log::level_name(l) | ""
+pl_wrn = log::parse_level("warning") | l => log::level_name(l) | ""
+pl_off = log::parse_level("off") | l => log::level_name(l) | ""
+test::eq(pl_dbg, "DEBUG", "log::parse_level debug")
+test::eq(pl_wrn, "WARN", "log::parse_level warning")
+test::eq(pl_off, "SILENT", "log::parse_level off")
+test::ok(!<>(log::parse_level("bogus")), "log::parse_level invalid")
+
+log::set_timestamps(<->)
+log::set_color(<->)
+log::set_prefix("edvin")
+log::set_level(log::Level(Info))
+
+test::ok(!log::enabled(log::Level(Debug)), "Debug disabled at Info level")
+test::ok(log::enabled(log::Level(Info)), "Info enabled at Info level")
+test::ok(log::enabled(log::Level(Error)), "Error enabled at Info level")
+
+line1 = log::format_entry(log::Level(Info), "server started")
+test::eq(line1, "[INFO] [edvin] server started", "log::format_entry plain with prefix")
+
+line2 = log::format_kv(log::Level(Warn), "slow query", log::Fields(
+   log::field("ms", 142),
+   log::field("cached", <->),
+   log::field("sql", "SELECT * FROM users")
+))
+test::eq(line2, "[WARN] [edvin] slow query ms=142 cached=<-> sql=\"SELECT * FROM users\"", "log::format_kv structured fields")
+
+// Timestamp format toggles: extended vs basic, zoned vs Zulu/UTC
+log::set_timestamps(<+>)
+log::set_utc(<+>)
+log::set_basic_iso(<->)
+ts_utc_ext = log::format_entry(log::Level(Info), "ping")
+test::ok(str::contains(ts_utc_ext, "Z [INFO] [edvin] ping") && ?ts_utc_ext == 40, "log UTC extended timestamp")
+
+log::set_basic_iso(<+>)
+ts_utc_bas = log::format_entry(log::Level(Info), "ping")
+test::ok(str::contains(ts_utc_bas, "Z [INFO] [edvin] ping") && ?ts_utc_bas == 36, "log UTC basic timestamp")
+
+log::set_utc(<->)
+log::set_basic_iso(<->)
+log::set_timestamps(<->)
+
+log::set_color(<+>)
+line_col = log::format_entry(log::Level(Error), "boom")
+test::ok(str::contains(line_col, "\x1b[31m[ERROR]\x1b[0m"), "log::format_entry ANSI color")
+
+// Auto color respects FORCE_COLOR and NO_COLOR
+log::use_auto_color!
+os::unsetenv("NO_COLOR")
+os::setenv("FORCE_COLOR", "1")
+line_fc = log::format_entry(log::Level(Info), "forced")
+test::ok(str::contains(line_fc, "\x1b[32m[INFO]\x1b[0m"), "auto color FORCE_COLOR=1 enables ANSI")
+
+os::setenv("NO_COLOR", "1")
+line_nc = log::format_entry(log::Level(Info), "nocolor")
+test::ok(!str::contains(line_nc, "\x1b["), "auto color NO_COLOR=1 overrides FORCE_COLOR")
+os::unsetenv("NO_COLOR")
+os::unsetenv("FORCE_COLOR")
+
+log::set_color(<->)
+log::set_prefix("")
+
+tmp_log = "/tmp/edva_log_test_" + str::from_int(os::pid!) + ".log"
+fs::remove(tmp_log)
+test::ok(?tmp_log > 0, "temp log path created")
+test::ok(log::set_file(tmp_log), "log::set_file succeeds")
+log::debug("hidden debug line")
+log::info("hello file log")
+log::warn_kv("disk high", log::Fields(log::field("pct", 91), log::field("mount", "/")))
+log::close_file!
+
+logged = fs::read_to_string(tmp_log) | s => s | ""
+fs::remove(tmp_log)
+test::eq(logged, "[INFO] hello file log\n[WARN] disk high pct=91 mount=/\n", "log file output matches expected lines")
+
+test::summary!

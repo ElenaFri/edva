@@ -68,7 +68,7 @@ Pools manage uniform, fixed-size element allocations with $O(1)$ allocation and 
 | Function | Signature | Description |
 |---|---|---|
 | `mem::pool` | `Int, Int => Pool` | Creates pool: `mem::pool(elem_size, capacity)` |
-| `mem::pool_alloc` | `Pool => < Addr \| >` | Allocates slot: `<+ Addr +>` or `<-->` on full |
+| `mem::pool_alloc` | `Pool => < Addr | >` | Allocates slot: `<+ Addr +>` or `<-->` on full |
 | `mem::pool_free` | `Pool, Addr => <>` | Frees slot: `<+>` on success, `<->` on error |
 | `mem::pool_count` | `Pool => Int` | Number of currently active allocated slots |
 | `mem::pool_capacity` | `Pool => Int` | Maximum capacity of the pool |

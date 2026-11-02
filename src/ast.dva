@@ -62,7 +62,7 @@
 
 #type CompileTimeParam (name: String, val_type: ValueType, type_info: TypeInfo)
 
-#type BitfieldField (name: String, bit_width: Int, bit_offset: Int)
+#type BitfieldField (name: String, bit_width: Int, bit_offset: Int, is_flag: <>)
 #type BitfieldFields BitfieldField{}
 #type BitfieldInfo (
    fields: BitfieldFields,
@@ -133,7 +133,7 @@
 
 #type CycleEscapeExpr (cycle: Expr, branch: Expr)
 
-#type RangeExpr (has_lhs: <>, has_rhs: <>, lhs: Expr, rhs: Expr)
+#type RangeExpr (has_lhs: <>, has_rhs: <>, lhs: Expr, rhs: Expr, is_inclusive: <>)
 
 #type NamedArgExpr (name: String, val: Expr)
 #type RecordField (has_name: <>, name: String, val: Expr)

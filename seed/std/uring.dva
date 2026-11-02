@@ -53,7 +53,7 @@
    PROT_READ     = 1
    PROT_WRITE    = 2
    MAP_SHARED    = 1
-   MAP_POPULATE  = 32768
+   MAP_POPULATE  = 0x8000
 
    #type IoUringParams #packed (
       sq_entries:      u32,

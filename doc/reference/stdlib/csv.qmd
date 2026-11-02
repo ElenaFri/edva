@@ -1,0 +1,45 @@
+---
+meta:
+  audience: "Edva developers reading and writing CSV/TSV files and typed tabular data"
+  status: "current reference"
+  audited: "fb4fbc2"
+  evidence: "`std/csv.dva`, `tests/pass/398_std_url_csv.dva`"
+---
+
+# `csv` standard library
+
+The `csv` module implements an RFC 4180 CSV/TSV reader and writer (supporting quoted
+fields, escaped `""` quotes, embedded newlines, and configurable delimiters) together
+with a `#!` compile-time structural typed row encoder and decoder (`csv::encode`,
+`csv::decode`).
+
+```{.dva .run}
+#use csv
+#use io
+#use str
+
+#type Item (id: Int, name: String, price: Float = 0.0)
+#type Items Item{}
+
+rows = Items()
+rows += Item(1, "Widget, Large", 19.5)
+text = csv::encode(rows)
+csv::decode(Items, text) | dec =>
+   r0 = dec(0)!!
+   io::out $ r0.name + " $" + str::from_float(r0.price)
+```
+
+## Types and Function catalog
+
+| Symbol / Function | Signature | Description |
+|---|---|---|
+| `csv::Row` | `String{}` | Single CSV row of string cells |
+| `csv::Table` | `Row{}` | Table of CSV rows |
+| `csv::read_all(text)` | `String => < Table | Error >` | Parses RFC 4180 comma-separated CSV text into a `Table` |
+| `csv::read_all_delim(text, delim)` | `String, Int => < Table | Error >` | Parses CSV text with custom delimiter byte `delim` (e.g. `'\t'`, `';'`) |
+| `csv::write_all(rows)` | `Table => String` | Serializes `Table` into comma-separated RFC 4180 CSV text |
+| `csv::write_all_delim(rows, delim)` | `Table, Int => String` | Serializes `Table` with custom delimiter byte `delim` |
+| `csv::encode(val)` | `#! T: Type, T => String` | Encodes `Table`, `R{}` / `R[]` array of records (emitting header row for named records), or single record `R` into CSV |
+| `csv::encode_delim(val, delim)` | `#! T: Type, T, Int => String` | Encodes `val` into CSV text with custom delimiter byte `delim` |
+| `csv::decode(T, text)` | `#! T: Type, String => < T | Error >` | Decodes CSV text into `Table`, `R{}` array of records (matching columns by header name or tuple position, honoring `f.default` and `<P|>`), or single record `R` |
+| `csv::decode_delim(T, text, delim)` | `#! T: Type, String, Int => < T | Error >` | Decodes delimited text with custom delimiter `delim` into `T` |

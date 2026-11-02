@@ -1,8 +1,8 @@
 ---
 meta:
   audience: "Edva users and integrators"
-  status: "public module inventory; per-module references are in progress"
-  audited: "8b8cb19"
+  status: "public module inventory; per-module references are complete"
+  audited: "fb4fbc2"
   evidence: "`std/`, `src/edva.dva`"
 ---
 
@@ -15,31 +15,47 @@ Standard stream writers and readers live in `std/io.dva`.
 | Module | Purpose | Reference |
 |---|---|---|
 | `ascii` | ASCII byte classification and hex conversion | [ascii](ascii.qmd) |
-| `ccl` | CCL parser, manifest, and lockfile validation | [ccl](ccl.qmd) |
+| `base64` | RFC 4648 standard Base64 and URL-safe Base64URL encoding and decoding | [base64](base64.qmd) |
+| `bench` | monotonic-clock microbenchmarking and throughput reporting | [bench](bench.qmd) |
+| `binary` | endian-aware scalar readers/writers, LEB128 varints, and `#!` binary packing | [binary](binary.qmd) |
+| `ccl` | CCL parser, manifest, lockfile validation, and `#!` typed codec | [ccl](ccl.qmd) |
+| `cli` | declarative and `#!` structural command-line option parsing and `--help` | [cli](cli.qmd) |
 | `color` | color spaces, alpha compositing, gradients, hex packing; includes `color/palette` | [color](color.qmd) |
 | `const` | fundamental mathematical and geometric constants (`pi`, `tau`, `e`, `phi`, etc.) | [const](const.qmd) |
+| `csv` | RFC 4180 CSV/TSV reader/writer and `#!` structural typed row codec | [csv](csv.qmd) |
+| `deque` | generic ring-buffer double-ended queue | [deque](deque.qmd) |
 | `event` | portable descriptor readiness multiplexing (`poll`) | [event](event.qmd) |
 | `fmt` | allocation-efficient string formatting | [fmt](fmt.qmd) |
 | `fp` | functional programming combinators | [fp](fp.qmd) |
 | `fs` | paths, file I/O, directory traversal, and filesystem stats | [fs](fs.qmd) |
+| `hash` | FNV-1a, WyHash, CRC-32, Adler-32, and `#!` structural hashing | [hash](hash.qmd) |
+| `heap` | generic binary min/max/custom priority queue | [heap](heap.qmd) |
+| `hex` | RFC 4648 Base16 hexadecimal encoding and decoding | [hex](hex.qmd) |
 | `in` | input readers and line scanning | [in](in.qmd) |
 | `io` | readers, writers, and standard streams | [io](io.qmd) |
-| `json` | JSON parsing, value tree, and container model | [json](json.qmd) |
+| `json` | JSON parsing, value tree, and `#!` structural typed codec | [json](json.qmd) |
 | `libc` | POSIX and C library bindings | [libc](libc.qmd) |
+| `log` | leveled and `#!` structured `key=value` logging with ANSI color and file routing | [log](log.qmd) |
 | `math` | math bindings, vectors; includes `complex` and `geom` | [math](math.qmd) |
 | `mem` | arenas, fixed object pools, and low-level memory | [mem](mem.qmd) |
 | `net` | network primitives; includes `net/http` | [net](net.qmd) |
-| `os` | hosted operating-system operations and spawn | [os](os.qmd) |
+| `os` | hosted operating-system operations, environment, and subprocess pipelines | [os](os.qmd) |
+| `path` | cross-platform lexical path manipulation and glob matching | [path](path.qmd) |
+| `rand` | xoshiro256\*\* PRNG, OS entropy seeding, distributions, and shuffling | [rand](rand.qmd) |
+| `set` | generic hash-backed and structural array-backed sets | [set](set.qmd) |
 | `sort` | sorting helpers and comparator cycles | [sort](sort.qmd) |
 | `str` | string conversion and manipulation | [str](str.qmd) |
 | `sys` | process parameters, arguments, and exit | [sys](sys.qmd) |
+| `test` | unit test assertions, `#!` structural equality, suites, and summary reporting | [test](test.qmd) |
+| `time` | wall-clock and monotonic timers, civil calendar dates, and ISO/RFC formatting | [time](time.qmd) |
 | `type` | compile-time type predicates | [type](type.qmd) |
 | `unicode` | Unicode and UTF-8 helpers | [unicode](unicode.qmd) |
 | `uring` | Linux io_uring asynchronous I/O | [uring](uring.qmd) |
+| `url` | RFC 3986 URL parsing, resolution, percent-encoding, and `#!` query codec | [url](url.qmd) |
 | `utf` | UTF-8 rune encoding and decoding | [utf](utf.qmd) |
 
 Target-support files are implementation probes, not public
-API. Dedicated reference pages are provided for all 23 standard library modules.
+API. Dedicated reference pages are provided for all 39 standard library modules.
 
 ```{.dva .run}
 #use io
@@ -47,4 +63,3 @@ API. Dedicated reference pages are provided for all 23 standard library modules.
 
 io::out $ str::from_int(42)
 ```
-

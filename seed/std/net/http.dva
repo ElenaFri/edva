@@ -11,6 +11,7 @@
 // zero-copy.
 
 #use ascii
+#use const
 #use net
 #use str
 
@@ -137,7 +138,7 @@
       v' = 0
       total @ i =>
          c = s(i)
-         c !< 48 && c !> 57
+         c [48...57]
             |
                v' = v' * 10 + (c - 48)
             | -->
@@ -472,11 +473,11 @@
                      over' = <->
                      vlen @ j =>
                         c = v(j)
-                        c !< 48 && c !> 57
+                        c [48...57]
                            |
                               d = c - 48
-                              is_over = parsed' > 922337203685477580 ||
-                                 (parsed' == 922337203685477580 && d > 7)
+                              is_over = parsed' > const::max_i64 / 10 ||
+                                 (parsed' == const::max_i64 / 10 && d > 7)
                               is_over
                                  | (over' = <+>)
                                  | (parsed' = parsed' * 10 + d)

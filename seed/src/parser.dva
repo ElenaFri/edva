@@ -12,6 +12,8 @@
 #use "str"
 #use "operators"
 #use "diag"
+#use "log"
+#use const
 #use unicode
 
 
@@ -138,7 +140,7 @@ op_is_reserved = text =>
             "-->", "--^", "--|", ">--", "@", "[@",
             "@@", "^", "^?", "?", "!", "*", "&", "=>",
             "!=>", "|", "|->", "|+>", "|-->", "|++>",
-            "=", ":=", "+=", "::=", "..", "::", ".", ":",
+            "=", ":=", "+=", "::=", "..", "...", "..=", "::", ".", ":",
             "??", ".!.", "++", "~~", "--!", "!!", "^-", "^="]
 
 user_op_lookup: UserOpEntry{}, String => (found': <>, lbp': Int, rbp': Int)
@@ -167,7 +169,7 @@ is_continuation_op = t =>
    is_delim = t.kind [Comma, LParen, LBracket, LBrace]
    is_op = t.kind [Op] &&
       (t.text ["+", "-", "*", "/", "%", "$>", "$>>",
-         "..", "::", "&&", "||", ".<.", ".>.", ".&.", ".|.", ".^."])
+         "..", "...", "..=", "::", "&&", "||", ".<.", ".>.", ".&.", ".|.", ".^."])
    is_delim || is_op
 
 // --- driver ----------------------------------------------------------------
@@ -227,7 +229,7 @@ parser_error: Parser, Int, String => ()
 parser_error = p, code, msg =>
    p.recovered_errors = p.recovered_errors + 1
    fn = p.source_file != "" | p.source_file + ":" | ""
-   print $ fn + str::from_int(p.curr.line) + ":" + str::from_int(p.curr.col) +
+   log::error $ fn + str::from_int(p.curr.line) + ":" + str::from_int(p.curr.col) +
       ": E" + str::from_int(code) + ": " + msg
 
 // --- precedence (binary operators) ----------------------------------------
@@ -332,10 +334,14 @@ wrap_headless_choice = p, res =>
                <+ ast::Expr(Fn, ast::FnExpr(params, ast::Names(), ce)) +>
       | <-->
 
+tok_is_neg_lbracket: Parser => <>
+token_is_range_op: lexer::Tok => <>
+token_is_range_op = t => token_is_op(t, "..") || token_is_op(t, "...")
+
 parse_choice: Parser => <ast::Expr|>
 parse_choice = p =>
-   p.curr.kind
-      [LBracket] wrap_headless_choice(p, headless_choice_resume(p))
+   p.curr.kind [LBracket] || tok_is_neg_lbracket(p)
+      | wrap_headless_choice(p, headless_choice_resume(p))
       |
          token_is_pipe(p.curr)
             | choice_resume(p, ast::Expr(Var, "_"))
@@ -381,8 +387,9 @@ choice_resume = p, lhs =>
 
 parse_range: Parser => <ast::Expr|>
 parse_range = p =>
-   token_is_op(p.curr, "..")
+   token_is_range_op(p.curr)
       |
+         is_incl = p.curr.text == "..."
          dot_trail = p.curr.trail
          parser_advance(p)
          is_range_start(p.curr)
@@ -395,11 +402,11 @@ parse_range = p =>
                      parse_bp(p, 30)
                         | rr =>
                            <+ ast::Expr(Range, ast::RangeExpr(
-                              <->, <+>, ast::Expr(Int, 0), rr)) +>
+                              <->, <+>, ast::Expr(Int, 0), rr, is_incl)) +>
                         | <-->
             |
                <+ ast::Expr(Range, ast::RangeExpr(
-                  <->, <->, ast::Expr(Int, 0), ast::Expr(Int, 0))) +>
+                  <->, <->, ast::Expr(Int, 0), ast::Expr(Int, 0), is_incl)) +>
       |
          parse_bp(p, 30)
             | a => range_cont(p, a)
@@ -407,8 +414,9 @@ parse_range = p =>
 
 range_cont: Parser, ast::Expr => <ast::Expr|>
 range_cont = p, lhs =>
-   token_is_op(p.curr, "..")
+   token_is_range_op(p.curr)
       |
+         is_incl = p.curr.text == "..."
          dot_lead = p.curr.lead
          dot_trail = p.curr.trail
          dot_lead
@@ -427,19 +435,18 @@ range_cont = p, lhs =>
                            parse_bp(p, 30)
                               | rr =>
                                  range_cont(p, ast::Expr(Range,
-                                    ast::RangeExpr(<+>, <+>, lhs, rr)))
+                                    ast::RangeExpr(<+>, <+>, lhs, rr, is_incl)))
                               | <-->
                   |
                      range_cont(p, ast::Expr(Range, ast::RangeExpr(
-                        <+>, <->, lhs, ast::Expr(Int, 0))))
+                        <+>, <->, lhs, ast::Expr(Int, 0), is_incl)))
       | <+ lhs +>
 
-// A range RHS may begin with an integer, identifier, parenthesized expr, or a
-// A range RHS may begin with an integer, identifier, parenthesized expr,
-// '?' length query ("0..?T"), or a negative offset ("-2").
+// A range RHS may begin with an integer, float, rune, identifier,
+// parenthesized expr, '?' length query ("0..?T"), or a negative offset ("-2").
 is_range_start: lexer::Tok => <>
 is_range_start = t =>
-   t.kind [Int, Rune, Id, LParen] || t.text == "?" ||
+   t.kind [Int, Float, Rune, Id, LParen] || t.text == "?" ||
       (t.text == "-" && !t.trail)
 
 // Semicolon sequence continuation from an already-parsed lhs (named
@@ -459,12 +466,13 @@ seq_cont_loop = p, lhs =>
 
 
 // range_with_lhs: the choice tier's operand continuation for an already-parsed
-// lhs (the identifier dispatch fallback): apply ".." if present, else continue
-// the Pratt loop from the lhs.
+// lhs (the identifier dispatch fallback): apply ".."/"..." if present, else
+// continue the Pratt loop from the lhs.
 parse_range_with_lhs: Parser, ast::Expr => <ast::Expr|>
 parse_range_with_lhs = p, lhs =>
-   token_is_op(p.curr, "..")
+   token_is_range_op(p.curr)
       |
+         is_incl = p.curr.text == "..."
          dot_lead = p.curr.lead
          dot_trail = p.curr.trail
          dot_lead
@@ -483,11 +491,11 @@ parse_range_with_lhs = p, lhs =>
                            parse_bp(p, 30)
                               | rr =>
                                  range_cont(p, ast::Expr(Range,
-                                    ast::RangeExpr(<+>, <+>, lhs, rr)))
+                                    ast::RangeExpr(<+>, <+>, lhs, rr, is_incl)))
                               | <-->
                   |
                      range_cont(p, ast::Expr(Range, ast::RangeExpr(
-                        <+>, <->, lhs, ast::Expr(Int, 0))))
+                        <+>, <->, lhs, ast::Expr(Int, 0), is_incl)))
       | parse_bp_lhs(p, 30, lhs)
 
 // --- Pratt core with a threaded lhs ----------------------------------------
@@ -522,19 +530,37 @@ parse_bp_depth_ok = p, min_bp =>
    r
 
 parse_trailing_block_expr: Parser, ast::Expr => <ast::Expr|>
+lbracket_is_empty_guard: Parser => <>
+parse_pos_guard_choice: Parser, ast::Expr => <ast::Expr|>
+parse_neg_guard_choice: Parser, ast::Expr => <ast::Expr|>
 
 bp_loop: Parser, ast::Expr, Int, Int => <ast::Expr|>
 bp_loop = p, res, min_bp, cmp_line =>
-   p.just_dedented || tok_is_nl(p.curr) || tok_is_eof(p.curr) || !tok_is_op(p.curr)
+   p.just_dedented || tok_is_nl(p.curr) || tok_is_eof(p.curr)
       | <+ res +>
       |
-         operators::bin_info(p.curr.text)
-            | bp_cont(p, res, min_bp, cmp_line, _)
+         min_bp !> 120 && tok_is_neg_lbracket(p)
             |
-               uo = user_op_lookup(p.user_ops, p.curr.text)
-               uo.0
-                  | bp_cont_user(p, res, min_bp, cmp_line, uo.1, uo.2)
-                  | <+ res +>
+               parse_neg_guard_choice(p, res)
+                  | neg_e => bp_loop(p, neg_e, min_bp, -1)
+                  | <-->
+            |
+               min_bp !> 120 && (p.curr.kind [LBracket]) && lbracket_is_empty_guard(p)
+                  |
+                     parse_pos_guard_choice(p, res)
+                        | pos_e => bp_loop(p, pos_e, min_bp, -1)
+                        | <-->
+                  |
+                     !tok_is_op(p.curr)
+                        | <+ res +>
+                        |
+                           operators::bin_info(p.curr.text)
+                              | bp_cont(p, res, min_bp, cmp_line, _)
+                              |
+                                 uo = user_op_lookup(p.user_ops, p.curr.text)
+                                 uo.0
+                                    | bp_cont_user(p, res, min_bp, cmp_line, uo.1, uo.2)
+                                    | <+ res +>
 
 // Whether an operator is apply/feed ($, $>, $>>) — the binary tiers BELOW
 // the choice tier, whose right operand absorbs a choice continuation.
@@ -543,7 +569,7 @@ op_is_apply_feed = [Apply, Feed, Bind]
 
 parse_bp_rhs: Parser, operators::BinOpInfo => <ast::Expr|>
 parse_bp_rhs = p, i =>
-   is_brk = p.curr.kind [LBracket]
+   is_brk = p.curr.kind [LBracket] || tok_is_neg_lbracket(p)
    p.branch_body_depth == 0 && op_is_apply_feed(i.op) && is_brk
       |
          saved_cd = p.cycle_depth
@@ -555,6 +581,36 @@ parse_bp_rhs = p, i =>
          parse_bp(p, i.rbp)
             | rre => apply_feed_rhs(p, rre, i.op)
             | <-->
+
+is_cmp_atom: ast::Expr => <>
+is_cmp_atom = [Int, Float, Rune, Str, Var]
+
+chain_cmp: Parser, ast::Expr, ast::BinaryOp, ast::Expr => ast::Expr
+chain_cmp = p, prev, op2, rhs =>
+   prev
+      [Bin b]
+         b.0
+            [Seq]
+               new_r = chain_cmp(p, b.2, op2, rhs)
+               ast::Expr(Bin, (ast::BinaryOp(Seq), b.1, new_r))
+            [And]
+               new_r = chain_cmp(p, b.2, op2, rhs)
+               ast::Expr(Bin, (ast::BinaryOp(And), b.1, new_r))
+            |
+               mid = b.2
+               is_cmp_atom(mid)
+                  |
+                     cmp2 = ast::Expr(Bin, (op2, mid, rhs))
+                     ast::Expr(Bin, (ast::BinaryOp(And), prev, cmp2))
+                  |
+                     tmp = fresh_dp_var(p)
+                     tmp_var = ast::Expr(Var, tmp)
+                     asgn = mk_assign(tmp, mid)
+                     cmp1 = ast::Expr(Bin, (b.0, b.1, tmp_var))
+                     cmp2 = ast::Expr(Bin, (op2, tmp_var, rhs))
+                     and_e = ast::Expr(Bin, (ast::BinaryOp(And), cmp1, cmp2))
+                     ast::Expr(Bin, (ast::BinaryOp(Seq), asgn, and_e))
+      | ast::Expr(Bin, (op2, prev, rhs))
 
 // Consume one binary operator (the token is an Op whose BinOpInfo is in hand):
 // bound check, comparison same-line check, advance, parse the right operand,
@@ -575,9 +631,10 @@ bp_cont = p, res, min_bp, cmp_line, i =>
             |
                parse_bp_rhs(p, i)
                   | cae =>
-                     node = ast::Expr(Bin, (i.op, res, cae))
-                     set_cmp = i.same_line && cmp_line == -1
-                     nc = set_cmp | op_line | cmp_line
+                     node = i.same_line && cmp_line != -1
+                        | chain_cmp(p, res, i.op, cae)
+                        | ast::Expr(Bin, (i.op, res, cae))
+                     nc = i.same_line | op_line | -1
                      bp_loop(p, node, min_bp, nc)
                   | <-->
 
@@ -2422,6 +2479,7 @@ fn_params = p, params, ct_params =>
                            <-->
                         |
                            ct_params += pname
+                           p.ct_scope = ct_names_append(p.ct_scope, pname)
                            parser_advance(p)
                            fn_param_next(p, params, ct_params)
             |
@@ -2461,12 +2519,30 @@ fn_param_next = p, params, ct_params =>
          fn_params(p, params, ct_params)
       | fn_arrow(p, params, ct_params)
 
+split_ct_scope_names: String, Int, String, ast::Names => ast::Names
+split_ct_scope_names = s, i, cur, acc =>
+   i == ?s
+      |
+         cur != "" | (acc += cur)
+         acc
+      |
+         c = s(i)
+         c == 44
+            |
+               cur != "" | (acc += cur)
+               split_ct_scope_names(s, i + 1, "", acc)
+            | split_ct_scope_names(s, i + 1, cur + s(i..i + 1), acc)
+
 fn_arrow: Parser, ast::Names, ast::Names => <ast::Expr|>
 fn_arrow = p, params, ct_params =>
    p.curr.text
       // "=>" (params already read) and "!=>" (zero-argument) both arrow.
       ["=>", "!=>"]
          parser_advance(p)
+         eff_ct_params = (?ct_params == 0 && p.module_level && p.fn_depth == 0 &&
+            p.choice_depth == 0 && p.branch_body_depth == 0 && p.ct_scope != "")
+            | split_ct_scope_names(p.ct_scope, 0, "", ast::Names())
+            | ct_params
          saved_rhs = p.in_rhs
          p.in_rhs = <->
          saved_ml = p.module_level
@@ -2478,7 +2554,7 @@ fn_arrow = p, params, ct_params =>
          p.module_level = saved_ml
          p.in_rhs = saved_rhs
          body
-            | b => <+ ast::Expr(Fn, ast::FnExpr(params, ct_params, b)) +>
+            | b => <+ ast::Expr(Fn, ast::FnExpr(params, eff_ct_params, b)) +>
             | <-->
       |
          parser_error(p, 2011,
@@ -2569,11 +2645,11 @@ resolve_refs = p =>
          |
             has_mod
             |
-               print $ fn + str::from_int(fr.tok.line) + ":" +
+               log::error $ fn + str::from_int(fr.tok.line) + ":" +
                   str::from_int(fr.tok.col) + ": E3120: Unresolved type name '" +
                   fr.name + "'"
             |
-               print $ fn + str::from_int(fr.tok.line) + ":" +
+               log::error $ fn + str::from_int(fr.tok.line) + ":" +
                   str::from_int(fr.tok.col) + ": E2014: Unknown type name '" +
                   fr.name + "'"
             ok' = <->
@@ -2849,7 +2925,7 @@ rfields_packed_after_comma: Parser, ast::FieldTypes,
 rfields_packed_after_comma = p, fields, layout =>
    parser_advance(p)
    skip_type_layout(p)
-   next_layout = layout.2 > 0 && p.curr.line > layout.2 && !(p.curr.kind [RParen])
+   next_layout = layout.2 > 0 && p.curr.line > layout.2 && p.curr.kind ![RParen]
       | (p.curr.col, p.indent_level, 0)
       | layout
    rfields_packed(p, fields, next_layout)
@@ -2974,6 +3050,66 @@ bitfield_misaligned = p, expected_col =>
    mk_tp(ast::ValueType(Unknown),
       ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
 
+parse_bitfield_after_field: Parser, ast::BitfieldFields, Int, Int,
+   ast::ValueType, (Int, Int, Int) => (ast::ValueType, ast::TypeInfo, <>)
+parse_bitfield_after_field = p, fields, next_off, expected_bits, bvt, layout =>
+   p.curr.kind
+      [Comma]
+         parser_advance(p)
+         skip_type_layout(p)
+         next_layout = layout.2 > 0 && p.curr.line > layout.2 && !(p.curr.kind [RParen])
+            | (p.curr.col, p.indent_level, 0)
+            | layout
+         parse_bitfield_fields(p, fields,
+            next_off, expected_bits, bvt, next_layout)
+      [RParen]
+         parse_bitfield_fields(p, fields,
+            next_off, expected_bits, bvt, layout)
+      |
+         has_nl = tok_is_nl(p.curr) || tok_is_dedent(p.curr) || p.just_dedented
+         !has_nl
+            |
+               parser_error(p, 2015,
+                  "Expected ',' or ')' after bitfield field, got '" +
+                  p.curr.text + "'")
+               mk_tp(ast::ValueType(Unknown),
+                  ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+            |
+               unwind_to_indent(p, layout.1)
+               p.curr.kind
+                  [Comma]
+                     parser_advance(p)
+                     skip_type_layout(p)
+                     next_layout2 = layout.2 > 0 && p.curr.line > layout.2 && !(p.curr.kind [RParen])
+                        | (p.curr.col, p.indent_level, 0)
+                        | layout
+                     parse_bitfield_fields(p, fields,
+                        next_off, expected_bits, bvt, next_layout2)
+                  [RParen]
+                     parse_bitfield_fields(p, fields,
+                        next_off, expected_bits, bvt, layout)
+                  [Dedent]
+                     skip_nl_dedent(p)
+                     p.curr.kind
+                        [RParen]
+                           parse_bitfield_fields(p, fields,
+                              next_off, expected_bits, bvt, layout)
+                        | bitfield_misaligned(p, layout.0)
+                  [Indent]
+                     skip_nl_indent(p)
+                     p.curr.kind
+                        [RParen]
+                           parse_bitfield_fields(p, fields,
+                              next_off, expected_bits, bvt, layout)
+                        | bitfield_misaligned(p, layout.0)
+                  |
+                     p.curr.col == layout.0 && p.indent_level == layout.1
+                        |
+                           parse_bitfield_fields(p, fields,
+                              next_off, expected_bits, bvt,
+                              (layout.0, layout.1, 0))
+                        | bitfield_misaligned(p, layout.0)
+
 parse_bitfield_fields: Parser, ast::BitfieldFields, Int, Int,
    ast::ValueType, (Int, Int, Int) => (ast::ValueType, ast::TypeInfo, <>)
 parse_bitfield_fields = p, fields, cur_off, expected_bits, bvt, layout =>
@@ -3006,83 +3142,35 @@ parse_bitfield_fields = p, fields, cur_off, expected_bits, bvt, layout =>
                parser_advance(p)
                tok_is_nl(p.curr) && peek_is_indent_after_nl(p)
                   | skip_nl_and_indent(p)
-               p.curr.kind
-                  [Int]
-                     w = int_of_text(p.curr.text)
-                     w < 1
-                        |
-                           parser_error(p, 2019,
-                              "Bitfield field width must be positive, got " +
-                              str::from_int(w))
-                           mk_tp(ast::ValueType(Unknown),
-                              ast::TypeInfo(Prim, ast::ValueType(Unknown)),
-                              <->)
-                        |
-                           parser_advance(p)
-                           fields += ast::BitfieldField(fname, w, cur_off)
-                           next_off = cur_off + w
-                           p.curr.kind
-                              [Comma]
-                                 parser_advance(p)
-                                 skip_type_layout(p)
-                                 next_layout = layout.2 > 0 && p.curr.line > layout.2 && !(p.curr.kind [RParen])
-                                    | (p.curr.col, p.indent_level, 0)
-                                    | layout
-                                 parse_bitfield_fields(p, fields,
-                                    next_off, expected_bits, bvt, next_layout)
-                              [RParen]
-                                 parse_bitfield_fields(p, fields,
-                                    next_off, expected_bits, bvt, layout)
-                              |
-                                 has_nl = tok_is_nl(p.curr) || tok_is_dedent(p.curr) || p.just_dedented
-                                 !has_nl
-                                    |
-                                       parser_error(p, 2015,
-                                          "Expected ',' or ')' after bitfield field, got '" +
-                                          p.curr.text + "'")
-                                       mk_tp(ast::ValueType(Unknown),
-                                          ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
-                                    |
-                                       unwind_to_indent(p, layout.1)
-                                       p.curr.kind
-                                          [Comma]
-                                             parser_advance(p)
-                                             skip_type_layout(p)
-                                             next_layout2 = layout.2 > 0 && p.curr.line > layout.2 && !(p.curr.kind [RParen])
-                                                | (p.curr.col, p.indent_level, 0)
-                                                | layout
-                                             parse_bitfield_fields(p, fields,
-                                                next_off, expected_bits, bvt, next_layout2)
-                                          [RParen]
-                                             parse_bitfield_fields(p, fields,
-                                                next_off, expected_bits, bvt, layout)
-                                          [Dedent]
-                                             skip_nl_dedent(p)
-                                             p.curr.kind
-                                                [RParen]
-                                                   parse_bitfield_fields(p, fields,
-                                                      next_off, expected_bits, bvt, layout)
-                                                | bitfield_misaligned(p, layout.0)
-                                          [Indent]
-                                             skip_nl_indent(p)
-                                             p.curr.kind
-                                                [RParen]
-                                                   parse_bitfield_fields(p, fields,
-                                                      next_off, expected_bits, bvt, layout)
-                                                | bitfield_misaligned(p, layout.0)
-                                          |
-                                             p.curr.col == layout.0 && p.indent_level == layout.1
-                                                |
-                                                   parse_bitfield_fields(p, fields,
-                                                      next_off, expected_bits, bvt,
-                                                      (layout.0, layout.1, 0))
-                                                | bitfield_misaligned(p, layout.0)
+               p.curr.text == "<>"
                   |
-                     parser_error(p, 2018,
-                        "Expected bit width integer after ':', got '" +
-                        p.curr.text + "'")
-                     mk_tp(ast::ValueType(Unknown),
-                        ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+                     parser_advance(p)
+                     fields += ast::BitfieldField(fname, 1, cur_off, <+>)
+                     parse_bitfield_after_field(p, fields, cur_off + 1,
+                        expected_bits, bvt, layout)
+                  |
+                     p.curr.kind
+                        [Int]
+                           w = int_of_text(p.curr.text)
+                           w < 1
+                              |
+                                 parser_error(p, 2019,
+                                    "Bitfield field width must be positive, got " +
+                                    str::from_int(w))
+                                 mk_tp(ast::ValueType(Unknown),
+                                    ast::TypeInfo(Prim, ast::ValueType(Unknown)),
+                                    <->)
+                              |
+                                 parser_advance(p)
+                                 fields += ast::BitfieldField(fname, w, cur_off, <->)
+                                 parse_bitfield_after_field(p, fields, cur_off + w,
+                                    expected_bits, bvt, layout)
+                        |
+                           parser_error(p, 2018,
+                              "Expected bit width integer after ':', got '" +
+                              p.curr.text + "'")
+                           mk_tp(ast::ValueType(Unknown),
+                              ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
       |
          parser_error(p, 2064,
             "Expected field name or ')' in bitfield, got '" + p.curr.text +
@@ -4935,11 +5023,57 @@ is_binary_cont = p =>
          (!amb || p.curr.trail) &&
             (operators::bin_info(p.curr.text) | <+> | uo.0)
 
+guard_peek_after_indent: lexer::Lx, lexer::Tok => <>
+guard_peek_after_indent = lx, tok =>
+   tok.kind
+      [Newline, Indent] guard_peek_after_indent(lx, lexer::next_tok(lx, 0))
+      | !token_is_pipe(tok)
+
 guard_peek_is_indent: lexer::Lx, lexer::Tok => <>
 guard_peek_is_indent = lx, tok =>
    tok.kind
       [Newline] guard_peek_is_indent(lx, lexer::next_tok(lx, 0))
-      [Indent]
+      [Indent] guard_peek_after_indent(lx, lexer::next_tok(lx, 0))
+      | <->
+
+scan_past_rbracket: lexer::Lx, lexer::Tok, Int => <lexer::Tok|>
+scan_past_rbracket = lx, tok, depth =>
+   tok.kind
+      [Eof, Newline] <-->
+      [LParen, LBracket, LBrace]
+         scan_past_rbracket(lx, lexer::next_tok(lx, 0), depth + 1)
+      [RParen, RBrace]
+         depth > 1
+            | scan_past_rbracket(lx, lexer::next_tok(lx, 0), depth - 1)
+            | <-->
+      [RBracket]
+         depth == 1
+            | <+ lexer::next_tok(lx, 0) +>
+            | scan_past_rbracket(lx, lexer::next_tok(lx, 0), depth - 1)
+      | scan_past_rbracket(lx, lexer::next_tok(lx, 0), depth)
+
+tok_is_empty_guard_follow: Parser, lexer::Lx, lexer::Tok => <>
+tok_is_empty_guard_follow = p, lx, tok =>
+   tok_is_nl(tok)
+      | !guard_peek_is_indent(lx, lexer::next_tok(lx, 0))
+      |
+         kstop = tok.kind [Eof, Dedent, RParen, RBracket, RBrace, Comma, Semi]
+         tstop = token_is_pipe(tok)
+         amb = tok.text ["+", "-", "*"]
+         uo = user_op_lookup(p.user_ops, tok.text)
+         bstop = tok_is_op(tok) && (!amb || tok.trail) &&
+            (operators::bin_info(tok.text) | <+> | uo.0)
+         kstop || tstop || bstop
+
+lbracket_is_empty_guard = p =>
+   c = lexer::clone_lx(p.lx)
+   first = lexer::next_tok(c, 0)
+   first.kind
+      [RBracket, Eof, Newline] <->
+      |
+         scan_past_rbracket(c, first, 1)
+            | after_rb => tok_is_empty_guard_follow(p, c, after_rb)
+            | <->
 
 // Whether a guard's branch is EMPTY (no body follows): a binary operator, a
 // '|' / '[' branch separator, or a terminator (')', ',', ';', EOF, dedent).
@@ -5702,6 +5836,28 @@ finish_parsed_choice = p, lhs, pbrs =>
                            <+ ast::Expr(Choice,
                               ast::ChoiceExpr(lhs, ex, brs)) +>
 
+tok_is_neg_lbracket = p =>
+   token_is_op(p.curr, "!") && !p.curr.trail && peek_is_lbracket(p)
+
+parse_pos_guard_choice = p, lhs =>
+   g = choice_guard(p)
+   g
+      | gb =>
+         b = gb.branch
+         b.block = ast::Expr(Variant, (ast::Tag(Positive), ast::Exprs()))
+         neg_b = mk_branch(ast::Expr(Variant, (ast::Tag(Negative), ast::Exprs())))
+         brs = empty_pbrs()
+         brs += ParsedBranch(gb.pattern, gb.is_deep, b)
+         brs += ParsedBranch(pat_wildcard(), <->, neg_b)
+         finish_parsed_choice(p, lhs, brs)
+      | <-->
+
+parse_neg_guard_choice = p, lhs =>
+   parser_advance(p)
+   parse_pos_guard_choice(p, lhs)
+      | ce => <+ ast::Expr(Unary, (ast::UnaryOp(Not), ce)) +>
+      | <-->
+
 choice_cont: Parser, ast::Expr => <ast::Expr|>
 choice_cont = p, lhs =>
    choice_cont_init(p, lhs, -1)
@@ -5712,14 +5868,20 @@ headless_choice_cont = p, lhs =>
 
 choice_cont_init: Parser, ast::Expr, Int => <ast::Expr|>
 choice_cont_init = p, lhs, init_bi =>
-   p.choice_depth = p.choice_depth + 1
-   entry_indent = p.indent_level
-   r = choice_cont_loop(p, empty_pbrs(), entry_indent, init_bi)
-   p.choice_depth = p.choice_depth - 1
-   choice_unwind(p, entry_indent)
-   r
-      | pbrs => finish_parsed_choice(p, lhs, pbrs)
-      | <-->
+   tok_is_neg_lbracket(p)
+      |
+         parse_neg_guard_choice(p, lhs)
+            | neg_e => choice_cont_init(p, neg_e, init_bi)
+            | <-->
+      |
+         p.choice_depth = p.choice_depth + 1
+         entry_indent = p.indent_level
+         r = choice_cont_loop(p, empty_pbrs(), entry_indent, init_bi)
+         p.choice_depth = p.choice_depth - 1
+         choice_unwind(p, entry_indent)
+         r
+            | pbrs => finish_parsed_choice(p, lhs, pbrs)
+            | <-->
 
 choice_peek_pipe: Parser, Int => <Int|>
 choice_peek_pipe = p, min_indent =>
@@ -6061,17 +6223,267 @@ choice_guard_expr = p =>
             | <-->
       | <-->
 
+mk_type_pat_pb: Parser, Int, String, ast::Names => <ParsedBranch|>
+mk_type_pat_pb = p, n_toks, tag, binds =>
+   n_toks @ parser_advance(p)
+   binds @ bn =>
+      p.ct_scope = ct_names_append(p.ct_scope, bn)
+   vnames = ast::Names()
+   vnames += tag
+   br = ast::ChoiceBranch(
+      ast::GuardKind(Variant), ast::Exprs(),
+      ast::Expr(Var, "?"), vnames, binds, <->,
+      ast::Expr(Var, "?"))
+   <+ ParsedBranch(pat_wildcard(), <->, br) +>
+
+choice_guard_type_lparen: Parser => <ParsedBranch|>
+choice_guard_type_lparen = p =>
+   c = lexer::clone_lx(p.lx)
+   t1 = lexer::next_tok(c, 0)
+   t1.kind [RParen]
+      |
+         t2 = lexer::next_tok(c, 0)
+         t2.kind [RBracket]
+            | mk_type_pat_pb(p, 3, "#type:()", ast::Names())
+            | <-->
+      |
+         tok_is_op(t1) && t1.text == ".."
+            |
+               t2 = lexer::next_tok(c, 0)
+               t3 = lexer::next_tok(c, 0)
+               t2.kind [RParen] && t3.kind [RBracket]
+                  | mk_type_pat_pb(p, 4, "#type:(..)", ast::Names())
+                  | <-->
+            |
+               t1.kind [Id]
+                  |
+                     t2 = lexer::next_tok(c, 0)
+                     tok_is_op(t2) && t2.text == "*"
+                        |
+                           t3 = lexer::next_tok(c, 0)
+                           t4 = lexer::next_tok(c, 0)
+                           t5 = lexer::next_tok(c, 0)
+                           t4.kind [RParen] && t5.kind [RBracket]
+                              |
+                                 binds = ast::Names()
+                                 binds += t1.text
+                                 tok_is_op(t3) && t3.text == ".."
+                                    | mk_type_pat_pb(p, 6, "#type:(*..)", binds)
+                                    |
+                                       t3.kind [Int]
+                                          | mk_type_pat_pb(p, 6, "#type:(*" + t3.text + ")", binds)
+                                          | <-->
+                              | <-->
+                        | <-->
+                  | <-->
+
+choice_guard_type_angle: Parser => <ParsedBranch|>
+choice_guard_type_angle = p =>
+   c = lexer::clone_lx(p.lx)
+   t0 = p.curr
+   t1 = lexer::next_tok(c, 0)
+   t0.text ["<>", "<|>"]
+      |
+         t1.kind [RBracket]
+            | mk_type_pat_pb(p, 2, "#type:<>", ast::Names())
+            | <-->
+      |
+         t0.text == "<..>"
+            |
+               t1.kind [RBracket]
+                  | mk_type_pat_pb(p, 2, "#type:<..>", ast::Names())
+                  | <-->
+            |
+               t0.text == "<.."
+                  |
+                     t2 = lexer::next_tok(c, 0)
+                     tok_is_op(t1) && t1.text == ">" && t2.kind [RBracket]
+                        | mk_type_pat_pb(p, 3, "#type:<..>", ast::Names())
+                        | <-->
+                  |
+                     t0.text == "<|"
+                        |
+                           tok_is_op(t1) && t1.text == ">"
+                              |
+                                 t2 = lexer::next_tok(c, 0)
+                                 t2.kind [RBracket]
+                                    | mk_type_pat_pb(p, 3, "#type:<>", ast::Names())
+                                    | <-->
+                              |
+                                 t1.kind [Id]
+                                    |
+                                       t2 = lexer::next_tok(c, 0)
+                                       t3 = lexer::next_tok(c, 0)
+                                       tok_is_op(t2) && t2.text == ">" && t3.kind [RBracket]
+                                          |
+                                             binds = ast::Names()
+                                             binds += t1.text
+                                             mk_type_pat_pb(p, 4, "#type:<|N>", binds)
+                                          | <-->
+                                    | <-->
+                        | choice_guard_type_lt(p, c, t1)
+
+choice_guard_type_lt: Parser, lexer::Lx, lexer::Tok => <ParsedBranch|>
+choice_guard_type_lt = p, c, t1 =>
+   tok_is_op(t1) && t1.text == "..>"
+      |
+         t2 = lexer::next_tok(c, 0)
+         t2.kind [RBracket]
+            | mk_type_pat_pb(p, 3, "#type:<..>", ast::Names())
+            | <-->
+      |
+         tok_is_op(t1) && t1.text == ".."
+            |
+               t2 = lexer::next_tok(c, 0)
+               t3 = lexer::next_tok(c, 0)
+               tok_is_op(t2) && t2.text == ">" && t3.kind [RBracket]
+                  | mk_type_pat_pb(p, 4, "#type:<..>", ast::Names())
+                  | <-->
+            |
+               tok_is_op(t1) && t1.text == "|"
+                        |
+                           t2 = lexer::next_tok(c, 0)
+                           tok_is_op(t2) && t2.text == ">"
+                              |
+                                 t3 = lexer::next_tok(c, 0)
+                                 t3.kind [RBracket]
+                                    | mk_type_pat_pb(p, 4, "#type:<>", ast::Names())
+                                    | <-->
+                              |
+                                 t2.kind [Id]
+                                    |
+                                       t3 = lexer::next_tok(c, 0)
+                                       t4 = lexer::next_tok(c, 0)
+                                       tok_is_op(t3) && t3.text == ">" && t4.kind [RBracket]
+                                          |
+                                             binds = ast::Names()
+                                             binds += t2.text
+                                             mk_type_pat_pb(p, 5, "#type:<|N>", binds)
+                                          | <-->
+                                    | <-->
+                        |
+                           t1.kind [Id]
+                              |
+                                 t2 = lexer::next_tok(c, 0)
+                                 tok_is_op(t2) && t2.text == "|>"
+                                    |
+                                       t3 = lexer::next_tok(c, 0)
+                                       t3.kind [RBracket]
+                                          |
+                                             binds = ast::Names()
+                                             binds += t1.text
+                                             mk_type_pat_pb(p, 4, "#type:<P|>", binds)
+                                          | <-->
+                                    |
+                                       tok_is_op(t2) && t2.text == "|"
+                                          |
+                                             t3 = lexer::next_tok(c, 0)
+                                             tok_is_op(t3) && t3.text == ">"
+                                                |
+                                                   t4 = lexer::next_tok(c, 0)
+                                                   t4.kind [RBracket]
+                                                      |
+                                                         binds = ast::Names()
+                                                         binds += t1.text
+                                                         mk_type_pat_pb(p, 5, "#type:<P|>", binds)
+                                                      | <-->
+                                                |
+                                                   t3.kind [Id]
+                                                      |
+                                                         t4 = lexer::next_tok(c, 0)
+                                                         t5 = lexer::next_tok(c, 0)
+                                                         tok_is_op(t4) && t4.text == ">" && t5.kind [RBracket]
+                                                            |
+                                                               binds = ast::Names()
+                                                               binds += t1.text
+                                                               binds += t3.text
+                                                               mk_type_pat_pb(p, 6, "#type:<P|N>", binds)
+                                                            | <-->
+                                                      | <-->
+                                          | <-->
+                              | <-->
+
+choice_guard_type_ident: Parser => <ParsedBranch|>
+choice_guard_type_ident = p =>
+   c = lexer::clone_lx(p.lx)
+   t0 = p.curr
+   t1 = lexer::next_tok(c, 0)
+   t1.kind
+      [LBrace]
+         t2 = lexer::next_tok(c, 0)
+         t2.kind [RBrace]
+            |
+               t3 = lexer::next_tok(c, 0)
+               t3.kind [RBracket]
+                  |
+                     binds = ast::Names()
+                     binds += t0.text
+                     mk_type_pat_pb(p, 4, "#type:{}", binds)
+                  | <-->
+            |
+               t2.kind [Int]
+                  |
+                     t3 = lexer::next_tok(c, 0)
+                     t4 = lexer::next_tok(c, 0)
+                     t3.kind [RBrace] && t4.kind [RBracket]
+                        |
+                           binds = ast::Names()
+                           binds += t0.text
+                           mk_type_pat_pb(p, 5, "#type:{}", binds)
+                        | <-->
+                  | <-->
+      [LBracket]
+         t2 = lexer::next_tok(c, 0)
+         t3 = lexer::next_tok(c, 0)
+         t2.kind [RBracket] && t3.kind [RBracket]
+            |
+               binds = ast::Names()
+               binds += t0.text
+               mk_type_pat_pb(p, 4, "#type:[]", binds)
+            | <-->
+      |
+         tok_is_op(t1) && t1.text == "^"
+            |
+               t2 = lexer::next_tok(c, 0)
+               t3 = lexer::next_tok(c, 0)
+               t2.kind [Id] && t3.kind [RBracket]
+                  |
+                     binds = ast::Names()
+                     binds += t0.text
+                     binds += t2.text
+                     mk_type_pat_pb(p, 4, "#type:^", binds)
+                  | <-->
+            | <-->
+
+choice_guard_type_pattern: Parser => <ParsedBranch|>
+choice_guard_type_pattern = p =>
+   p.curr.kind
+      [LParen] choice_guard_type_lparen(p)
+      [Id] choice_guard_type_ident(p)
+      [Op]
+         p.curr.text ["<", "<>", "<|>", "<|", "<..", "<..>"]
+            | choice_guard_type_angle(p)
+            | <-->
+      | <-->
+
 choice_guard: Parser => <ParsedBranch|>
 choice_guard = p =>
    parser_advance(p)
-   is_var = guard_is_variant(p.curr)
-   is_var
-      | choice_guard_variant(p)
+   tpat = choice_guard_type_pattern(p)
+   tpat
+      | tp => <+ tp +>
       |
-         is_rec = p.curr.kind [LParen] && guard_is_record_pattern(p)
-         is_rec
-            | choice_guard_record(p)
-            | choice_guard_expr(p)
+         nxt = parser_peek_next(p)
+         nxt_is_expr_op = token_is_range_op(nxt) ||
+            (tok_is_op(nxt) && <>(operators::bin_info(nxt.text)))
+         is_var = guard_is_variant(p.curr) && !nxt_is_expr_op
+         is_var
+            | choice_guard_variant(p)
+            |
+               is_rec = p.curr.kind [LParen] && guard_is_record_pattern(p)
+               is_rec
+                  | choice_guard_record(p)
+                  | choice_guard_expr(p)
 
 gv: Parser, ast::Exprs => <ast::ChoiceBranch|>
 gv = p, vals =>
@@ -6240,9 +6652,13 @@ choice_same_line = p =>
    lhs = choice_body_inner(p)
    lhs
       | le =>
-         r = choice_same_line_loop(p, empty_pbrs())
-         r
-            | brs => finish_parsed_choice(p, le, brs)
+         le2_opt = tok_is_neg_lbracket(p) | parse_neg_guard_choice(p, le) | <+ le +>
+         le2_opt
+            | le2 =>
+               r = choice_same_line_loop(p, empty_pbrs())
+               r
+                  | brs => finish_parsed_choice(p, le2, brs)
+                  | <-->
             | <-->
       | <-->
 
@@ -6453,6 +6869,8 @@ parse_colon_type_vt = p, name => parse_colon_type_vt_g(p, name, <->)
 
 parse_colon_type_vt_g: Parser, String, <> => <ast::Expr|>
 parse_colon_type_vt_g = p, name, is_global =>
+   p.module_level && p.fn_depth == 0 && p.choice_depth == 0 && p.branch_body_depth == 0
+      | p.ct_scope = ""
    p.curr.kind
       [LParen]
          pk = parser_peek_next(p)
@@ -6737,7 +7155,7 @@ ct_signature_arrow_g = p, name, ct_names, cps, params, infos, is_global =>
       ["=>"]
          parser_advance(p)
          ret = parse_ct_type(p)
-         p.ct_scope = ""
+         p.ct_scope = ct_names
          !ret.2 | <--> |
             marker = "@ct0:" + ct_names
             sig_ti = ast::TypeInfo(Fn, (params, infos, ret.0, ret.1, cps))
@@ -6826,8 +7244,8 @@ parse_assign_rhs = p =>
                lhs = parse_bp(p, 130)
                lhs
                   | le =>
-                     p.curr.kind
-                        [LBracket] choice_cont(p, le)
+                     p.curr.kind [LBracket] || tok_is_neg_lbracket(p)
+                        | choice_cont(p, le)
                         | <+ le +>
                   | <-->
             | parse_cycle(p)
@@ -6904,7 +7322,7 @@ fold_const_unary = op, fo =>
 
 fold_const_bin_int_val: ast::BinaryOp, Int, Int => <Int|>
 fold_const_bin_int_val = op, a, b =>
-   min_i64 = -9223372036854775807 - 1
+   min_i64 = const::min_i64
    op
       [Add] <+ a + b +>
       [Sub] <+ a - b +>
@@ -7187,6 +7605,7 @@ parse_named_assign_g = p, name, is_compound, is_global =>
                                              cs = p.consts
                                              cs += ConstEntry(name, ast::Expr(Var, ""))
                                              p.consts = cs
+                                 p.ct_scope = ""
                            n = ast::Expr(Assign, (name, is_mutable, is_compound,
                               is_global, <->, eff_re, ast::Expr(Var, ""), "",
                               ast::TypeInfo(Prim, ast::ValueType(Unknown))))
@@ -7355,7 +7774,7 @@ expand_int_repeats = s =>
                         s(j') == '}'
                            | (close' = j'; -->)
                            |
-                              s(j') !< '0' && s(j') !> '9'
+                              s(j') ['0'...'9']
                                  | (j' = j' + 1)
                                  | -->
                      close' < 0
@@ -7363,7 +7782,7 @@ expand_int_repeats = s =>
                         |
                            cnt_str = s(i' + 2..close')
                            cnt = str::to_int(cnt_str) | (.0) | -1
-                           (cnt < 0 || cnt > 64)
+                           cnt ![0...64]
                               | (err' = <+>; -->)
                               |
                                  cnt @

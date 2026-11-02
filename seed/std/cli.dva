@@ -1,140 +1,345 @@
 // Standard CLI Argument Parsing Module (std/cli.dva)
-// Ergonomic command-line argument, flag, and option helpers over sys::argc / sys::argv.
+// Declarative command-line option specification, automatic -h/--help and
+// --no-<flag> handling, custom validator lambdas, and typed value extraction.
 
 #use sys
 #use str
+#use io
+
+#public
+
+#type Args String{}
+#type ArgsList Args{}
+#type OptKind < KFlag, KInt, KFloat, KStr, KStrList >
+#type FlagValidator (<> => < | String >)
+#type IntValidator (Int => < | String >)
+#type FloatValidator (Float => < | String >)
+#type StrValidator (String => < | String >)
+
+#type Opt (
+   short: String,
+   long: String,
+   kind: OptKind,
+   required: <>,
+   def_flag: <>,
+   def_int: Int,
+   def_float: Float,
+   def_str: String,
+   desc: String,
+   val_flag: FlagValidator,
+   val_int: IntValidator,
+   val_float: FloatValidator,
+   val_str: StrValidator
+)
+
+#type Opts Opt{}
+#type BoolList <>{}
+#type IntList Int{}
+#type FloatList Float{}
+
+#type Parsed (
+   opts: Opts,
+   seen: BoolList,
+   flags: BoolList,
+   ints: IntList,
+   floats: FloatList,
+   strs: Args,
+   str_lists: ArgsList,
+   args: Args,
+   help: <>,
+   version: <>
+)
+
+ok_flag: <> => < | String >
+ok_flag = v => <++>
+
+ok_int: Int => < | String >
+ok_int = v => <++>
+
+ok_float: Float => < | String >
+ok_float = v => <++>
+
+ok_str: String => < | String >
+ok_str = v => <++>
 
 #private
 
-// Internal helper: checks if `arg` equals `flag` (when `flag` is non-empty).
-matches_flag: String, String => <>
-matches_flag = arg, flag =>
-   ?flag > 0 && arg == flag
+prog_basename: String => String
+prog_basename = p =>
+   str::rfind(p, "/")
+      | idx => p(idx + 1..?p)
+      | p
 
-// Internal helper: checks if `arg` starts with `flag + "="` and returns the value after `=`.
-extract_eq_val: String, String => < String | >
-extract_eq_val = arg, flag =>
-   ?flag == 0
-      | <-->
-      |
-         prefix = flag + "="
-         str::starts_with(arg, prefix)
-            | <+ arg(?prefix..?arg) +>
-            | <-->
+split_spec: String => (String, String)
+split_spec = spec =>
+   str::split_once(spec, ":")
+      | pair => (pair.0, pair.1)
+      | ("", spec)
 
-// Internal helper: looks up option `name` / `short` across argv.
-// Supports both `--opt val` and `--opt=val` (as well as `-o val` and `-o=val`),
-// stopping option scanning at `--`.
-find_opt: String, String => < String | >
-find_opt = name, short =>
-   n = sys::argc
-   i' = 1
-   res' = <-->
-   i' < n @
-      arg = sys::argv_string(i')
-      arg == "--"
-         | -->
+#public
+
+make_flag_opt: String, <>, String, FlagValidator => Opt
+make_flag_opt = spec, def_v, desc, vf =>
+   sp = split_spec(spec)
+   Opt(sp.0, sp.1, OptKind(KFlag), <->, def_v, 0, 0.0, "", desc, vf, ok_int, ok_float, ok_str)
+
+make_flag_opt_def: String, <>, String => Opt
+make_flag_opt_def = spec, def_v, desc =>
+   make_flag_opt(spec, def_v, desc, ok_flag)
+
+make_int_opt: String, Int, String, IntValidator => Opt
+make_int_opt = spec, def_v, desc, vf =>
+   sp = split_spec(spec)
+   Opt(sp.0, sp.1, OptKind(KInt), <->, <->, def_v, 0.0, "", desc, ok_flag, vf, ok_float, ok_str)
+
+make_int_opt_def: String, Int, String => Opt
+make_int_opt_def = spec, def_v, desc =>
+   make_int_opt(spec, def_v, desc, ok_int)
+
+make_float_opt: String, Float, String, FloatValidator => Opt
+make_float_opt = spec, def_v, desc, vf =>
+   sp = split_spec(spec)
+   Opt(sp.0, sp.1, OptKind(KFloat), <->, <->, 0, def_v, "", desc, ok_flag, ok_int, vf, ok_str)
+
+make_float_opt_def: String, Float, String => Opt
+make_float_opt_def = spec, def_v, desc =>
+   make_float_opt(spec, def_v, desc, ok_float)
+
+make_str_opt: String, String, String, StrValidator => Opt
+make_str_opt = spec, def_v, desc, vf =>
+   sp = split_spec(spec)
+   Opt(sp.0, sp.1, OptKind(KStr), <->, <->, 0, 0.0, def_v, desc, ok_flag, ok_int, ok_float, vf)
+
+make_str_opt_def: String, String, String => Opt
+make_str_opt_def = spec, def_v, desc =>
+   make_str_opt(spec, def_v, desc, ok_str)
+
+make_str_list_opt: String, String, StrValidator => Opt
+make_str_list_opt = spec, desc, vf =>
+   sp = split_spec(spec)
+   Opt(sp.0, sp.1, OptKind(KStrList), <->, <->, 0, 0.0, "", desc, ok_flag, ok_int, ok_float, vf)
+
+make_str_list_opt_def: String, String => Opt
+make_str_list_opt_def = spec, desc =>
+   make_str_list_opt(spec, desc, ok_str)
+
+make_req_opt: String, Type, String => Opt
+make_req_opt = spec, ty, desc =>
+   sp = split_spec(spec)
+   kind = ty == Int
+      | OptKind(KInt)
+      | (ty == Float | OptKind(KFloat) | (ty == String | OptKind(KStr) | OptKind(KFlag)))
+   req = kind ![KFlag]
+   Opt(sp.0, sp.1, kind, req, <->, 0, 0.0, "", desc, ok_flag, ok_int, ok_float, ok_str)
+
+make_req_int_opt: String, String, IntValidator => Opt
+make_req_int_opt = spec, desc, vf =>
+   sp = split_spec(spec)
+   Opt(sp.0, sp.1, OptKind(KInt), <+>, <->, 0, 0.0, "", desc, ok_flag, vf, ok_float, ok_str)
+
+make_req_float_opt: String, String, FloatValidator => Opt
+make_req_float_opt = spec, desc, vf =>
+   sp = split_spec(spec)
+   Opt(sp.0, sp.1, OptKind(KFloat), <+>, <->, 0, 0.0, "", desc, ok_flag, ok_int, vf, ok_str)
+
+make_req_str_opt: String, String, StrValidator => Opt
+make_req_str_opt = spec, desc, vf =>
+   sp = split_spec(spec)
+   Opt(sp.0, sp.1, OptKind(KStr), <+>, <->, 0, 0.0, "", desc, ok_flag, ok_int, ok_float, vf)
+
+#private
+
+has_required_opt: Opts => <>
+has_required_opt = opts =>
+   req' = <->
+   ?opts @ i =>
+      opts(i)!!.required
          |
-            matches_flag(arg, name) || matches_flag(arg, short)
-               |
-                  i' + 1 < n
-                     |
-                        res' = <+ sys::argv_string(i' + 1) +>
-                        -->
-                     | -->
-               |
-                  extract_eq_val(arg, name)
-                     | v =>
-                        res' = <+ v +>
-                        -->
-                     |
-                        extract_eq_val(arg, short)
-                           | v2 =>
-                              res' = <+ v2 +>
-                              -->
-      i' = i' + 1
+            req' = <+>
+            -->
+   req'
+
+find_opt_idx: Opts, String => Int
+find_opt_idx = opts, key =>
+   res' = -1
+   ?opts @ i =>
+      o = opts(i)!!
+      (o.long != "" && o.long == key) || (o.short != "" && o.short == key)
+         |
+            res' = i
+            -->
    res'
 
-find_opt_or: String, String, String => String
-find_opt_or = name, short, fallback =>
-   find_opt(name, short)
-      | v => v
-      | fallback
-
-has_opt: String, String => <>
-has_opt = name, short => <>(find_opt(name, short))
-
-find_opt_int: String, String, Int => Int
-find_opt_int = name, short, fallback =>
-   find_opt(name, short)
-      | s =>
-         str::parse_int(s)
-            | v => v
-            | fallback
-      | fallback
-
-find_opt_float: String, String, Float => Float
-find_opt_float = name, short, fallback =>
-   find_opt(name, short)
-      | s =>
-         str::parse_float(s)
-            | v => v
-            | fallback
-      | fallback
-
-find_opt_int_str: #! B: Type, String, String, B => Int
-find_opt_int_str = #! B, name, short, b =>
-   B
-      [Int] find_opt_int(name, short, b)
-      | 0
-
-find_opt_float_str: #! B: Type, String, String, B => Float
-find_opt_float_str = #! B, name, short, b =>
-   B
-      [Float] find_opt_float(name, short, b)
-      | 0.0
-
-// Internal helper: checks if boolean flag `name` or `short` is present before `--`.
-find_flag: String, String => <>
-find_flag = name, short =>
-   n = sys::argc
-   i' = 1
-   found' = <->
-   i' < n @
-      arg = sys::argv_string(i')
-      arg == "--"
-         | -->
+find_long_idx: Opts, String => Int
+find_long_idx = opts, name =>
+   res' = -1
+   ?opts @ i =>
+      o = opts(i)!!
+      o.long != "" && o.long == name
          |
-            matches_flag(arg, name) || matches_flag(arg, short)
-               |
-                  found' = <+>
-                  -->
-      i' = i' + 1
-   found'
-
-// Internal helper: checks if `s` is contained in `list`.
-in_list: String, str::Strings => <>
-in_list = s, list =>
-   found' = <->
-   ?list @ i =>
-      list(i)!! == s
-         |
-            found' = <+>
+            res' = i
             -->
-   found'
+   res'
 
-// Internal helper: collects positional arguments, skipping the value after any flag in `skip_opts`.
-collect_positionals: str::Strings => str::Strings
-collect_positionals = skip_opts =>
-   out = String{}
-   n = sys::argc
-   i' = 1
+find_short_idx: Opts, String => Int
+find_short_idx = opts, sname =>
+   res' = -1
+   ?opts @ i =>
+      o = opts(i)!!
+      o.short != "" && o.short == sname
+         |
+            res' = i
+            -->
+   res'
+
+has_opt_named: Opts, String, String => <>
+has_opt_named = opts, long_name, short_name =>
+   find_long_idx(opts, long_name) !< 0 || find_short_idx(opts, short_name) !< 0
+
+opt_left_col: Opt => String
+opt_left_col = o =>
+   sp = o.short != "" | "-" + o.short + ", " | "    "
+   lp = o.long != "" | "--" + o.long | ""
+   tp = o.kind
+      [KFlag] ""
+      [KInt] " <int>"
+      [KFloat] " <float>"
+      [KStr, KStrList] " <str>"
+   "  " + sp + lp + tp
+
+opt_right_col: Opt => String
+opt_right_col = o =>
+   suffix = o.required
+      | " (required)"
+      |
+         o.kind
+            [KFlag]
+               o.def_flag
+                  | " (default: true; --no-" + o.long + " to disable)"
+                  | ""
+            [KInt] " (default: " + str::from_int(o.def_int) + ")"
+            [KFloat] " (default: " + str::from_float(o.def_float) + ")"
+            [KStr]
+               o.def_str != ""
+                  | " (default: " + o.def_str + ")"
+                  | ""
+            [KStrList] " (repeatable)"
+   o.desc + suffix
+
+run_flag_val: FlagValidator, <> => String
+run_flag_val = vf, v =>
+   vf(v)
+      | ""
+      | err => err
+
+run_int_val: IntValidator, Int => String
+run_int_val = vf, v =>
+   vf(v)
+      | ""
+      | err => err
+
+run_float_val: FloatValidator, Float => String
+run_float_val = vf, v =>
+   vf(v)
+      | ""
+      | err => err
+
+run_str_val: StrValidator, String => String
+run_str_val = vf, v =>
+   vf(v)
+      | ""
+      | err => err
+
+apply_opt_val: Opt, Int, String, BoolList, IntList, FloatList, Args, ArgsList => String
+apply_opt_val = o, idx, val, flags, ints, floats, strs, str_lists =>
+   o.kind
+      [KFlag]
+         val == "true" || val == "1" || val == "yes"
+            |
+               v_err = run_flag_val(o.val_flag, <+>)
+               v_err != ""
+                  | v_err
+                  |
+                     flags(idx) = <+> !| _
+                     ""
+            |
+               val == "false" || val == "0" || val == "no"
+                  |
+                     v_err = run_flag_val(o.val_flag, <->)
+                     v_err != ""
+                        | v_err
+                        |
+                           flags(idx) = <-> !| _
+                           ""
+                  | "invalid boolean value for --" + o.long + ": " + val
+      [KInt]
+         str::parse_int(val)
+            | v =>
+               v_err = run_int_val(o.val_int, v)
+               v_err != ""
+                  | v_err
+                  |
+                     ints(idx) = v !| _
+                     ""
+            | "invalid integer for --" + o.long + ": " + val
+      [KFloat]
+         str::parse_float(val)
+            | v =>
+               v_err = run_float_val(o.val_float, v)
+               v_err != ""
+                  | v_err
+                  |
+                     floats(idx) = v !| _
+                     ""
+            | "invalid float for --" + o.long + ": " + val
+      [KStr]
+         v_err = run_str_val(o.val_str, val)
+         v_err != ""
+            | v_err
+            |
+               strs(idx) = val !| _
+               ""
+      [KStrList]
+         v_err = run_str_val(o.val_str, val)
+         v_err != ""
+            | v_err
+            |
+               cur_list = str_lists(idx)!!
+               cur_list += val
+               str_lists(idx) = cur_list !| _
+               strs(idx) = val !| _
+               ""
+
+parse_argv: Opts, Args, <> => < Parsed | String >
+parse_argv = opts, argv, allow_auto_version =>
+   n_opts = ?opts
+   seen = BoolList()
+   flags = BoolList()
+   ints = IntList()
+   floats = FloatList()
+   strs = Args()
+   str_lists = ArgsList()
+   n_opts @ k =>
+      o = opts(k)!!
+      seen += <->
+      flags += o.def_flag
+      ints += o.def_int
+      floats += o.def_float
+      strs += o.def_str
+      str_lists += Args()
+
+   pos = Args()
+   help_req' = <->
+   ver_req' = <->
+   err' = ++""
    after_sep' = <->
+   n = ?argv
+   i' = 0
    i' < n @
-      arg = sys::argv_string(i')
+      arg = argv(i')!!
       after_sep'
          |
-            out += arg
+            pos += arg
             i' = i' + 1
          |
             arg == "--"
@@ -142,19 +347,268 @@ collect_positionals = skip_opts =>
                   after_sep' = <+>
                   i' = i' + 1
                |
-                  is_flag = ?arg > 1 && arg(0) == '-'
-                  is_flag
+                  str::starts_with(arg, "--")
                      |
-                        step = in_list(arg, skip_opts) | 2 | 1
-                        i' = i' + step
+                        rest = arg(2..?arg)
+                        eq_opt = str::split_once(rest, "=")
+                        eq_opt
+                           | pair =>
+                              lname = pair.0
+                              val = pair.1
+                              idx = find_long_idx(opts, lname)
+                              idx < 0
+                                 |
+                                    err' = "unknown option: --" + lname
+                                    -->
+                                 |
+                                    o = opts(idx)!!
+                                    e_msg = apply_opt_val(o, idx, val, flags, ints, floats, strs, str_lists)
+                                    e_msg != ""
+                                       |
+                                          err' = e_msg
+                                          -->
+                                       |
+                                          seen(idx) = <+> !| _
+                                          i' = i' + 1
+                           |
+                              idx = find_long_idx(opts, rest)
+                              idx !< 0
+                                 |
+                                    o = opts(idx)!!
+                                    o.kind
+                                       [KFlag]
+                                          v_err = run_flag_val(o.val_flag, <+>)
+                                          v_err != ""
+                                             |
+                                                err' = v_err
+                                                -->
+                                             |
+                                                flags(idx) = <+> !| _
+                                                seen(idx) = <+> !| _
+                                                o.long == "help" | (help_req' = <+>)
+                                                o.long == "version" | (ver_req' = <+>)
+                                                i' = i' + 1
+                                       |
+                                          i' + 1 !< n
+                                             |
+                                                err' = "option requires an argument: --" + rest
+                                                -->
+                                             |
+                                                val = argv(i' + 1)!!
+                                                e_msg = apply_opt_val(o, idx, val, flags, ints, floats, strs, str_lists)
+                                                e_msg != ""
+                                                   |
+                                                      err' = e_msg
+                                                      -->
+                                                   |
+                                                      seen(idx) = <+> !| _
+                                                      i' = i' + 2
+                                 |
+                                    str::starts_with(rest, "no-")
+                                       |
+                                          neg_name = rest(3..?rest)
+                                          neg_idx = find_long_idx(opts, neg_name)
+                                          neg_idx !< 0 && (opts(neg_idx)!!.kind [KFlag])
+                                             |
+                                                no_o = opts(neg_idx)!!
+                                                v_err = run_flag_val(no_o.val_flag, <->)
+                                                v_err != ""
+                                                   |
+                                                      err' = v_err
+                                                      -->
+                                                   |
+                                                      flags(neg_idx) = <-> !| _
+                                                      seen(neg_idx) = <+> !| _
+                                                      i' = i' + 1
+                                             |
+                                                err' = "unknown option: " + arg
+                                                -->
+                                       |
+                                          rest == "help"
+                                             |
+                                                help_req' = <+>
+                                                i' = i' + 1
+                                             |
+                                                rest == "version" && allow_auto_version
+                                                   |
+                                                      ver_req' = <+>
+                                                      i' = i' + 1
+                                                   |
+                                                      err' = "unknown option: " + arg
+                                                      -->
                      |
-                        out += arg
-                        i' = i' + 1
-   out
+                        ?arg > 1 && arg(0) == '-'
+                           |
+                              rest = arg(1..?arg)
+                              has_eq = ?rest > 1 && rest(1) == '='
+                              has_eq
+                                 |
+                                    sname = rest(0..1)
+                                    val = rest(2..?rest)
+                                    idx = find_short_idx(opts, sname)
+                                    idx < 0
+                                       |
+                                          err' = "unknown option: -" + sname
+                                          -->
+                                       |
+                                          o = opts(idx)!!
+                                          e_msg = apply_opt_val(o, idx, val, flags, ints, floats, strs, str_lists)
+                                          e_msg != ""
+                                             |
+                                                err' = e_msg
+                                                -->
+                                             |
+                                                seen(idx) = <+> !| _
+                                                i' = i' + 1
+                                 |
+                                    ?rest == 1
+                                       |
+                                          sname = rest
+                                          idx = find_short_idx(opts, sname)
+                                          idx !< 0
+                                             |
+                                                o = opts(idx)!!
+                                                o.kind
+                                                   [KFlag]
+                                                      v_err = run_flag_val(o.val_flag, <+>)
+                                                      v_err != ""
+                                                         |
+                                                            err' = v_err
+                                                            -->
+                                                         |
+                                                            flags(idx) = <+> !| _
+                                                            seen(idx) = <+> !| _
+                                                            (o.short == "h" || o.long == "help") | (help_req' = <+>)
+                                                            (o.short == "v" || o.long == "version") | (ver_req' = <+>)
+                                                            i' = i' + 1
+                                                   |
+                                                      i' + 1 !< n
+                                                         |
+                                                            err' = "option requires an argument: -" + sname
+                                                            -->
+                                                         |
+                                                            val = argv(i' + 1)!!
+                                                            e_msg = apply_opt_val(o, idx, val, flags, ints, floats, strs, str_lists)
+                                                            e_msg != ""
+                                                               |
+                                                                  err' = e_msg
+                                                                  -->
+                                                               |
+                                                                  seen(idx) = <+> !| _
+                                                                  i' = i' + 2
+                                             |
+                                                sname == "h"
+                                                   |
+                                                      help_req' = <+>
+                                                      i' = i' + 1
+                                                   |
+                                                      sname == "v" && allow_auto_version
+                                                         |
+                                                            ver_req' = <+>
+                                                            i' = i' + 1
+                                                         |
+                                                            err' = "unknown option: " + arg
+                                                            -->
+                                       |
+                                          l_idx = find_long_idx(opts, rest)
+                                          l_idx !< 0
+                                             |
+                                                o = opts(l_idx)!!
+                                                o.kind
+                                                   [KFlag]
+                                                      v_err = run_flag_val(o.val_flag, <+>)
+                                                      v_err != ""
+                                                         |
+                                                            err' = v_err
+                                                            -->
+                                                         |
+                                                            flags(l_idx) = <+> !| _
+                                                            seen(l_idx) = <+> !| _
+                                                            o.long == "help" | (help_req' = <+>)
+                                                            o.long == "version" | (ver_req' = <+>)
+                                                            i' = i' + 1
+                                                   |
+                                                      i' + 1 !< n
+                                                         |
+                                                            err' = "option requires an argument: -" + rest
+                                                            -->
+                                                         |
+                                                            val = argv(i' + 1)!!
+                                                            e_msg = apply_opt_val(o, l_idx, val, flags, ints, floats, strs, str_lists)
+                                                            e_msg != ""
+                                                               |
+                                                                  err' = e_msg
+                                                                  -->
+                                                               |
+                                                                  seen(l_idx) = <+> !| _
+                                                                  i' = i' + 2
+                                             |
+                                                s_head = rest(0..1)
+                                                s_val = rest(1..?rest)
+                                                s_idx = find_short_idx(opts, s_head)
+                                                s_idx !< 0 && !(opts(s_idx)!!.kind [KFlag])
+                                                   |
+                                                      o = opts(s_idx)!!
+                                                      e_msg = apply_opt_val(o, s_idx, s_val, flags, ints, floats, strs, str_lists)
+                                                      e_msg != ""
+                                                         |
+                                                            err' = e_msg
+                                                            -->
+                                                         |
+                                                            seen(s_idx) = <+> !| _
+                                                            i' = i' + 1
+                                                   |
+                                                      err' = "unknown option: " + arg
+                                                      -->
+                           |
+                              pos += arg
+                              i' = i' + 1
+
+   help_req' || ver_req'
+      | <+ Parsed(opts, seen, flags, ints, floats, strs, str_lists, pos, help_req', ver_req') ->
+      |
+         err' != ""
+            | <- err' +>
+            |
+               req_err' = ++""
+               n_opts @ m =>
+                  o = opts(m)!!
+                  o.required && !(seen(m)!!)
+                     |
+                        req_err' = "missing required option: --" + o.long
+                        -->
+               req_err' != ""
+                  | <- req_err' +>
+                  | <+ Parsed(opts, seen, flags, ints, floats, strs, str_lists, pos, help_req', ver_req') ->
 
 #public
 
-#type Args String{}
+parse_impl: Opts, String, String, <> => Parsed
+parse_impl = opts, desc, version, help_on_empty =>
+   av = args!
+   ?av == 0 && (help_on_empty || has_required_opt(opts))
+      |
+         io::outs(format_help(opts, program!, desc, version))
+         sys::exit(1)
+   res = parse_argv(opts, av, version != "")
+   res
+      | p =>
+         p.help
+            |
+               io::outs(format_help(opts, program!, desc, version))
+               sys::exit(0)
+         p.version && version != ""
+            |
+               pname = prog_basename(program!)
+               io::outs((pname != "" | pname + " " | "") + version)
+               sys::exit(0)
+         p
+      | err =>
+         pname = prog_basename(program!)
+         prefix = pname != "" | pname + ": " | "error: "
+         io::errs(prefix + err)
+         sys::exit(1)
+         Parsed(opts, <>{}, <>{}, Int{}, Float{}, String{}, ArgsList(), String{}, <->, <->)
 
 // Returns total argument count (including program name at index 0).
 count: () => Int
@@ -174,7 +628,7 @@ arg = idx => sys::argv(idx)
 // Returns argument at index `idx` (0-based), or `fallback` if out of bounds.
 arg_or: Int, String => String
 arg_or = idx, fallback =>
-   idx !< 0 && idx < sys::argc
+   idx [0..sys::argc]
       | sys::argv_string(idx)
       | fallback
 
@@ -196,56 +650,263 @@ all_args = !=>
       out += sys::argv_string(i)
    out
 
-// Checks if a flag is present on the command line (before `--`).
-// Accepts `cli::has_flag("--verbose")` or `cli::has_flag("--verbose", "-v")`.
-has_flag: #! T: Type, String, T => <>
-has_flag = #! T, name, short =>
+// Declares a CLI option specification:
+// - `"p:port"` splits on `":"` into short `'p'` and long `"port"`
+// - `"bind"` (no `":"`) defines a long-only option `--bind`
+// Next arguments: default value (or primitive type `Int`/`Float`/`String` if mandatory),
+// description string, and an optional validator lambda `T => < | String >`.
+opt: #! T: Type, #! V: Type, String, T, String, V => Opt
+opt = #! T, #! V, spec, def_or_ty, desc, vf =>
    T
-      [String] find_flag(name, short)
-      | find_flag(name, "")
+      [<>]
+         V
+            [is_fn] make_flag_opt(spec, def_or_ty, desc, vf)
+            | make_flag_opt_def(spec, def_or_ty, desc)
+      [Int]
+         V
+            [is_fn] make_int_opt(spec, def_or_ty, desc, vf)
+            | make_int_opt_def(spec, def_or_ty, desc)
+      [Float]
+         V
+            [is_fn] make_float_opt(spec, def_or_ty, desc, vf)
+            | make_float_opt_def(spec, def_or_ty, desc)
+      [String]
+         V
+            [is_fn] make_str_opt(spec, def_or_ty, desc, vf)
+            | make_str_opt_def(spec, def_or_ty, desc)
+      [Args]
+         V
+            [is_fn] make_str_list_opt(spec, desc, vf)
+            | make_str_list_opt_def(spec, desc)
+      [Type]
+         V
+            [IntValidator] make_req_int_opt(spec, desc, vf)
+            [FloatValidator] make_req_float_opt(spec, desc, vf)
+            [StrValidator] make_req_str_opt(spec, desc, vf)
+            | make_req_opt(spec, def_or_ty, desc)
+      | make_str_opt_def(spec, "", desc)
 
-// Looks up a named option value (`--key val` or `--key=val`).
-// Accepts `cli::opt("--output")` or `cli::opt("--output", "-o")`.
-opt: #! T: Type, String, T => < String | >
-opt = #! T, name, short =>
-   s = T
-      [String] short
-      | ""
-   has_opt(name, s)
-      | <+ find_opt_or(name, s, "") +>
-      | <-->
+// Formats a help message for `opts` with program name, optional description, and optional version.
+format_help: Opts, String, String, String => String
+format_help = opts, prog, desc, version =>
+   pname = prog_basename(prog)
+   name_str = pname != "" | pname | "program"
+   b = {512}
+   title = version != "" | name_str + " " + version | name_str
+   desc != ""
+      | b += title + " - " + desc + "\n\n"
+      | (version != "" | b += title + "\n\n")
+   b += "Usage:\n  " + name_str + " [options]\n\nOptions:\n"
 
-// Looks up a named option value with a default fallback string.
-// Accepts `cli::opt_or("--port", "8080")` or `cli::opt_or("--port", "-p", "8080")`.
-opt_or: #! T: Type, String, String, T => String
-opt_or = #! T, name, a, b =>
-   T
-      [String] find_opt_or(name, a, b)
-      | find_opt_or(name, "", a)
+   lefts = String{}
+   rights = String{}
+   max_w' = 18
 
-// Looks up an integer option with a default fallback Int.
-// Accepts `cli::opt_int("--count", 10)` or `cli::opt_int("--count", "-n", 10)`.
-opt_int: #! A: Type, #! B: Type, String, A, B => Int
-opt_int = #! A, #! B, name, a, b =>
-   A
-      [Int] find_opt_int(name, "", a)
-      [String] find_opt_int_str(name, a, b)
+   ?opts @ i =>
+      o = opts(i)!!
+      l = opt_left_col(o)
+      r = opt_right_col(o)
+      lefts += l
+      rights += r
+      ?l > max_w' | (max_w' = ?l)
+
+   version != "" && !has_opt_named(opts, "version", "v")
+      |
+         lv = "  -v, --version"
+         lefts += lv
+         rights += "Display version and exit"
+         ?lv > max_w' | (max_w' = ?lv)
+
+   !has_opt_named(opts, "help", "h")
+      |
+         lh = "  -h, --help"
+         lefts += lh
+         rights += "Display this help and exit"
+         ?lh > max_w' | (max_w' = ?lh)
+
+   col_w = max_w' + 2
+   ?lefts @ j =>
+      l_col = str::pad_right(lefts(j)!!, col_w, ' ')
+      r_col = rights(j)!!
+      b += l_col + r_col + "\n"
+   +b
+
+// Parses an explicit `Args` array against `opts`, returning `<+ Parsed ->` or `<- err_msg +>`.
+parse_args: Opts, Args => < Parsed | String >
+parse_args = opts, argv =>
+   parse_argv(opts, argv, <->)
+
+// Parses `sys::argv` against `opts`:
+// - `cli::parse(opts)`
+// - `cli::parse(opts, "Program description")`
+// - `cli::parse(opts, "Program description", "1.0.0")`
+// - `cli::parse(opts, "Program description", "1.0.0", <+>)` (where `<+>` triggers help on empty args)
+// Automatically handles `-h`/`--help` (and `-v`/`--version` when version is given) and exits 1 on error.
+parse: #! A: Type, #! B: Type, #! C: Type, Opts, A, B, C => Parsed
+parse = #! A, #! B, #! C, opts, a, b, c =>
+   parse_impl(
+      opts,
+      (A [String] a | ""),
+      (B [String] b | ""),
+      (A [<>] a | (B [<>] b | (C [<>] c | <->)))
+   )
+
+// Returns `<+>` if option `name` (long or short name) was explicitly provided on the command line.
+has: Parsed, String => <>
+has = p, name =>
+   idx = find_opt_idx(p.opts, name)
+   idx !< 0
+      | p.seen(idx)!!
+      | <->
+
+// Returns the boolean (`<>`) value of option `name`.
+flag: Parsed, String => <>
+flag = p, name =>
+   idx = find_opt_idx(p.opts, name)
+   idx !< 0
+      | p.flags(idx)!!
+      | <->
+
+// Returns the `Int` value of option `name`.
+int: Parsed, String => Int
+int = p, name =>
+   idx = find_opt_idx(p.opts, name)
+   idx !< 0
+      | p.ints(idx)!!
       | 0
 
-// Looks up a floating-point option with a default fallback Float.
-// Accepts `cli::opt_float("--scale", 1.0)` or `cli::opt_float("--scale", "-s", 1.0)`.
-opt_float: #! A: Type, #! B: Type, String, A, B => Float
-opt_float = #! A, #! B, name, a, b =>
-   A
-      [Float] find_opt_float(name, "", a)
-      [String] find_opt_float_str(name, a, b)
+// Returns the `Float` value of option `name`.
+float: Parsed, String => Float
+float = p, name =>
+   idx = find_opt_idx(p.opts, name)
+   idx !< 0
+      | p.floats(idx)!!
       | 0.0
 
-// Collects positional arguments (non-flag arguments before `--`, plus all arguments after `--`).
-// Accepts `cli::positionals!` or `cli::positionals(value_taking_flags)` where `value_taking_flags`
-// is a `String{}` of flags (e.g. `{"--output", "-o"}`) whose following argument should be skipped.
-positionals: #! T: Type, T => Args
-positionals = #! T, skip_opts =>
+// Returns the `String` value of option `name`.
+str: Parsed, String => String
+str = p, name =>
+   idx = find_opt_idx(p.opts, name)
+   idx !< 0
+      | p.strs(idx)!!
+      | ""
+
+// Returns the `Args` (`String{}`) list of values for repeatable option `name`.
+strs: Parsed, String => Args
+strs = p, name =>
+   idx = find_opt_idx(p.opts, name)
+   idx !< 0
+      | p.str_lists(idx)!!
+      | Args()
+
+// Derives an `Opts` specification automatically from a record type `T` (`[(..)]`).
+// Underscores `_` in field names are mapped to hyphens `-` for long option names.
+opts_for: #! T: Type => Opts
+opts_for = !=>
+   out' = Opts()
    T
-      [Args] collect_positionals(skip_opts)
-      | collect_positionals(String{})
+      [(..)]
+         T @ f =>
+            lname = str::replace(f.name, "_", "-")
+            f_def = f.default
+            f.type
+               [<>]
+                  dv = f_def | d => d | <->
+                  out' += make_flag_opt_def(lname, dv, "")
+               [Int]
+                  f_def
+                     | d => out' += make_int_opt_def(lname, d, "")
+                     | out' += make_req_opt(lname, Int, "")
+               [Float]
+                  f_def
+                     | d => out' += make_float_opt_def(lname, d, "")
+                     | out' += make_req_opt(lname, Float, "")
+               [String]
+                  f_def
+                     | d => out' += make_str_opt_def(lname, d, "")
+                     | out' += make_req_opt(lname, String, "")
+               [Args]
+                  out' += make_str_list_opt_def(lname, "")
+               [<P|>]
+                  P
+                     [Int] out' += make_int_opt_def(lname, 0, "")
+                     [Float] out' += make_float_opt_def(lname, 0.0, "")
+                     [String] out' += make_str_opt_def(lname, "", "")
+                     [<>] out' += make_flag_opt_def(lname, <->, "")
+   out'
+
+// Populates a typed record `T` from a `Parsed` CLI result using compile-time field introspection.
+// Field names map `_` to `-` (and also fall back to the exact field name).
+into: #! T: Type, Parsed => < T | String >
+into = p =>
+   rec' = T.zero
+   has_err' = <->
+   err_msg' = ++""
+   T
+      [(..)]
+         T @ f =>
+            !has_err' |
+               opt_name = str::replace(f.name, "_", "-")
+               key = (find_opt_idx(p.opts, opt_name) !< 0) | opt_name | f.name
+               idx = find_opt_idx(p.opts, key)
+               is_seen = idx !< 0 && p.seen(idx)!!
+               is_seen
+                  |
+                     f.type
+                        [<>] rec'.(f) = flag(p, key)
+                        [Int] rec'.(f) = int(p, key)
+                        [Float] rec'.(f) = float(p, key)
+                        [String] rec'.(f) = str(p, key)
+                        [Args] rec'.(f) = strs(p, key)
+                        [<P|>]
+                           P
+                              [Int] rec'.(f) = <+ int(p, key) +>
+                              [Float] rec'.(f) = <+ float(p, key) +>
+                              [String] rec'.(f) = <+ str(p, key) +>
+                              [<>] rec'.(f) = <+ flag(p, key) +>
+                  |
+                     f_def = f.default
+                     f_def
+                        | def => rec'.(f) = def
+                        |
+                           f.type
+                              [<P|>] rec'.(f) = <-->
+                              [Args] rec'.(f) = (idx !< 0 | strs(p, key) | Args())
+                              [<>] rec'.(f) = (idx !< 0 | flag(p, key) | <->)
+                              [Int]
+                                 idx !< 0 && !p.opts(idx)!!.required
+                                    | rec'.(f) = int(p, key)
+                                    |
+                                       has_err' = <+>
+                                       err_msg' = "missing required option: --" + opt_name
+                              [Float]
+                                 idx !< 0 && !p.opts(idx)!!.required
+                                    | rec'.(f) = float(p, key)
+                                    |
+                                       has_err' = <+>
+                                       err_msg' = "missing required option: --" + opt_name
+                              [String]
+                                 idx !< 0 && !p.opts(idx)!!.required
+                                    | rec'.(f) = str(p, key)
+                                    |
+                                       has_err' = <+>
+                                       err_msg' = "missing required option: --" + opt_name
+      |
+         has_err' = <+>
+         err_msg' = ++"cli::into target must be a record type"
+   has_err'
+      | <- err_msg' +>
+      | <+ rec' ->
+
+// Parses `argv` against `opts` (or derives `opts_for(T)` when `opts` is empty)
+// and populates `T`.
+parse_into: #! T: Type, Opts, Args => < T | String >
+parse_into = opts, argv =>
+   eff_opts = ?opts > 0 | opts | opts_for(T)
+   parse_args(eff_opts, argv)
+      | p => into(T, p)
+      | err => <- err +>
+
+// Returns positional arguments (`Args`) remaining after option parsing.
+rest: Parsed => Args
+rest = p => p.args

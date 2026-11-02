@@ -1,6 +1,7 @@
 ; Dva highlights for tree-sitter
 ; Tuned for Helix and compatible tree-sitter highlighters. Each syntactic
 ; class gets its own capture so the theme can give it a distinct color.
+; Note: Later rules take precedence over earlier rules.
 
 ;; ------------------------------------------------------------------
 ;; Comments
@@ -8,10 +9,27 @@
 (comment) @comment
 
 ;; ------------------------------------------------------------------
+;; Defaults (Variables & Punctuation) — placed first so specific rules win
+;; ------------------------------------------------------------------
+(identifier) @variable
+
+"(" @punctuation.bracket
+")" @punctuation.bracket
+"{" @punctuation.bracket
+"}" @punctuation.bracket
+"[" @punctuation.bracket
+"]" @punctuation.bracket
+"," @punctuation.delimiter
+"." @punctuation.delimiter
+":" @punctuation.delimiter
+"::" @punctuation.delimiter
+
+;; ------------------------------------------------------------------
 ;; Compiler directives
 ;; ------------------------------------------------------------------
 [
   "#use"
+  "#use-dynamic"
   "#type"
   "#foreign"
   "#pragma"
@@ -23,15 +41,12 @@
   "#join"
   "#!"
   "#size"
+  "#packed"
+  "#align"
 ] @keyword.directive
 
-(import_statement
-  (module_path (identifier) @module))
-(import_statement
-  (module_path (string_literal) @string.special))
-
 ;; ------------------------------------------------------------------
-;; Literals
+;; Literals & Uniform #use Module Paths
 ;; ------------------------------------------------------------------
 (string_literal) @string
 (string_interpolation "${" @punctuation.special)
@@ -40,16 +55,21 @@
 (integer_literal) @constant.numeric.integer
 (float_literal) @constant.numeric.float
 
+;; All paths/strings after #use are highlighted uniformly as @string
+(import_statement (module_path) @string)
+(import_statement (module_path (identifier) @string))
+(import_statement (module_path (string_literal) @string))
+
 ;; ------------------------------------------------------------------
 ;; Ramifications
 ;; ------------------------------------------------------------------
-;; Unit ramification constants: <+>, <->, <++>, <-->
+;; Unit ramification literals: <+>, <->, <++>, <--> (numeric literals like numbers)
 [
   "<+>"
   "<->"
   "<++>"
   "<-->"
-] @constant.builtin.ram
+] @constant.numeric.integer
 
 ;; Ramification payload openers and closers: "<+ p +>", "<+ p ->", "<- p ->", "<- p +>".
 (ramification_literal "<+" @constant.builtin.ram)
@@ -64,10 +84,6 @@
   "->"
 ] @constant.builtin.ram
 
-;; Unit ramification type "<>".
-"<>" @type.builtin
-(ram_or_enum_type_decl "<>" @type.builtin)
-
 ;; Branch return unit sugars: "|+>", "|->", "|++>", "|-->".
 (branch "|+>" @constant.builtin.ram)
 (branch "|->" @constant.builtin.ram)
@@ -80,79 +96,6 @@
   "|++>"
   "|-->"
 ] @constant.builtin.ram
-
-;; ------------------------------------------------------------------
-;; Built-in type names
-;; ------------------------------------------------------------------
-[
-  "Int"
-  "Float"
-  "String"
-  "Address"
-  "Rune"
-  "Builder"
-  "Error"
-  "Type"
-  "i1"
-  "i8"
-  "i16"
-  "i32"
-  "i64"
-  "u8"
-  "u16"
-  "u32"
-  "u64"
-  "f32"
-  "f64"
-  "float"
-  "double"
-  "void"
-  "ptr"
-] @type.builtin
-
-;; The builtin names also lex as variant_name inside type_name; give them the
-;; builtin color there too (a user type can never shadow these).
-((type_name (variant_name) @type.builtin)
-  (#match? @type.builtin
-    "^(Int|Float|String|Address|Rune|Builder|Error|Type|i1|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|float|double|void|ptr)$"))
-
-;; ------------------------------------------------------------------
-;; User-declared types
-;; ------------------------------------------------------------------
-((type_name (variant_name) @type)
-  (#not-any-of? @type
-    "Int" "Float" "String" "Address" "Rune" "Builder" "Error" "Type"
-    "i1" "i8" "i16" "i32" "i64" "u8" "u16" "u32" "u64"
-    "f32" "f64" "float" "double" "void" "ptr"))
-((type_name (identifier) @type)
-  (#not-any-of? @type "float" "double" "void" "ptr"))
-(type_name (qual_identifier) @type)
-(qual_identifier) @type
-
-;; The name being declared in "#type Name ...".
-(type_decl_statement (identifier) @type.definition)
-(type_decl_statement (variant_name) @type.definition)
-
-;; Field names in record type declarations.
-(field_type (identifier) @property)
-(indent_field (identifier) @property)
-
-;; Ramification / enum type declarations: "< A | B >", "<>".
-(ram_or_enum_type_decl "|" @punctuation.delimiter)
-(ram_or_enum_type_decl "<" @punctuation.bracket)
-(ram_or_enum_type_decl ">" @punctuation.bracket)
-"<>" @constant.builtin.ram
-
-;; Enum variant labels in declarations.
-(enum_variant (identifier) @type.enum.variant)
-(enum_variant (variant_name) @type.enum.variant)
-
-;; Compile-time type-parameter names ("#! T: Type").
-(signature_param (identifier) @variable.parameter)
-(signature_param (variant_name) @variable.parameter)
-
-;; Raw-memory load type "@[addr i32]".
-(raw_memory_load_type) @type.builtin
 
 ;; ------------------------------------------------------------------
 ;; Function definitions & calls
@@ -180,43 +123,140 @@
 ; Regular (lowercase) function calls.
 (paren_call (primary_expr (identifier) @function.call))
 (paren_call (primary_expr (member_expr (identifier) @function.call)))
-(paren_call (primary_expr (member_expr (identifier) @function.call)))
 (dollar_call (primary_expr (identifier) @function.call))
-(dollar_call (primary_expr (member_expr (identifier) @function.call)))
-(dollar_call (primary_expr (member_expr (identifier) @function.call)))
+(dollar_call (primary_expr (member_expr (identifier) @function.call))
+)
 (postfix_call (primary_expr (identifier) @function.call))
 (postfix_call (primary_expr (member_expr (identifier) @function.call)))
 
-; Uppercase constructor / type-coercion calls: "Token(Id)", "CompDiag(...)".
+; Uppercase constructor / variant expressions: "Token(Id)", "CompDiag(...)".
 (variant_expr
   (variant_name) @constructor)
 
-; Builtin type coercions "Int(5)", "i8(x)" keep the builtin type color.
-((variant_expr (variant_name) @type.builtin)
-  (#match? @type.builtin
-    "^(Int|Float|String|Address|Rune|Builder|Error|Type|i1|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64)$"))
-
-; "#spawn worker(...)" is already covered by the paren_call rules above.
+; Enum variant labels in declarations and choice guards.
+(enum_variant (identifier) @type.enum.variant)
+(enum_variant (variant_name) @type.enum.variant)
+(pattern (variant_name) @type.enum.variant)
 
 ;; ------------------------------------------------------------------
-;; Parameters
+;; Parameters & Properties
 ;; ------------------------------------------------------------------
 (fn_param (identifier) @variable.parameter)
 (fn_param (variant_name) @variable.parameter)
 (foreign_param (identifier) @variable.parameter)
 (foreign_param (variant_name) @variable.parameter)
 
+; Compile-time type-parameter names ("#! T: Type").
+(signature_param (identifier) @variable.parameter)
+(signature_param (variant_name) @variable.parameter)
+
 ; Implicit "_" parameter / identity extractor.
 ((identifier) @variable.builtin (#eq? @variable.builtin "_"))
 
-;; ------------------------------------------------------------------
-;; Member access / module access / properties
-;; ------------------------------------------------------------------
+; Field names in record type declarations.
+(field_type (identifier) @property)
+(indent_field (identifier) @property)
+
+; Member access / module access / named arguments.
 (member_expr (identifier) @property)
+(named_arg (identifier) @property)
 
 ; Module member access "mod::sym" — the base is a module.
 ((member_expr (primary_expr (identifier)) @module)
   (#match? @module "^[a-z_][a-z0-9_]*$"))
+
+;; ------------------------------------------------------------------
+;; User-declared types
+;; ------------------------------------------------------------------
+(type_name (variant_name) @type)
+(type_name (identifier) @type)
+(type_name (qual_identifier) @type)
+(type_pattern_atom (variant_name) @type)
+(type_pattern_atom (identifier) @type)
+(type_pattern_atom (qual_identifier) @type)
+(qual_identifier) @type
+
+;; The name being declared in "#type Name ...".
+(type_decl_statement (identifier) @type.definition)
+(type_decl_statement (variant_name) @type.definition)
+
+;; ------------------------------------------------------------------
+;; Built-in & Structural Types (override @type, @constructor, @variable)
+;; ------------------------------------------------------------------
+[
+  "Int"
+  "Float"
+  "String"
+  "Addr"
+  "Address"
+  "Rune"
+  "Builder"
+  "Error"
+  "Type"
+  "i1"
+  "i8"
+  "i16"
+  "i32"
+  "i64"
+  "u8"
+  "u16"
+  "u32"
+  "u64"
+  "f32"
+  "f64"
+  "float"
+  "double"
+  "void"
+  "ptr"
+  "<>"
+  "<|>"
+  "(..)"
+  "<..>"
+] @type.builtin
+
+((variant_name) @type.builtin
+  (#match? @type.builtin
+    "^(Int|Float|String|Addr|Address|Rune|Builder|Error|Type)$"))
+
+((identifier) @type.builtin
+  (#match? @type.builtin
+    "^(i1|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|float|double|void|ptr)$"))
+
+;; Unit and structural types in declarations, signatures, and type patterns
+(ram_or_enum_type_decl ["<>" "<|>" "<" ">" "|" "|>" "<|"] @type.builtin)
+(array_type_decl ["{" "}"] @type.builtin)
+(slice_type_decl ["[" "]"] @type.builtin)
+(map_type "^" @type.builtin)
+(field_type ["*" "[" "]"] @type.builtin)
+(foreign_binding "()" @type.builtin)
+(function_signature_type "()" @type.builtin)
+(signature_param "()" @type.builtin)
+(assignment_statement "()" @type.builtin)
+(type_pattern
+  [
+    "()"
+    "<>"
+    "<|>"
+    "(..)"
+    "<..>"
+    ".."
+    "*"
+    "<"
+    ">"
+    "|"
+    "|>"
+    "<|"
+    "("
+    ")"
+    "{"
+    "}"
+    "["
+    "]"
+    "^"
+  ] @type.builtin)
+
+;; Raw-memory load type "@[addr i32]".
+(raw_memory_load_type) @type.builtin
 
 ;; ------------------------------------------------------------------
 ;; Control flow
@@ -233,10 +273,6 @@
 (branch "]" @keyword.control.conditional)
 (branch "|" @keyword.control.conditional)
 (branch "!|" @keyword.control.conditional)
-
-
-; Enum variant labels used as choice guards.
-(pattern (variant_name) @type.enum.variant)
 
 ;; ------------------------------------------------------------------
 ;; Operators
@@ -273,9 +309,9 @@
 (binary_expr "$>" @operator)
 (binary_expr "$>>" @operator)
 
-; Infix apply, range, map access, block feed.
+; Infix apply, range (.., ..., ..=), map access, block feed.
 (dollar_call "$" @operator)
-(range_expr ".." @operator)
+(range_expr [".." "..." "..="] @operator)
 (key_access_expr "^" @operator)
 (key_access_expr "^?" @operator)
 
@@ -286,10 +322,16 @@
 (section_expr "/" @operator)
 (section_expr "%" @operator)
 (section_expr "==" @operator)
+(section_expr "!=" @operator)
 (section_expr "<" @operator)
 (section_expr ">" @operator)
+(section_expr "!<" @operator)
+(section_expr "!>" @operator)
+(section_expr "<=" @operator)
+(section_expr ">=" @operator)
 (section_expr ".|." @operator)
 (section_expr ".&." @operator)
+(section_expr ".^." @operator)
 (section_expr ".<." @operator)
 (section_expr ".>." @operator)
 
@@ -308,25 +350,3 @@
 (postfix_call "!" @operator)
 (postfix_call "!!" @operator)
 (postfix_call "--!" @operator)
-
-; Named arguments / field initialization.
-(named_arg (identifier) @property)
-
-;; ------------------------------------------------------------------
-;; Variables (default)
-;; ------------------------------------------------------------------
-(identifier) @variable
-
-;; ------------------------------------------------------------------
-;; Punctuation
-;; ------------------------------------------------------------------
-"(" @punctuation.bracket
-")" @punctuation.bracket
-"{" @punctuation.bracket
-"}" @punctuation.bracket
-"[" @punctuation.bracket
-"]" @punctuation.bracket
-"," @punctuation.delimiter
-"." @punctuation.delimiter
-":" @punctuation.delimiter
-"::" @punctuation.delimiter

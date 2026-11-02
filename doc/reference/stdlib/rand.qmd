@@ -1,0 +1,47 @@
+---
+meta:
+  audience: "Edva developers generating random numbers, distributions, and shuffles"
+  status: "current reference"
+  audited: "fb4fbc2"
+  evidence: "`std/rand.dva`, `tests/pass/386_time_and_rand.dva`"
+---
+
+# `rand` standard library
+
+The `rand` module implements a fast, high-quality **xoshiro256\*\*** pseudo-random
+number generator with **SplitMix64** state initialization, automatic OS entropy seeding
+(`/dev/urandom` with monotonic fallback), both global and explicit `Rng` state APIs,
+normal/exponential distributions, and Fisher-Yates array shuffling.
+
+```{.dva .run}
+#use io
+#use rand
+
+r = rand::new(12345)
+io::out $ rand::range(r, 1, 100)
+io::out $ rand::range(r, 1, 100)
+```
+
+## Function catalog
+
+| Category | Global Function | Explicit `Rng` Function | Signature (Global) | Description |
+|---|---|---|---|---|
+| **Seeding** | `rand::seed(s)` | `rand::new(s)` | `Int => ()` (`Int => Rng`) | Deterministic seeding via SplitMix64 |
+| | `rand::seed_entropy!` | `rand::from_entropy!` | `() => ()` (`() => Rng`) | Seeds from `/dev/urandom` (or clock/PID mix) |
+| **Primitives** | `rand::next_u64!` | `rand::next_u64_with(r)` | `() => u64` | Next raw 64-bit unsigned integer |
+| | `rand::next_int!` | `rand::next_int_with(r)` | `() => Int` | Non-negative 63-bit `Int` (`0..=i64::MAX`) |
+| | `rand::next_bool!` | `rand::next_bool_with(r)` | `() => <>` | Fair coin flip (`<+>` or `<->` with `p = 0.5`) |
+| | `rand::bernoulli(p)` | `rand::bernoulli_with(r, p)` | `Float => <>` | Returns `<+>` with probability `p` in `[0.0, 1.0]` |
+| | `rand::next_float!` | `rand::next_float_with(r)` | `() => Float` | Uniform `Float` in `[0.0, 1.0)` (53-bit precision) |
+| **Ranges** | `rand::int_n(n)` | `rand::int_n_with(r, n)` | `Int => Int` | Debiased uniform integer in `[0, n)` |
+| | `rand::range(lo, hi)` | `rand::range_with(r, lo, hi)` | `Int, Int => Int` | Uniform integer in `[lo, hi)` |
+| | `rand::range_inclusive(lo, hi)` | `rand::range_inclusive_with(r, lo, hi)` | `Int, Int => Int` | Uniform integer in `[lo, hi]` |
+| | `rand::float_range(lo, hi)` | `rand::float_range_with(r, lo, hi)` | `Float, Float => Float` | Uniform float in `[lo, hi)` |
+| **Distributions** | `rand::normal!` | `rand::normal_with(r)` | `() => Float` | Standard normal distribution ($\mu = 0, \sigma = 1$) |
+| | `rand::normal_dist(mean, stddev)` | `rand::normal_dist_with(r, m, s)` | `Float, Float => Float` | Normal distribution $\mathcal{N}(\mu, \sigma^2)$ |
+| | `rand::exponential(lambda)` | `rand::exponential_with(r, l)` | `Float => Float` | Exponential distribution $\text{Exp}(\lambda)$ |
+| **Slices, Arrays & Bytes** | `rand::shuffle(xs)` | `rand::shuffle_with(r, xs)` | `T[] => ()` | In-place Fisher-Yates shuffle on slice `xs` |
+| | `rand::choice(xs)` | `rand::choice_with(r, xs)` | `T[] => < T | >` | Uniformly picks one element from slice `xs` |
+| | `rand::bytes(n)` | `rand::bytes_with(r, n)` | `Int => String` | Generates `n` random bytes |
+| | `rand::hex(n)` | `rand::hex_with(r, n)` | `Int => String` | Generates `n` random lowercase hex characters |
+| | `rand::alnum(n)` | `rand::alnum_with(r, n)` | `Int => String` | Generates `n` random ASCII alphanumeric characters |

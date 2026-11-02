@@ -1,0 +1,70 @@
+---
+meta:
+  audience: "Edva developers building command-line tools"
+  status: "current reference"
+  audited: "fb4fbc2"
+  evidence: "`std/cli.dva`, `src/edva.dva`, `tests/pass/387_str_os_cli_test_bench.dva`"
+---
+
+# `cli` standard library
+
+The `cli` module provides declarative, type-safe command-line option parsing with
+automatic `--help`/`-h` and `--version`/`-v` generation, automatic `--no-<long>`
+negation for boolean flags, mandatory option enforcement, and custom validator lambdas.
+
+```{.dva .run}
+#use cli
+#use io
+
+opts = cli::Opts(
+   cli::opt("p:port", 8080, "Port to listen on", p => p ![1...65535] | <- "port must be 1..65535" ->),
+   cli::opt("v:verbose", <->, "Enable verbose output"),
+   cli::opt("H:host", "127.0.0.1", "Bind address")
+)
+
+res = cli::parse_args(opts, cli::Args("-p", "9000", "--verbose", "serve"))
+res
+   | p =>
+      io::out $ cli::int(p, "port")
+      io::out $ cli::flag(p, "verbose")
+      io::out $ cli::str(p, "host")
+   | err =>
+      io::out $ err
+```
+
+## Option specification with `cli::opt`
+
+Each option in `cli::Opts(...)` is declared with `cli::opt(spec, default_or_type, description[, validator])`:
+
+- **`spec` (`String`)**: `"s:long"` for both short (`-s`) and long (`--long`), `"long"` for long-only, or `"s:"` for short-only.
+- **`default_or_type`**:
+  - Passing a default value (`<->` / `<+>`, `Int`, `Float`, `String`, or `String{}`) sets both the option's type and its default value.
+  - Passing a type token (`Int`, `Float`, or `String`) marks the option as **mandatory** (missing mandatory options fail validation).
+  - Boolean flags (`<>`) automatically accept `--no-<long>` to negate the flag.
+  - `String{}` (`cli::Args`) options are repeatable (`-I a -I b` accumulates all values).
+- **`description` (`String`)**: Help text displayed in `-h` / `--help`.
+- **`validator` (optional lambda)**: `T => < | String >` returning `<- "error message" ->` when invalid.
+
+## Function catalog
+
+| Category | Function | Signature | Description |
+|---|---|---|---|
+| **Declaration** | `cli::opt(spec, def_or_ty, desc[, validator])` | Polymorphic `=> Opt` | Declares an option with default or mandatory type and optional validator |
+| | `cli::opts_for(T)` | `#! T: Type => Opts` | Generates `Opts` automatically from record `T`'s fields, types, and default values |
+| **Parsing** | `cli::parse(opts[, desc[, version[, empty_is_help]]])` | `Opts, ... => Parsed` | Parses `sys::argv`, handles `--help`/`--version`, and exits `1` on error |
+| | `cli::parse_args(opts, argv)` | `Opts, Args => < Parsed | String >` | Parses an explicit `Args` array without exiting |
+| | `cli::into(T, p)` | `#! T: Type, Parsed => < T | String >` | Materializes a `Parsed` result directly into record `T` |
+| | `cli::parse_into(T, argv)` | `#! T: Type, Args => < T | String >` | Generates `opts_for(T)`, parses `argv`, and populates record `T` |
+| | `cli::format_help(opts, prog, desc, version)` | `Opts, String, String, String => String` | Formats the aligned `--help` usage message |
+| **Querying `Parsed`** | `cli::has(p, name)` | `Parsed, String => <>` | True if option `name` (long or short) was explicitly passed |
+| | `cli::get_flag(p, name)` | `Parsed, String => <>` | Returns boolean flag value for `name` |
+| | `cli::get_int(p, name)` | `Parsed, String => Int` | Returns `Int` option value for `name` |
+| | `cli::get_float(p, name)` | `Parsed, String => Float` | Returns `Float` option value for `name` |
+| | `cli::get_str(p, name)` | `Parsed, String => String` | Returns `String` option value for `name` |
+| | `cli::get_str_list(p, name)` | `Parsed, String => Args` | Returns accumulated `String{}` values for repeatable option `name` |
+| | `cli::rest(p)` | `Parsed => Args` | Returns positional arguments (`p.args`) |
+| **Raw `argv` Helpers** | `cli::count()` | `() => Int` | Number of raw command-line arguments (`sys::argc`) |
+| | `cli::program()` | `() => String` | Program name (`argv[0]`) |
+| | `cli::arg(idx)` | `Int => < String | >` | Argument at `idx` (`0`-based) |
+| | `cli::arg_or(idx, fallback)` | `Int, String => String` | Argument at `idx` or `fallback` |
+| | `cli::args()` | `() => Args` | All arguments after `argv[0]` |

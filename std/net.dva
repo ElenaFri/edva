@@ -28,7 +28,7 @@
    IPPROTO_UDP = 17
 
    // SOL_SOCKET / SO_REUSEADDR / SO_*TIMEO
-   SOL_SOCKET   = #! (os ["darwin"] 65535 | 1)
+   SOL_SOCKET   = #! (os ["darwin"] 0xFFFF | 1)
    SO_REUSEADDR = #! (os ["darwin"] 4 | 2)
    SO_RCVTIMEO  = #! (os ["darwin"] 4102 | 20)
    SO_SNDTIMEO  = #! (os ["darwin"] 4101 | 21)
@@ -165,7 +165,7 @@
    tcp_connect = host, port =>
       ip = libc::inet_addr $ host
       ip [< 0] --| net::tcp_connect_name(host, port)
-      ip [4294967295] --| net::tcp_connect_name(host, port)
+      ip [0xFFFFFFFF] --| net::tcp_connect_name(host, port)
       sock = libc::socket(net::AF_INET, net::SOCK_STREAM, net::IPPROTO_TCP)
       sock [< 0] --| Conn(<- "socket failed" +>)
       addr = SockAddrIn(net::sin_fam_inet!,
@@ -368,7 +368,7 @@
    udp_send: Int, String, Int, String => Int
    udp_send = fd, host, port, data =>
       ip = libc::inet_addr $ host
-      ip < 0 || ip == 4294967295
+      ip < 0 || ip == 0xFFFFFFFF
          | -1
          |
             addr = SockAddrIn(net::sin_fam_inet!,

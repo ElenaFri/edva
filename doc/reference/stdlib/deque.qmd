@@ -1,0 +1,48 @@
+---
+meta:
+  audience: "Edva developers using double-ended ring-buffer queues"
+  status: "current reference"
+  audited: "fb4fbc2"
+  evidence: "`std/deque.dva`, `tests/pass/399_std_collections.dva`"
+---
+
+# `deque` standard library
+
+The `deque` module provides a generic ring-buffer double-ended queue with $O(1)$
+amortized `push_front`, `push_back`, `pop_front`, `pop_back`, and $O(1)$ random-access
+`get` and `set`. It works with `deque::IntDeque`, `deque::StrDeque`, `deque::FloatDeque`,
+or any user record matching `(buf: T{}, head: Int, tail: Int, count: Int)`.
+
+```{.dva .run}
+#use deque
+#use io
+#use str
+
+dq = deque::new_int!
+deque::push_back(dq, 20)
+deque::push_front(dq, 10)
+io::out $ str::from_int(deque::pop_front(dq)!!)
+io::out $ str::from_int(deque::pop_back(dq)!!)
+```
+
+## Types and Function catalog
+
+| Symbol / Function | Signature | Description |
+|---|---|---|
+| `deque::IntDeque` | Record `(buf: Int{}, head: Int, tail: Int, count: Int)` | Double-ended queue of `Int` |
+| `deque::StrDeque` | Record `(buf: String{}, head: Int, tail: Int, count: Int)` | Double-ended queue of `String` |
+| `deque::FloatDeque` | Record `(buf: Float{}, head: Int, tail: Int, count: Int)` | Double-ended queue of `Float` |
+| `deque::new_int!` / `new_str!` / `new_float!` | `() => IntDeque / StrDeque / FloatDeque` | Creates an empty typed deque |
+| `deque::new(D)` | `#! D: Type => D` | Creates a new empty deque of any deque record type `D` |
+| `deque::len(d)` | `#! T: Type, Deque(T) => Int` | Returns the number of elements in `d` |
+| `deque::is_empty(d)` | `#! T: Type, Deque(T) => <>` | Returns `<+>` if `d` contains no elements |
+| `deque::clear(d)` | `#! T: Type, Deque(T) => ()` | Resets `d` to empty in $O(1)$ time while keeping capacity |
+| `deque::push_back(d, val)` | `#! T: Type, Deque(T), T => ()` | Appends `val` to the back of `d` in $O(1)$ amortized time |
+| `deque::push_front(d, val)` | `#! T: Type, Deque(T), T => ()` | Prepends `val` to the front of `d` in $O(1)$ amortized time |
+| `deque::pop_front(d)` | `#! T: Type, Deque(T) => < T | >` | Removes and returns the front element, or `<-->` if empty |
+| `deque::pop_back(d)` | `#! T: Type, Deque(T) => < T | >` | Removes and returns the back element, or `<-->` if empty |
+| `deque::peek_front(d)` | `#! T: Type, Deque(T) => < T | >` | Returns the front element without removing it |
+| `deque::peek_back(d)` | `#! T: Type, Deque(T) => < T | >` | Returns the back element without removing it |
+| `deque::get(d, idx)` | `#! T: Type, Deque(T), Int => < T | >` | Returns the element at logical index `idx` (`0 !> idx < len(d)`) |
+| `deque::set(d, idx, val)` | `#! T: Type, Deque(T), Int, T => <>` | Overwrites the element at logical index `idx` |
+| `deque::to_array(d)` | `#! T: Type, Deque(T) => T{}` | Copies elements in front-to-back order into a new growable array `T{}` |

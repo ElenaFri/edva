@@ -1,24 +1,35 @@
 // Standard Event Multiplexing Module (std/event.dva)
-// Portable descriptor event notification loop backed by POSIX poll(2).
+// Portable multi-descriptor event notification loop backed by POSIX poll(2).
+//
+// Relation to `std/poll` and `sys::poll_*`:
+// - `std/poll` (`poll::poll_in`, `poll::stdin_ready`) and `sys::poll_in`/`sys::poll_out`
+//   check readiness of a single file descriptor (`nfds = 1`) using a stack-allocated
+//   `#packed` `PollFd` struct (`libc::poll(&pfd', 1, timeout_ms)`).
+// - `std/event` multiplexes many descriptors simultaneously with associated user-data
+//   tokens (`Poller`: `add`, `mod`, `del`, `wait`).
+// - `Poller` stores its descriptor table in a typed growable array (`Event{}`),
+//   needing no `@[]` raw memory access for bookkeeping. Only the flat C `struct pollfd[nfds]`
+//   buffer passed to `libc::poll` in `wait` uses `@[]`, because `T{}` of records in Edva
+//   is an array of record pointers whereas `poll(2)` requires contiguous 8-byte structs.
 
 #use libc
 #use sys
 
 #public
    // Event type bitmasks
-   READ     = 1    // Ready for reading (EPOLLIN / POLLIN)
-   WRITE    = 2    // Ready for writing (EPOLLOUT / POLLOUT)
-   PRI      = 4    // Exceptional condition (EPOLLPRI / POLLPRI)
-   ERR      = 8    // Error condition (EPOLLERR / POLLERR)
-   HUP      = 16   // Hang up (EPOLLHUP / POLLHUP)
-   RDHUP    = 8192 // Peer closed write half of stream (EPOLLRDHUP)
+   READ     = 1      // Ready for reading (EPOLLIN / POLLIN)
+   WRITE    = 2      // Ready for writing (EPOLLOUT / POLLOUT)
+   PRI      = 4      // Exceptional condition (EPOLLPRI / POLLPRI)
+   ERR      = 8      // Error condition (EPOLLERR / POLLERR)
+   HUP      = 16     // Hang up (EPOLLHUP / POLLHUP)
+   RDHUP    = 0x2000 // Peer closed write half of stream (EPOLLRDHUP)
 
    // epoll_ctl operation codes
    CTL_ADD  = 1
    CTL_DEL  = 2
    CTL_MOD  = 3
 
-   // Event record returned from wait()
+   // Event record returned from wait() and stored in Poller
    #type Event (
       fd: Int,
       events: Int,
@@ -36,8 +47,7 @@
       epfd: Int,
       is_closed: <>,
       max_events: Int,
-      buf: Builder,
-      count: Int
+      entries: Event{}
    )
 
    // Create a new event poller with default capacity (64 concurrent events)
@@ -48,7 +58,7 @@
    new_with_cap: Int => <Poller | String>
    new_with_cap = max_ev =>
       cap = max_ev > 0 | max_ev | 64
-      <+ Poller(0, <->, cap, {cap * 24}, 0) ->
+      <+ Poller(0, <->, cap, Event{}()) ->
 
    // Register descriptor with interest mask and user data token
    add: Poller, Int, Int, Int => <>
@@ -56,25 +66,20 @@
       p.is_closed || fd < 0 | --| <->
       dup' = <->
       free_slot' = -1
-      0..p.count @ i =>
-         efd = @[&p.buf + i * 24 Int]
-         efd == fd | dup' = <+>
-         efd < 0 && free_slot' < 0 | free_slot' = i
+      ?p.entries @ i =>
+         e = p.entries(i)!!
+         e.fd == fd | dup' = <+>
+         e.fd < 0 && free_slot' < 0 | free_slot' = i
       dup' | --| <->
-      slot = free_slot' !< 0
-         | free_slot'
+      free_slot' !< 0
          |
-            p.count < p.max_events
-               |
-                  s = p.count
-                  p.count = p.count + 1
-                  s
-               | -1
-      slot < 0 | --| <->
-      @[&p.buf + slot * 24] = fd
-      @[&p.buf + slot * 24 + 8] = mask
-      @[&p.buf + slot * 24 + 16] = user_data
-      <+>
+            p.entries(free_slot') = Event(fd, mask, user_data)
+            <+>
+         | ?p.entries < p.max_events
+            |
+               p.entries += Event(fd, mask, user_data)
+               <+>
+            | <->
 
    // Convenience: register descriptor with mask, using fd itself as the data token
    add_fd: Poller, Int, Int => <>
@@ -85,12 +90,11 @@
    mod = p, fd, mask, user_data =>
       p.is_closed || fd < 0 | --| <->
       found' = <->
-      0..p.count @ i =>
-         efd = @[&p.buf + i * 24 Int]
-         efd == fd
+      ?p.entries @ i =>
+         e = p.entries(i)!!
+         e.fd == fd
             |
-               @[&p.buf + i * 24 + 8] = mask
-               @[&p.buf + i * 24 + 16] = user_data
+               p.entries(i) = Event(fd, mask, user_data)
                found' = <+>
                -->
       found'
@@ -104,11 +108,11 @@
    del = p, fd =>
       p.is_closed || fd < 0 | --| <->
       found' = <->
-      0..p.count @ i =>
-         efd = @[&p.buf + i * 24 Int]
-         efd == fd
+      ?p.entries @ i =>
+         e = p.entries(i)!!
+         e.fd == fd
             |
-               @[&p.buf + i * 24] = -1
+               p.entries(i) = Event(-1, 0, 0)
                found' = <+>
                -->
       found'
@@ -119,37 +123,36 @@
       res' = Event{}
       p.is_closed | --| res'
       pfds = {p.max_events * 8}
-      idxs = {p.max_events * 8}
+      idxs = Int{}
       nfds' = 0
-      0..p.count @ i =>
-         efd = @[&p.buf + i * 24 Int]
-         efd !< 0
+      ?p.entries @ i =>
+         e = p.entries(i)!!
+         e.fd !< 0
             |
-               emask = @[&p.buf + i * 24 + 8 Int]
+               emask = e.events
                pmask = ((emask .&. READ) != 0 | 1 | 0) .|.
                   ((emask .&. WRITE) != 0 | 4 | 0) .|.
                   ((emask .&. PRI) != 0 | 2 | 0)
                k = nfds'
-               @[&pfds + k * 8] = i32(efd)
+               @[&pfds + k * 8] = i32(e.fd)
                @[&pfds + k * 8 + 4] = i16(pmask)
                @[&pfds + k * 8 + 6] = 0i16
-               @[&idxs + k * 8] = i
+               idxs += i
                nfds' = nfds' + 1
       n = libc::poll(&pfds, nfds', timeout_ms)
       n !> 0 | --| res'
       0..nfds' @ k =>
-         rev = Int(@[&pfds + k * 8 + 6 i16]) .&. 65535
+         rev = Int(@[&pfds + k * 8 + 6 i16]) .&. 0xFFFF
          rev != 0
             |
-               slot = @[&idxs + k * 8 Int]
-               ev_fd = @[&p.buf + slot * 24 Int]
-               ev_udata = @[&p.buf + slot * 24 + 16 Int]
+               slot = idxs(k)!!
+               ev = p.entries(slot)!!
                ev_mask = ((rev .&. 1) != 0 | READ | 0) .|.
                   ((rev .&. 4) != 0 | WRITE | 0) .|.
                   ((rev .&. 2) != 0 | PRI | 0) .|.
                   ((rev .&. 8) != 0 | ERR | 0) .|.
                   ((rev .&. 16) != 0 | HUP | 0)
-               res' += Event(ev_fd, ev_mask, ev_udata)
+               res' += Event(ev.fd, ev_mask, ev.data)
       res'
 
    // Close and release poller resources

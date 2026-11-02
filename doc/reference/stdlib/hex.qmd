@@ -1,0 +1,29 @@
+---
+meta:
+  audience: "Edva developers encoding and decoding hexadecimal byte strings"
+  status: "current reference"
+  audited: "fb4fbc2"
+  evidence: "`std/hex.dva`, `tests/pass/396_std_hex_base64_hash.dva`"
+---
+
+# `hex` standard library
+
+The `hex` module provides RFC 4648 Section 8 Base16 (hexadecimal) encoding and
+case-insensitive decoding with diagnostic column offsets on malformed input.
+
+```{.dva .run}
+#use hex
+#use io
+
+enc = hex::encode("Edva")
+io::out $ enc
+hex::decode(enc) | dec => io::out $ dec
+```
+
+## Function catalog
+
+| Symbol / Function | Signature | Description |
+|---|---|---|
+| `hex::encode(s)` | `String => String` | Encodes raw bytes of `s` into lowercase hexadecimal (`2 * ?s` ASCII bytes) |
+| `hex::encode_upper(s)` | `String => String` | Encodes raw bytes of `s` into uppercase hexadecimal (`2 * ?s` ASCII bytes) |
+| `hex::decode(s)` | `String => < String | Error >` | Decodes a case-insensitive hexadecimal string into raw bytes, or returns an `Error` on odd length or non-hex bytes |

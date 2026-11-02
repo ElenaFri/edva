@@ -1,0 +1,76 @@
+// Standard Hexadecimal Encoding & Decoding Module (std/hex.dva)
+// Fast lowercase/uppercase hex encoding and case-insensitive decoding.
+
+#public
+
+#private
+
+hex_err: String, Int => Error
+hex_err = msg, col =>
+   Error(400, "hex: " + msg, "std/hex.dva", 1, col + 1, (col, 0))
+
+nibble_lower: Int => Int
+nibble_lower = n =>
+   d = n .&. 0x0F
+   d < 10 | '0' + d | 'a' + (d - 10)
+
+nibble_upper: Int => Int
+nibble_upper = n =>
+   d = n .&. 0x0F
+   d < 10 | '0' + d | 'A' + (d - 10)
+
+from_hex_char: Int => Int
+from_hex_char = c =>
+   c
+      ['0'...'9'] c - '0'
+      ['a'...'f'] c - 'a' + 10
+      ['A'...'F'] c - 'A' + 10
+      |           -1
+
+#public
+
+// Encodes `bytes` into a lowercase hexadecimal string (2 hex chars per byte).
+encode: String => String
+encode = bytes =>
+   n = ?bytes
+   n == 0 | --| ""
+   b = {n * 2}
+   n @ i =>
+      v = bytes(i) .&. 0xFF
+      b += nibble_lower(v .>. 4)
+      b += nibble_lower(v)
+   +b
+
+// Encodes `bytes` into an uppercase hexadecimal string (2 hex chars per byte).
+encode_upper: String => String
+encode_upper = bytes =>
+   n = ?bytes
+   n == 0 | --| ""
+   b = {n * 2}
+   n @ i =>
+      v = bytes(i) .&. 0xFF
+      b += nibble_upper(v .>. 4)
+      b += nibble_upper(v)
+   +b
+
+// Decodes a hexadecimal string (case-insensitive) into raw bytes, or returns an `Error`.
+decode: String => < String | Error >
+decode = s =>
+   n = ?s
+   n == 0 | --| <+ "" ->
+   (n .&. 1) != 0 | --| <- hex_err("odd length hex string", n) +>
+   pairs = n .>. 1
+   b = {pairs}
+   bad_idx' = -1
+   pairs @ i =>
+      bad_idx' < 0 |
+         hi = from_hex_char(s(i * 2))
+         lo = from_hex_char(s(i * 2 + 1))
+         hi < 0
+            | bad_idx' = i * 2
+            | lo < 0
+               | bad_idx' = i * 2 + 1
+               | b += ((hi .<. 4) .|. lo)
+   bad_idx' !< 0
+      | <- hex_err("invalid hex character", bad_idx') +>
+      | <+ +b ->

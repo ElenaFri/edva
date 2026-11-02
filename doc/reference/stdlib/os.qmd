@@ -1,35 +1,83 @@
 ---
 meta:
-  audience: "Edva developers performing file and process operations"
+  audience: "Edva developers performing file, environment, and subprocess operations"
   status: "current reference"
-  audited: "c17e2aa"
-  evidence: "`std/os.dva`, `tests/pass/041_posix_spawn.dva`"
+  audited: "fb4fbc2"
+  evidence: "`std/os.dva`, `tests/pass/041_posix_spawn.dva`, `tests/pass/387_str_os_cli_test_bench.dva`, `tests/pass/392_os_proc_and_log.dva`"
 ---
 
 # `os` standard library
 
-The `os` module provides safe, high-level abstractions over POSIX file operations,
-device controls, and process execution.
+The `os` module provides safe, high-level abstractions over POSIX file descriptors,
+environment variables, working-directory inspection, shell command execution, and
+shell-free argument-array subprocess management with concurrent pipe I/O.
 
 ```{.dva .run}
+#use io
 #use os
+
+out = os::run_args("printf", os::Args("%s-%s", "edva", "42")) | s => s | ""
+io::out $ out
 ```
+
+## Types and Constants
+
+| Symbol | Kind | Definition | Description |
+|---|---|---|---|
+| `os::Args` | Growable Array | `String{}` | Argument array passed to `spawn_args`, `exec_args`, `exec_input`, `run_args`, `spawn_piped`, and `spawn_bg` |
+| `os::ExecResult` | Record | `(status: Int, output: String)` | Exit status and captured stdout from `os::exec` |
+| `os::ProcResult` | Record | `(status: Int, stdout: String, stderr: String)` | Exit status and separately captured `stdout` and `stderr` |
+| `os::Child` | Record | `(pid: Int, stdin_fd: Int, stdout_fd: Int, stderr_fd: Int)` | Active child process handle with pipe file descriptors |
+| `os::SIGINT` | Constant | `2` | Interrupt signal (`SIGINT`) |
+| `os::SIGKILL` | Constant | `9` | Unconditional termination signal (`SIGKILL`) |
+| `os::SIGTERM` | Constant | `15` | Graceful termination signal (`SIGTERM`) |
 
 ## Function catalog
 
-| Function | Signature | Description |
-|---|---|---|
-| `os::open` | `String, Int => Int` | Opens file path with flags, returning file descriptor |
-| `os::close` | `Int => Int` | Closes file descriptor |
-| `os::write` | `Int, String, Int => Int` | Writes string byte buffer to descriptor |
-| `os::read` | `Int, Int => String` | Unbuffered read of up to `count` bytes into an immutable `String` |
-| `os::ioctl` | `Int, Int, Int => Int` | Performs control device request |
-| `os::spawn` | `String, Addr => Int` | Spawns external executable with `argv` pointer and waits for completion |
+| Category | Function | Signature | Description |
+|---|---|---|---|
+| **Descriptors & Terminal** | `os::open(path, flags)` | `String, Int => Int` | Opens file path with flags, returning file descriptor |
+| | `os::close(fd)` | `Int => Int` | Closes file descriptor |
+| | `os::write(fd, buf, count)` | `Int, String, Int => Int` | Writes string byte buffer to descriptor |
+| | `os::read(fd, count)` | `Int, Int => String` | Unbuffered read of up to `count` bytes into an immutable `String` |
+| | `os::ioctl(fd, req, arg)` | `Int, Int, Int => Int` | Performs control device request |
+| | `os::isatty(fd)` | `Int => <>` | Returns `<+>` if `fd` refers to a terminal device |
+| **Environment** | `os::env(name)` | `String => < String | >` | Looks up environment variable `name` |
+| | `os::env_or(name, fallback)` | `String, String => String` | Returns environment variable `name` or `fallback` if unset |
+| | `os::setenv(name, val)` | `String, String => <>` | Sets environment variable `name` to `val` (overwriting) |
+| | `os::unsetenv(name)` | `String => <>` | Removes environment variable `name` |
+| **Process & Host** | `os::cwd()` | `() => String` | Returns the current working directory |
+| | `os::chdir(path)` | `String => <>` | Changes the current working directory to `path` |
+| | `os::pid()` | `() => Int` | Returns the current process ID |
+| | `os::ppid()` | `() => Int` | Returns the parent process ID |
+| | `os::hostname()` | `() => String` | Returns the system hostname |
+| | `os::which(prog)` | `String => < String | >` | Searches `$PATH` for executable `prog` |
+| **Subprocess (Direct `Args`)** | `os::spawn_args(prog, args)` | `String, Args => Int` | Spawns `prog` with `args` (inheriting stdio), waits, and returns exit status (`-1` on spawn failure) |
+| | `os::exec_args(prog, args)` | `String, Args => < ProcResult | >` | Spawns `prog` with `args` (no shell) and captures `stdout`, `stderr`, and `status` |
+| | `os::exec_input(prog, args, input)` | `String, Args, String => < ProcResult | >` | Spawns `prog` with `args`, feeds `input` to stdin, and captures `stdout`, `stderr`, and `status` |
+| | `os::run_args(prog, args)` | `String, Args => < String | >` | Runs `prog` with `args` and returns `<+ stdout +>` if exit status is `0` |
+| **Background & Piped Children** | `os::spawn_bg(prog, args)` | `String, Args => < Int | >` | Spawns `prog` in background (inheriting stdio) and returns `<+ child_pid +>` |
+| | `os::spawn_piped(prog, args)` | `String, Args => < Child | >` | Spawns `prog` with piped `stdin_fd`, `stdout_fd`, and `stderr_fd` |
+| | `os::communicate_child(child, input)` | `Child, String => < ProcResult | >` | Feeds `input` to `child`, drains stdout/stderr via `poll`, and waits for exit |
+| | `os::wait_child(child)` | `Child => < ProcResult | >` | Drains remaining stdout/stderr from `child` and waits for exit |
+| | `os::wait_pid(pid)` | `Int => < Int | >` | Waits for `pid` to exit and returns decoded exit code |
+| | `os::try_wait_pid(pid)` | `Int => < Int | >` | Non-blocking check (`WNOHANG`); returns `<+ status +>` if exited or `<-->` if still running |
+| | `os::kill_pid(pid, sig)` | `Int, Int => <>` | Sends signal `sig` to `pid` |
+| **Shell & Raw `posix_spawn`** | `os::system(cmd)` | `String => Int` | Runs `cmd` via `/bin/sh -c` and returns decoded exit status |
+| | `os::exec(cmd)` | `String => < ExecResult | >` | Runs `cmd` via `popen` and returns `(status, output)` |
+| | `os::run(cmd)` | `String => < String | >` | Runs `cmd` via `popen` and returns `<+ output +>` when status is `0` |
+| | `os::spawn(path, argv)` | `String, Addr => Int` | Low-level `posix_spawn` with raw `Addr` `argv` pointer |
 
-```{.dva .partial}
-fd = os::open("output.txt", 577) // O_WRONLY | O_CREAT | O_TRUNC
-fd !< 0
-   |
-      os::write(fd, "hello\n", 6)
-      os::close(fd)
+## Usage examples
+
+### Capturing stdout, stderr, and feeding stdin without shell injection
+
+```{.dva .run}
+#use io
+#use os
+
+res = os::exec_input("tr", os::Args("a-z", "A-Z"), "hello edva")
+res
+   | r => io::out $ r.stdout
+   | io::out $ "failed"
 ```

@@ -127,7 +127,7 @@
    pool_free: Pool, Addr => <>
    pool_free = p, addr =>
       off = Int(addr) - Int(p.buffer)
-      off < 0 || off !< (p.capacity * p.elem_size) | --| <->
+      off ![0..p.capacity * p.elem_size] | --| <->
       idx = off / p.elem_size
       off % p.elem_size != 0 | --| <->
       is_act = @[p.active + idx u8]

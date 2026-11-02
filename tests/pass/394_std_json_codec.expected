@@ -1,0 +1,37 @@
+--- test 1: structural encode & decode ---
+{"name":"Alice","age":28,"active":true,"email":"alice@example.com","tags":["edva","json"],"meta":{"score":99},"role":{"Custom":"editor"},"addr":{"city":"Espoo","zip":210}}
+Alice
+28
+true
+alice@example.com
+2
+edva
+json
+99
+role:custom:editor
+Espoo
+210
+--- test 2: defaults & forward compatibility ---
+Bob
+30
+true
+none
+0
+0
+role:admin
+Helsinki
+--- test 3: tuple & Value & pretty ---
+[7,"lucky"]
+7
+lucky
+10
+ok
+[
+  1,
+  "a"
+]
+--- test 4: decode errors ---
+json: missing required key 'name'
+json: expected string
+json: unknown variant 'SuperAdmin' for Role
+--- done ---

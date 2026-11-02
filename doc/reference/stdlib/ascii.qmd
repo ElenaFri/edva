@@ -29,9 +29,9 @@ does not allocate memory, and operates directly on integer byte values (`0..255`
 | | `ascii::is_hex(c)` | `Int => <>` | Flag `<>` | True if ASCII hexadecimal digit (`0..9`, `a..f`, `A..F`) |
 | **Case conversion** | `ascii::to_lower(c)` | `Int => Int` | `Int` | Converts uppercase ASCII to lowercase; other inputs unchanged |
 | | `ascii::to_upper(c)` | `Int => Int` | `Int` | Converts lowercase ASCII to uppercase; other inputs unchanged |
-| **Hex conversion** | `ascii::hex_value(c)` | `Int => <Int\|>` | Option `<Int\|>` | Numeric value of hex digit `0..15`, or absent `<-->` if invalid |
-| | `ascii::hex_digit_lower(n)` | `Int => <Int\|>` | Option `<Int\|>` | Checked lowercase ASCII hex byte for `0 <= n <= 15` |
-| | `ascii::hex_digit_upper(n)` | `Int => <Int\|>` | Option `<Int\|>` | Checked uppercase ASCII hex byte for `0 <= n <= 15` |
+| **Hex conversion** | `ascii::hex_value(c)` | `Int => <Int|>` | Option `<Int|>` | Numeric value of hex digit `0..15`, or absent `<-->` if invalid |
+| | `ascii::hex_digit_lower(n)` | `Int => <Int|>` | Option `<Int|>` | Checked lowercase ASCII hex byte for `0 <= n <= 15` |
+| | `ascii::hex_digit_upper(n)` | `Int => <Int|>` | Option `<Int|>` | Checked uppercase ASCII hex byte for `0 <= n <= 15` |
 | | `ascii::hex_char_lower(n)` | `Int => Int` | `Int` | Lowercase ASCII hex byte (precondition: `0 <= n <= 15`) |
 | | `ascii::hex_char_upper(n)` | `Int => Int` | `Int` | Uppercase ASCII hex byte (precondition: `0 <= n <= 15`) |
 

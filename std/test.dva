@@ -69,14 +69,196 @@ check_eq_flag = actual, expected, label =>
       | record_result(<+>, label, "")
       | record_result(<->, label, "got " + (actual | "<+>" | "<->") + ", expected " + (expected | "<+>" | "<->"))
 
+#public
+
+format_val: #! T: Type, T => String
+format_val = v =>
+   T
+      [Int, i8, i16, i32, i64, u8, u16, u32, u64] str::from_int(Int(v))
+      [Float, f32, f64] str::from_float(Float(v))
+      [String] "\"" + v + "\""
+      [<>] (v | "<+>" | "<->")
+      [Rune]
+         b = {6}
+         b += '\''
+         b += v
+         b += '\''
+         +b
+      [()] "()"
+      [<P|>]
+         (v | inner => "<+ " + format_val(P, inner) + " +>" | "<-->")
+      [E{}]
+         b = {32}
+         b += '['
+         v @ elem, i =>
+            i > 0 | b += ", "
+            b += format_val(E, elem)
+         b += ']'
+         +b
+      [E[]]
+         b = {32}
+         b += '['
+         v @ elem, i =>
+            i > 0 | b += ", "
+            b += format_val(E, elem)
+         b += ']'
+         +b
+      [K ^ V]
+         b = {32}
+         b += '{'
+         first' = <+>
+         v @ mv, mk =>
+            !first' | b += ", "
+            first' = <->
+            b += format_val(K, mk) + ": " + format_val(V, mv)
+         b += '}'
+         +b
+      [(..)]
+         b = {32}
+         is_tuple' = <->
+         T @ f =>
+            f.idx == 0 && f.name == "" | is_tuple' = <+>
+         is_tuple'
+            |
+               b += '('
+               T @ f =>
+                  f.idx > 0 | b += ", "
+                  f.type
+                     [<P|>]
+                        vf = v.(f)
+                        b += (vf | inner => "<+ " + format_val(P, inner) + " +>" | "<-->")
+                     |
+                        b += format_val(f.type, v.(f))
+               b += ')'
+            |
+               b += T.name + "("
+               T @ f =>
+                  f.idx > 0 | b += ", "
+                  b += f.name + "="
+                  f.type
+                     [<P|>]
+                        vf = v.(f)
+                        b += (vf | inner => "<+ " + format_val(P, inner) + " +>" | "<-->")
+                     |
+                        b += format_val(f.type, v.(f))
+               b += ')'
+         +b
+      [<..>]
+         res' = ++T.name
+         T @ vr =>
+            v.(vr)
+               | pay =>
+                  vr.type
+                     [()]
+                        res' = vr.name
+                     |
+                        res' = vr.name + "(" + format_val(vr.type, pay) + ")"
+         res'
+      | T.name
+
+struct_eq: #! T: Type, T, T => <>
+struct_eq = a, b =>
+   T
+      [Int, i8, i16, i32, i64, u8, u16, u32, u64] Int(a) == Int(b)
+      [Float, f32, f64] Float(a) == Float(b)
+      [String] a == b
+      [<>] (a && b) || (!a && !b)
+      [Rune] a == b
+      [()] <+>
+      [<P|>]
+         a
+            | pa =>
+               b
+                  | pb => struct_eq(P, pa, pb)
+                  | <->
+            |
+               b
+                  | pb => <->
+                  | <+>
+      [E{}]
+         ?a != ?b
+            | <->
+            |
+               same' = <+>
+               a @ elem_a, i =>
+                  same' |
+                     b @ elem_b, j =>
+                        i == j |
+                           !struct_eq(E, elem_a, elem_b) | same' = <->
+               same'
+      [E[]]
+         ?a != ?b
+            | <->
+            |
+               same' = <+>
+               a @ elem_a, i =>
+                  same' |
+                     b @ elem_b, j =>
+                        i == j |
+                           !struct_eq(E, elem_a, elem_b) | same' = <->
+               same'
+      [K ^ V]
+         ?a != ?b
+            | <->
+            |
+               same' = <+>
+               a @ av, ak =>
+                  same' |
+                     b_opt = b ^ ak
+                     b_opt
+                        | bv =>
+                           !struct_eq(V, av, bv) | same' = <->
+                        |
+                           same' = <->
+               same'
+      [(..)]
+         same' = <+>
+         T @ f =>
+            same' |
+               f.type
+                  [<P|>]
+                     fa = a.(f)
+                     fb = b.(f)
+                     fa
+                        | pa =>
+                           fb
+                              | pb =>
+                                 !struct_eq(P, pa, pb) | same' = <->
+                              |
+                                 same' = <->
+                        |
+                           fb
+                              | pb => same' = <->
+                              | same' = same'
+                  |
+                     !struct_eq(f.type, a.(f), b.(f)) | same' = <->
+         same'
+      [<..>]
+         same' = <->
+         T @ vr =>
+            a.(vr)
+               | pa =>
+                  b.(vr)
+                     | pb =>
+                        vr.type
+                           [()] same' = <+>
+                           | same' = struct_eq(vr.type, pa, pb)
+         same'
+      | a == b
+
+#private
+
 check_eq_val: #! T: Type, T, T, String => <>
-check_eq_val = #! T, actual, expected, label =>
+check_eq_val = actual, expected, label =>
    T
       [Int] check_eq_int(actual, expected, label)
       [Float] check_eq_float(actual, expected, label)
       [String] check_eq_str(actual, expected, label)
       [<>] check_eq_flag(actual, expected, label)
-      | record_result(actual == expected, label, "values not equal")
+      |
+         struct_eq(T, actual, expected)
+            | record_result(<+>, label, "")
+            | record_result(<->, label, "got " + format_val(T, actual) + ", expected " + format_val(T, expected))
 
 check_ne_int: Int, Int, String => <>
 check_ne_int = actual, unexpected, label =>
@@ -104,13 +286,16 @@ check_ne_flag = actual, unexpected, label =>
       | record_result(<->, label, "got " + (actual | "<+>" | "<->") + " (expected != " + (unexpected | "<+>" | "<->") + ")")
 
 check_ne_val: #! T: Type, T, T, String => <>
-check_ne_val = #! T, actual, unexpected, label =>
+check_ne_val = actual, unexpected, label =>
    T
       [Int] check_ne_int(actual, unexpected, label)
       [Float] check_ne_float(actual, unexpected, label)
       [String] check_ne_str(actual, unexpected, label)
       [<>] check_ne_flag(actual, unexpected, label)
-      | record_result(actual != unexpected, label, "values unexpectedly equal")
+      |
+         !struct_eq(T, actual, unexpected)
+            | record_result(<+>, label, "")
+            | record_result(<->, label, "got " + format_val(T, actual) + " (expected != " + format_val(T, unexpected) + ")")
 
 #public
 
@@ -155,13 +340,20 @@ check = #! L, cond, label =>
 eq: #! T: Type, #! L: Type, T, T, L => <>
 eq = #! T, #! L, actual, expected, label =>
    L
-      [String] check_eq_val(actual, expected, label)
-      | check_eq_val(actual, expected, "")
+      [String] check_eq_val(T, actual, expected, label)
+      | check_eq_val(T, actual, expected, "")
 
 // Checks that `actual != unexpected`.
 // Accepts `test::ne(actual, unexpected)` or `test::ne(actual, unexpected, "label")`.
 ne: #! T: Type, #! L: Type, T, T, L => <>
 ne = #! T, #! L, actual, unexpected, label =>
+   L
+      [String] check_ne_val(T, actual, unexpected, label)
+      | check_ne_val(T, actual, unexpected, "")
+
+// Alias for `test::ne`.
+neq: #! T: Type, #! L: Type, T, T, L => <>
+neq = #! T, #! L, actual, unexpected, label =>
    L
       [String] check_ne_val(actual, unexpected, label)
       | check_ne_val(actual, unexpected, "")
@@ -187,17 +379,29 @@ approx_eps = actual, expected, eps, label =>
 // Accepts `test::ok(res)` or `test::ok(res, "label")`.
 ok: #! T: Type, #! L: Type, T, L => <>
 ok = #! T, #! L, res, label =>
+   is_ok = T
+      [<>] res
+      |
+         res
+            | v => <+>
+            | <->
    L
-      [String] record_result(<>(res), label, "expected positive ramification <+ ... +>")
-      | record_result(<>(res), "", "expected positive ramification <+ ... +>")
+      [String] record_result(is_ok, label, "expected positive ramification <+ ... +>")
+      | record_result(is_ok, "", "expected positive ramification <+ ... +>")
 
 // Checks that a ramification or flag is negative (`!<>(res)`).
 // Accepts `test::err(res)` or `test::err(res, "label")`.
 err: #! T: Type, #! L: Type, T, L => <>
 err = #! T, #! L, res, label =>
+   is_pos = T
+      [<>] res
+      |
+         res
+            | v => <+>
+            | <->
    L
-      [String] record_result(!<>(res), label, "expected negative ramification <-- ... -->")
-      | record_result(!<>(res), "", "expected negative ramification <-- ... -->")
+      [String] record_result(!is_pos, label, "expected negative ramification <-- ... -->")
+      | record_result(!is_pos, "", "expected negative ramification <-- ... -->")
 
 // Prints a summary line and returns `<+>` if all assertions passed, or `<->` if any failed.
 summary: () => <>

@@ -1,8 +1,7 @@
 // std/ccl.dva — Categorical Configuration Language (CCL) parser, model,
-// deterministic serializer, and package manifest/lockfile validator.
+// deterministic serializer, and structural #! encode/decode.
 //
 // Reference: https://github.com/chshersh/ccl
-// Specification: process/packages.md §2, §4, §6; Issue #97, #98
 
 #use str
 #use io
@@ -28,72 +27,6 @@
    val: CclVal,
    line: Int,
    col: Int
-)
-
-// --- Package Schema Data Model (#97, #98) -----------------------------------
-
-#type DepKind < Git, Path, Archive >
-
-#type PackageDep (
-   alias: String,
-   kind: DepKind,
-   git_url: String,
-   git_rev: String,
-   path: String,
-   archive_url: String,
-   archive_hash: String
-)
-
-#type PackageDeps PackageDep{}
-
-#type BuildTarget (
-   name: String,
-   src: String,
-   out: String,
-   target: String,
-   opt: String,
-   cflags: Strings
-)
-
-#type BuildTargets BuildTarget{}
-
-#type PackageManifest (
-   name: String,
-   version: String,
-   edva: String,
-   deps: PackageDeps,
-   native_libs: Strings,
-   native_pkg_config: Strings,
-   overrides: PackageDeps,
-   targets: BuildTargets
-)
-
-#type LockDep (
-   alias: String,
-   id: String
-)
-
-#type LockDeps LockDep{}
-
-#type LockPackage (
-   id: String,
-   kind: DepKind,
-   git_url: String,
-   git_rev: String,
-   git_commit: String,
-   archive_url: String,
-   archive_hash: String,
-   path: String,
-   deps: LockDeps,
-   is_override: <>
-)
-
-#type LockPackages LockPackage{}
-
-#type Lockfile (
-   lock_version: Int,
-   packages: LockPackages,
-   root_deps: LockDeps
 )
 
 // --- Constructors -----------------------------------------------------------
@@ -164,55 +97,6 @@ sort_strings = arr =>
                | -->
          out(j') = key !| _
       out
-
-// --- Identifier & Version Validation ----------------------------------------
-
-is_valid_alias: String => <>
-is_valid_alias = alias =>
-   n = ?alias
-   n == 0 | <-> |
-      first = alias(0)
-      is_start = (first !< 'a' && first !> 'z') || (first !< 'A' && first !> 'Z') || first == '_' || first > 0x7F
-      !is_start | <-> |
-         ok' = <+>
-         1..n @ i =>
-            c = alias(i)
-            is_cont = (c !< 'a' && c !> 'z') || (c !< 'A' && c !> 'Z') || (c !< '0' && c !> '9') || c == '_' || c > 0x7F
-            !is_cont | ok' = <->; -->
-         ok'
-
-is_valid_package_name: String => <>
-is_valid_package_name = name =>
-   n = ?name
-   n == 0 | <-> |
-      first = name(0)
-      (first < 'a' || first > 'z') | <-> |
-         ok' = <+>
-         1..n @ i =>
-            c = name(i)
-            is_valid_ch = (c !< 'a' && c !> 'z') || (c !< '0' && c !> '9') || c == '_'
-            !is_valid_ch | ok' = <->; -->
-         ok'
-
-is_valid_version: String => <>
-is_valid_version = ver =>
-   n = ?ver
-   n == 0 | <-> |
-      ok' = <+>
-      seg_len' = 0
-      dots' = 0
-      0..n @ i =>
-         c = ver(i)
-         c == '.'
-            |
-               seg_len' == 0 | ok' = <->; -->
-               seg_len' = 0
-               dots' = dots' + 1
-            |
-               (c < '0' || c > '9')
-                  | ok' = <->; -->
-                  | seg_len' = seg_len' + 1
-      ok' && dots' > 0 && seg_len' > 0
 
 // --- Error Constructor ------------------------------------------------------
 
@@ -542,557 +426,330 @@ to_ccl = doc =>
    serialize_doc_indent(doc, 0, b)
    +b
 
-// --- Package Schema Validation ----------------------------------------------
+// --- Structural #! Codec (encode / decode) ----------------------------------
 
-sort_deps: PackageDeps => PackageDeps
-sort_deps = deps =>
-   n = ?deps
-   n < 2 | deps |
-      out: PackageDeps
-      deps @ d => out += d
-      1..n @ i =>
-         key = out(i) | _ | PackageDep("", DepKind(Path), "", "", "", "", "")
-         j' = i
-         0.. @
-            j' !> 0 | -->
-            prev = out(j' - 1) | _ | PackageDep("", DepKind(Path), "", "", "", "", "")
-            str::cmp(prev.alias, key.alias) > 0
+ccl_key_to_str: #! K: Type, K => String
+ccl_key_to_str = k =>
+   K
+      [String] k
+      [Int, i8, i16, i32, i64, u8, u16, u32, u64] str::from_int(Int(k))
+      [<>] (k | "true" | "false")
+      [Rune]
+         b = {4}
+         b += k
+         +b
+      | K.name
+
+to_ccl_val: #! T: Type, T => CclVal
+to_ccl_val = val =>
+   T
+      [CclVal] val
+      [CclDoc] CclVal(Block, val)
+      [String] CclVal(Str, val)
+      [Int, i8, i16, i32, i64, u8, u16, u32, u64] CclVal(Str, str::from_int(Int(val)))
+      [Float, f32, f64] CclVal(Str, str::from_float(Float(val)))
+      [<>] CclVal(Str, (val | "true" | "false"))
+      [Rune]
+         b = {4}
+         b += val
+         CclVal(Str, +b)
+      [<P|>]
+         (val | pv => to_ccl_val(pv) | CclVal(Str, ""))
+      [E{}]
+         sub = doc_new!
+         val @ elem =>
+            sub += CclEntry("", to_ccl_val(elem), 0, 0)
+         CclVal(Block, sub)
+      [E[]]
+         sub = doc_new!
+         val @ elem =>
+            sub += CclEntry("", to_ccl_val(elem), 0, 0)
+         CclVal(Block, sub)
+      [K ^ V]
+         sub = doc_new!
+         val @ v, k =>
+            sub += CclEntry(ccl_key_to_str(k), to_ccl_val(v), 0, 0)
+         CclVal(Block, sub)
+      [<..>]
+         res' = CclVal(Str, "")
+         T @ v =>
+            val.(v)
+               | pay =>
+                  v.type
+                     [()]
+                        res' = CclVal(Str, v.name)
+                     |
+                        sub = doc_new!
+                        sub += CclEntry(v.name, to_ccl_val(pay), 0, 0)
+                        res' = CclVal(Block, sub)
+         res'
+      [(..)]
+         sub = doc_new!
+         T @ f =>
+            f.type
+               [<P|>]
+                  vf = val.(f)
+                  vf | inner => sub += CclEntry(f.name, to_ccl_val(inner), 0, 0)
                |
-                  out(j') = prev !| _
-                  j' = j' - 1
-               | -->
-         out(j') = key !| _
-      out
+                  sub += CclEntry(f.name, to_ccl_val(val.(f)), 0, 0)
+         CclVal(Block, sub)
+      | CclVal(Str, "")
 
-validate_dep: CclEntry, String => < PackageDep | Error >
-validate_dep = e, file =>
-   alias = e.key
-   !is_valid_alias(alias)
-      | <- ccl_error(file, "edva.ccl: invalid dependency alias '" + alias + "'", e.line, e.col) +>
+to_doc: #! T: Type, T => CclDoc
+to_doc = val =>
+   T
+      [CclDoc] val
       |
-         e.val
-            [Block ddoc]
-               has_err' = <->
-               err_val' = ccl_error(file, ++"", 0, 0)
-               ddoc @ dde =>
-                  !has_err' |
-                     k = dde.key
-                     is_known = k == "git" || k == "rev" || k == "path" || k == "url" || k == "hash"
-                     !is_known |
-                        has_err' = <+>
-                        k == "submodule" || k == "submodules"
-                           |
-                              err_val' = ccl_error(file,
-                                 "edva.ccl: dependency '" + alias +
-                                 "': git submodules are not supported",
-                                 dde.line, dde.col)
-                           |
-                              k == "subdir"
-                                 |
-                                    err_val' = ccl_error(file,
-                                       "edva.ccl: dependency '" + alias +
-                                       "': package subdirectory selection ('subdir') is not supported in v1",
-                                       dde.line, dde.col)
-                                 |
-                                    err_val' = ccl_error(file,
-                                       "edva.ccl: unknown key 'dependencies." + alias + "." + k + "'",
-                                       dde.line, dde.col)
-               has_err'
-                  | <- err_val' +>
-                  |
-                     has_git = has(ddoc, "git")
-                     has_path = has(ddoc, "path")
-                     has_url = has(ddoc, "url")
-                     count' = 0
-                     has_git | count' = count' + 1
-                     has_path | count' = count' + 1
-                     has_url | count' = count' + 1
+         cv = to_ccl_val(val)
+         cv
+            [Block b] b
+            [Str s]
+               d = doc_new!
+               d += CclEntry("", CclVal(Str, s), 0, 0)
+               d
 
-                     count' != 1
-                        |
-                           <- ccl_error(file,
-                              "edva.ccl: dependency '" + alias +
-                              "' must specify exactly one of: git, path, url",
-                              e.line, e.col) +>
-                        |
-                           has_git
-                              |
-                                 g_url = get(ddoc, "git") | _ | ""
-                                 opt_rev = get(ddoc, "rev")
-                                 opt_rev
-                                    | rev =>
-                                       <+ PackageDep(alias, DepKind(Git), g_url, rev, "", "", "") ->
-                                    |
-                                       <- ccl_error(file,
-                                          "edva.ccl: dependency '" + alias + "' needs 'rev'",
-                                          e.line, e.col) +>
-                              |
-                                 has_path
-                                    |
-                                       p = get(ddoc, "path") | _ | ""
-                                       <+ PackageDep(alias, DepKind(Path), "", "", p, "", "") ->
-                                    |
-                                       u = get(ddoc, "url") | _ | ""
-                                       opt_hash = get(ddoc, "hash")
-                                       opt_hash
-                                          | h =>
-                                             <+ PackageDep(alias, DepKind(Archive),
-                                                "", "", "", u, h) ->
-                                          |
-                                             <- ccl_error(file,
-                                                "edva.ccl: dependency '" + alias + "' needs 'hash'",
-                                                e.line, e.col) +>
-            [Str]
-               <- ccl_error(file,
-                  "edva.ccl: dependency '" + alias + "' must be a section", e.line, e.col) +>
+encode: #! T: Type, T => String
+encode = val =>
+   to_ccl(to_doc(val))
 
-split_words: String => Strings
-split_words = s =>
-   res: Strings
-   n = ?s
-   i' = 0
-   0.. @
-      i' = trim_left_idx(s, i')
-      i' !< n | -->
-      start = i'
-      0.. @
-         i' !< n || is_space(s(i')) | -->
-         i' = i' + 1
-      res += s(start..i')
-   res
-
-validate_target: CclEntry, String => < BuildTarget | Error >
-validate_target = e, file =>
-   tname = e.key
-   !is_valid_alias(tname)
-      | <- ccl_error(file, "edva.ccl: invalid target name '" + tname + "'", e.line, e.col) +>
-      |
-         e.val
-            [Block tdoc]
-               has_err' = <->
-               err_val' = ccl_error(file, ++"", 0, 0)
-               tdoc @ te =>
-                  !has_err' |
-                     k = te.key
-                     is_known = k == "src" || k == "out" || k == "target" ||
-                        k == "opt" || k == "cflags" || k == "/"
-                     !is_known |
-                        has_err' = <+>
-                        err_val' = ccl_error(file,
-                           "edva.ccl: unknown key 'targets." + tname + "." + k + "'",
-                           te.line, te.col)
-               has_err'
-                  | <- err_val' +>
-                  |
-                     src = get(tdoc, "src") | s => s | ""
-                     out_p = get(tdoc, "out") | s => s | ""
-                     triple = get(tdoc, "target") | s => s | ""
-                     opt = get(tdoc, "opt") | s => s | ""
-                     cflags: Strings
-                     get_list(tdoc, "cflags")
-                        | clist => cflags = clist
-                        |
-                           get(tdoc, "cflags")
-                              | cstr => cflags = split_words(cstr)
-                     <+ BuildTarget(tname, src, out_p, triple, opt, cflags) ->
-            [Str]
-               <- ccl_error(file,
-                  "edva.ccl: target '" + tname + "' must be a section", e.line, e.col) +>
-
-validate_manifest: CclDoc, String => < PackageManifest | Error >
-validate_manifest = doc, file =>
-   has_err' = <->
-   err_val' = ccl_error(file, ++"", 0, 0)
-
-   // 1. Check unknown top-level keys
+first_non_comment_entry: CclDoc => < CclEntry | >
+first_non_comment_entry = doc =>
+   res' = <-->
    doc @ e =>
-      k = e.key
-      is_known = k == "name" || k == "version" || k == "edva" ||
-         k == "dependencies" || k == "native" || k == "overrides" ||
-         k == "targets" || k == "/"
-      !is_known && !has_err'
-         |
-            has_err' = <+>
-            err_val' = ccl_error(file, "edva.ccl: unknown key '" + k + "'", e.line, e.col)
+      e.key != "/" |
+         res' = <+ e +>
+         -->
+   res'
 
-   // 2. Check duplicates for singleton fields
-   !has_err' && count(doc, "name") > 1
-      |
-         has_err' = <+>
-         err_val' = ccl_error(file, "edva.ccl: duplicate key 'name'", 1, 1)
-   !has_err' && count(doc, "version") > 1
-      |
-         has_err' = <+>
-         err_val' = ccl_error(file, "edva.ccl: duplicate key 'version'", 1, 1)
-   !has_err' && count(doc, "edva") > 1
-      |
-         has_err' = <+>
-         err_val' = ccl_error(file, "edva.ccl: duplicate key 'edva'", 1, 1)
+non_comment_entries: CclDoc => CclDoc
+non_comment_entries = doc =>
+   out = doc_new!
+   doc @ e =>
+      e.key != "/" | out += e
+   out
 
-   // 3. Required name and version
-   pkg_name' = ++""
-   pkg_ver' = ++""
-   edva_ver' = ++""
-
-   !has_err'
-      |
-         opt_name = get(doc, "name")
-         opt_name
-            | n =>
-               !is_valid_package_name(n)
+decode_val: #! T: Type, CclVal, String, Int, Int => < T | Error >
+decode_val = cv, file, line, col =>
+   T
+      [CclVal] <+ cv ->
+      [CclDoc]
+         cv
+            [Block b] <+ b ->
+            [Str s]
+               s == ""
+                  | <+ doc_new! ->
+                  | <- ccl_error(file, "expected CCL block", line, col) +>
+      [String]
+         cv
+            [Str s] <+ s ->
+            [Block] <- ccl_error(file, "expected string value, got block", line, col) +>
+      [Int]
+         cv
+            [Str s]
+               parsed_int = str::parse_int(s)
+               parsed_int
+                  | n => <+ n ->
+                  | <- ccl_error(file, "invalid integer: '" + s + "'", line, col) +>
+            [Block] <- ccl_error(file, "expected integer value, got block", line, col) +>
+      [Float]
+         cv
+            [Str s]
+               parsed_flt = str::parse_float(s)
+               parsed_flt
+                  | x => <+ x ->
+                  | <- ccl_error(file, "invalid float: '" + s + "'", line, col) +>
+            [Block] <- ccl_error(file, "expected float value, got block", line, col) +>
+      // Boolean flags (`<>`) encode canonically as `"true"` (`<+>`) or `"false"` (`<->`),
+      // and decode from `"true"`, `"1"`, or `"yes"` as `<+>` (true),
+      // or `"false"`, `"0"`, or `"no"` as `<->` (false); any other string returns `Error`.
+      [<>]
+         cv
+            [Str s]
+               s
+                  ["true", "1", "yes"]  <+ <+> ->
+                  ["false", "0", "no"]  <+ <-> ->
+                  | <- ccl_error(file, "invalid boolean: '" + s + "'", line, col) +>
+            [Block] <- ccl_error(file, "expected boolean value, got block", line, col) +>
+      [<P|>]
+         cv
+            [Str s]
+               s == ""
+                  | <+ <--> ->
                   |
-                     has_err' = <+>
-                     err_val' = ccl_error(file,
-                        "edva.ccl: package name '" + n +
-                        "' must be a lowercase snake_case identifier", 1, 1)
-                  | pkg_name' = n
-            |
-               has_err' = <+>
-               err_val' = ccl_error(file, "edva.ccl: missing required key 'name'", 1, 1)
-
-   !has_err'
-      |
-         opt_ver = get(doc, "version")
-         opt_ver
-            | v =>
-               !is_valid_version(v)
+                     dec_p = decode_val(P, cv, file, line, col)
+                     dec_p
+                        | pv => <+ <+ pv +> ->
+                        | err => <- err +>
+            [Block]
+               dec_p = decode_val(P, cv, file, line, col)
+               dec_p
+                  | pv => <+ <+ pv +> ->
+                  | err => <- err +>
+      [E{}]
+         cv
+            [Block b]
+               arr' = T.zero
+               has_err' = <->
+               err_val' = ccl_error(file, ++"", 0, 0)
+               b @ e =>
+                  !has_err' && e.key != "/" |
+                     dec_e = decode_val(E, e.val, file, e.line, e.col)
+                     dec_e
+                        | elem => arr' += elem
+                        | err =>
+                           has_err' = <+>
+                           err_val' = err
+               has_err'
+                  | <- err_val' +>
+                  | <+ arr' ->
+            [Str s]
+               s == ""
+                  | <+ T.zero ->
+                  | <- ccl_error(file, "expected list block for " + T.name, line, col) +>
+      [K ^ V]
+         cv
+            [Block b]
+               m' = T.zero
+               has_err' = <->
+               err_val' = ccl_error(file, ++"", 0, 0)
+               b @ e =>
+                  !has_err' && e.key != "/" |
+                     dec_k = decode_val(K, CclVal(Str, e.key), file, e.line, e.col)
+                     dec_k
+                        | k =>
+                           dec_v = decode_val(V, e.val, file, e.line, e.col)
+                           dec_v
+                              | v => m' ^ k = v
+                              | err =>
+                                 has_err' = <+>
+                                 err_val' = err
+                        | err =>
+                           has_err' = <+>
+                           err_val' = err
+               has_err'
+                  | <- err_val' +>
+                  | <+ m' ->
+            [Str s]
+               s == ""
+                  | <+ T.zero ->
+                  | <- ccl_error(file, "expected map block for " + T.name, line, col) +>
+      [<..>]
+         cv
+            [Str s]
+               out' = T.zero
+               matched' = <->
+               bad_payload' = <->
+               T @ v =>
+                  v.name == s |
+                     v.type
+                        [()]
+                           out' = T(v)
+                           matched' = <+>
+                        |
+                           bad_payload' = <+>
+               matched'
+                  | <+ out' ->
                   |
-                     has_err' = <+>
-                     err_val' = ccl_error(file,
-                        "edva.ccl: invalid version format: '" + v + "'", 1, 1)
-                  | pkg_ver' = v
+                     bad_payload'
+                        | <- ccl_error(file, "variant '" + s + "' of " + T.name + " requires a payload", line, col) +>
+                        | <- ccl_error(file, "unknown variant '" + s + "' for " + T.name, line, col) +>
+            [Block b]
+               first_ent = first_non_comment_entry(b)
+               first_ent
+                  | ent =>
+                     out' = T.zero
+                     matched' = <->
+                     has_err' = <->
+                     err_val' = ccl_error(file, ++"", 0, 0)
+                     T @ v =>
+                        v.name == ent.key |
+                           matched' = <+>
+                           v.type
+                              [()]
+                                 out' = T(v)
+                              |
+                                 dec_pv = decode_val(v.type, ent.val, file, ent.line, ent.col)
+                                 dec_pv
+                                    | pv => out' = T(v, pv)
+                                    | err =>
+                                       has_err' = <+>
+                                       err_val' = err
+                     has_err'
+                        | <- err_val' +>
+                        |
+                           matched'
+                              | <+ out' ->
+                              | <- ccl_error(file, "unknown variant '" + ent.key + "' for " + T.name, ent.line, ent.col) +>
+                  | <- ccl_error(file, "empty block for enum " + T.name, line, col) +>
+      [(..)]
+         b_doc = cv
+            [Block b] b
+            [Str] doc_new!
+         is_non_empty_str = cv [Str s] s != "" | <->
+         is_non_empty_str
+            | <- ccl_error(file, "expected block for " + T.name + ", got string '" + (cv [Str s] s | "") + "'", line, col) +>
             |
-               has_err' = <+>
-               err_val' = ccl_error(file, "edva.ccl: missing required key 'version'", 1, 1)
+               items = non_comment_entries(b_doc)
+               rec' = T.zero
+               has_err' = <->
+               err_val' = ccl_error(file, ++"", 0, 0)
+               T @ f =>
+                  !has_err' |
+                     f.name == ""
+                        |
+                           f.idx !< ?items
+                              |
+                                 has_err' = <+>
+                                 err_val' = ccl_error(file, "tuple " + T.name + " expects " + str::from_int(?T) + " elements, got " + str::from_int(?items), line, col)
+                              |
+                                 pos_ent = items(f.idx) | _ | CclEntry("", CclVal(Str, ""), line, col)
+                                 dec_fv = decode_val(f.type, pos_ent.val, file, pos_ent.line, pos_ent.col)
+                                 dec_fv
+                                    | fv => rec'.(f) = fv
+                                    | err =>
+                                       has_err' = <+>
+                                       err_val' = err
+                        |
+                           ent_opt = get_entry(b_doc, f.name)
+                           ent_opt
+                              | ent =>
+                                 dec_fv = decode_val(f.type, ent.val, file, ent.line, ent.col)
+                                 dec_fv
+                                    | fv => rec'.(f) = fv
+                                    | err =>
+                                       has_err' = <+>
+                                       err_val' = err
+                              |
+                                 f_def = f.default
+                                 f_def
+                                    | def => rec'.(f) = def
+                                    |
+                                       f.type
+                                          [<P|>] rec'.(f) = <-->
+                                          [E{}] rec'.(f) = f.type.zero
+                                          [K ^ V] rec'.(f) = f.type.zero
+                                          |
+                                             has_err' = <+>
+                                             err_val' = ccl_error(file, "missing required key '" + f.name + "'", line, col)
+               has_err'
+                  | <- err_val' +>
+                  | <+ rec' ->
+      | <- ccl_error(file, "unsupported target type " + T.name + " in ccl::decode", line, col) +>
 
-   !has_err'
-      |
-         opt_edva = get(doc, "edva")
-         opt_edva
-            | ev => edva_ver' = ev
-            | edva_ver' = ++""
+decode_doc: #! T: Type, CclDoc, String => < T | Error >
+decode_doc = doc, file =>
+   T
+      [CclDoc] <+ doc ->
+      | decode_val(T, CclVal(Block, doc), file, 1, 1)
 
-   // 4. Dependencies
-   deps: PackageDeps
-   !has_err'
-      |
-         opt_deps = get_section(doc, "dependencies")
-         opt_deps
-            | ddoc =>
-               ddoc @ de =>
-                  de.key != "/" && !has_err'
-                     |
-                        dep_res = validate_dep(de, file)
-                        dep_res
-                           | pdep => deps += pdep
-                           | e =>
-                              has_err' = <+>
-                              err_val' = e
+decode: #! T: Type, String => < T | Error >
+decode = src =>
+   parse(src, "<ccl>")
+      | doc => decode_doc(T, doc, "<ccl>")
+      | err => <- err +>
 
-   // 5. Native libs and pkg-config
-   native_libs: Strings
-   native_pkg_config: Strings
-   !has_err'
-      |
-         opt_native = get_section(doc, "native")
-         opt_native
-            | ndoc =>
-               ndoc @ ne =>
-                  k = ne.key
-                  is_k = k == "libs" || k == "pkg-config" || k == "/"
-                  !is_k && !has_err'
-                     |
-                        has_err' = <+>
-                        err_val' = ccl_error(file, "edva.ccl: unknown key 'native." + k + "'",
-                           ne.line, ne.col)
-
-               !has_err'
-                  |
-                     nl = get_list(ndoc, "libs")
-                     nl | l => native_libs = l
-                     np = get_list(ndoc, "pkg-config")
-                     np | p => native_pkg_config = p
-
-   // 6. Overrides
-   overrides: PackageDeps
-   !has_err'
-      |
-         opt_ovr = get_section(doc, "overrides")
-         opt_ovr
-            | odoc =>
-               odoc @ oe =>
-                  oe.key != "/" && !has_err'
-                     |
-                        oe.val
-                           [Block oblock]
-                              path_opt = get(oblock, "path")
-                              path_opt
-                                 | p =>
-                                    overrides += PackageDep(oe.key, DepKind(Path),
-                                       "", "", p, "", "")
-                                 |
-                                    has_err' = <+>
-                                    err_val' = ccl_error(file,
-                                       "edva.ccl: override '" + oe.key + "' needs 'path'",
-                                       oe.line, oe.col)
-                           [Str]
-                              has_err' = <+>
-                              err_val' = ccl_error(file,
-                                 "edva.ccl: override '" + oe.key + "' must be a section",
-                                 oe.line, oe.col)
-
-   // 7. Build Targets
-   targets: BuildTargets
-   !has_err'
-      |
-         opt_targets = get_section(doc, "targets")
-         opt_targets
-            | tdoc =>
-               tdoc @ te =>
-                  te.key != "/" && !has_err'
-                     |
-                        tres = validate_target(te, file)
-                        tres
-                           | tgt => targets += tgt
-                           | e =>
-                              has_err' = <+>
-                              err_val' = e
-
-   has_err'
-      | <- err_val' +>
-      |
-         <+ PackageManifest(
-            pkg_name',
-            pkg_ver',
-            edva_ver',
-            sort_deps(deps),
-            sort_strings(native_libs),
-            sort_strings(native_pkg_config),
-            sort_deps(overrides),
-            targets
-         ) ->
-
-// --- Deterministic Manifest Serialization -----------------------------------
-
-manifest_to_ccl: PackageManifest => String
-manifest_to_ccl = m =>
-   b = {512}
-   b += "name = " + m.name + "\n"
-   b += "version = " + m.version + "\n"
-   m.edva != "" | b += "edva = " + m.edva + "\n"
-
-   ?m.deps > 0
-      |
-         b += "\ndependencies =\n"
-         sorted_deps = sort_deps(m.deps)
-         sorted_deps @ d =>
-            b += "  " + d.alias + " =\n"
-            d.kind
-               [Git]
-                  b += "    git = " + d.git_url + "\n"
-                  b += "    rev = " + d.git_rev + "\n"
-               [Path]
-                  b += "    path = " + d.path + "\n"
-               [Archive]
-                  b += "    url = " + d.archive_url + "\n"
-                  b += "    hash = " + d.archive_hash + "\n"
-
-   has_native = ?m.native_libs > 0 || ?m.native_pkg_config > 0
-   has_native
-      |
-         b += "\nnative =\n"
-         ?m.native_libs > 0
-            |
-               b += "  libs =\n"
-               sorted_libs = sort_strings(m.native_libs)
-               sorted_libs @ lib =>
-                  b += "    = " + lib + "\n"
-         ?m.native_pkg_config > 0
-            |
-               b += "  pkg-config =\n"
-               sorted_pkg = sort_strings(m.native_pkg_config)
-               sorted_pkg @ pkg =>
-                  b += "    = " + pkg + "\n"
-
-   ?m.overrides > 0
-      |
-         b += "\noverrides =\n"
-         sorted_ovr = sort_deps(m.overrides)
-         sorted_ovr @ o =>
-            b += "  " + o.alias + " =\n"
-            b += "    path = " + o.path + "\n"
-
-   ?m.targets > 0
-      |
-         b += "\ntargets =\n"
-         m.targets @ t =>
-            b += "  " + t.name + " =\n"
-            t.src != "" | b += "    src = " + t.src + "\n"
-            t.out != "" | b += "    out = " + t.out + "\n"
-            t.target != "" | b += "    target = " + t.target + "\n"
-            t.opt != "" | b += "    opt = " + t.opt + "\n"
-            ?t.cflags > 0
-               |
-                  b += "    cflags =\n"
-                  t.cflags @ cf =>
-                     b += "      = " + cf + "\n"
-
-   +b
-
-// --- Lockfile Validation & Serialization ------------------------------------
-
-sort_lock_packages: LockPackages => LockPackages
-sort_lock_packages = pkgs =>
-   n = ?pkgs
-   n < 2 | pkgs |
-      out: LockPackages
-      pkgs @ p => out += p
-      empty_deps: LockDeps
-      1..n @ i =>
-         key = out(i) | _ |
-            LockPackage("", DepKind(Path), "", "", "", "", "", "", empty_deps, <->)
-         j' = i
-         0.. @
-            j' !> 0 | -->
-            prev = out(j' - 1) | _ |
-               LockPackage("", DepKind(Path), "", "", "", "", "", "", empty_deps, <->)
-            str::cmp(prev.id, key.id) > 0
-               |
-                  out(j') = prev !| _
-                  j' = j' - 1
-               | -->
-         out(j') = key !| _
-      out
-
-sort_lock_deps: LockDeps => LockDeps
-sort_lock_deps = deps =>
-   n = ?deps
-   n < 2 | deps |
-      out: LockDeps
-      deps @ d => out += d
-      1..n @ i =>
-         key = out(i) | _ | LockDep("", "")
-         j' = i
-         0.. @
-            j' !> 0 | -->
-            prev = out(j' - 1) | _ | LockDep("", "")
-            str::cmp(prev.alias, key.alias) > 0
-               |
-                  out(j') = prev !| _
-                  j' = j' - 1
-               | -->
-         out(j') = key !| _
-      out
-
-validate_lockfile: CclDoc, String => < Lockfile | Error >
-validate_lockfile = doc, file =>
-   has_err' = <->
-   err_val' = ccl_error(file, ++"", 0, 0)
-
-   opt_ver_str = get(doc, "lock")
-   ver' = 0
-   opt_ver_str
-      | vs =>
-         d = str::to_int(vs)
-         d
-            | pair => ver' = pair.0
-            |
-               has_err' = <+>
-               err_val' = ccl_error(file, "edva.lock.ccl: invalid lock version '" + vs + "'", 1, 1)
-      |
-         has_err' = <+>
-         err_val' = ccl_error(file, "edva.lock.ccl: missing required key 'lock'", 1, 1)
-
-   pkgs: LockPackages
-   !has_err'
-      |
-         opt_pkgs_sec = get_section(doc, "packages")
-         opt_pkgs_sec
-            | psec =>
-               psec @ pe =>
-                  pe.key != "/" && !has_err'
-                     |
-                        id = pe.key
-                        pe.val
-                           [Block pd]
-                              has_git = has(pd, "git")
-                              has_path = has(pd, "path")
-                              has_url = has(pd, "url")
-                              g_url = get(pd, "git") | _ | ""
-                              g_rev = get(pd, "rev") | _ | ""
-                              g_commit = get(pd, "commit") | _ | ""
-                              p_path = get(pd, "path") | _ | ""
-                              a_url = get(pd, "url") | _ | ""
-                              a_hash = get(pd, "hash") | _ | ""
-                              is_ovr = has(pd, "override")
-
-                              p_deps: LockDeps
-                              opt_deps_sec = get_section(pd, "deps")
-                              opt_deps_sec
-                                 | ds =>
-                                    ds @ dse =>
-                                       dse.val [Str sid] p_deps += LockDep(dse.key, sid)
-
-                              k' = DepKind(Archive)
-                              has_path | k' = DepKind(Path)
-                              has_git | k' = DepKind(Git)
-                              pkgs += LockPackage(
-                                 id, k', g_url, g_rev, g_commit,
-                                 a_url, a_hash, p_path, sort_lock_deps(p_deps), is_ovr
-                              )
-                           [Str]
-                              has_err' = <+>
-                              err_val' = ccl_error(file,
-                                 "edva.lock.ccl: package '" + id + "' must be a section",
-                                 pe.line, pe.col)
-
-   root_deps: LockDeps
-   !has_err'
-      |
-         opt_root_sec = get_section(doc, "root")
-         opt_root_sec
-            | rsec =>
-               rsec @ re =>
-                  re.key != "/"
-                     |
-                        re.val [Str sid] root_deps += LockDep(re.key, sid)
-
-   has_err'
-      | <- err_val' +>
-      | <+ Lockfile(ver', sort_lock_packages(pkgs), sort_lock_deps(root_deps)) ->
-
-lockfile_to_ccl: Lockfile => String
-lockfile_to_ccl = lock =>
-   b = {1024}
-   b += "lock = " + str::from_int(lock.lock_version) + "\n\n"
-
-   b += "packages =\n"
-   sorted_pkgs = sort_lock_packages(lock.packages)
-   sorted_pkgs @ p =>
-      b += "  " + p.id + " =\n"
-      p.kind
-         [Git]
-            b += "    git = " + p.git_url + "\n"
-            p.git_rev != "" | b += "    rev = " + p.git_rev + "\n"
-            p.git_commit != "" | b += "    commit = " + p.git_commit + "\n"
-            p.archive_hash != "" | b += "    hash = " + p.archive_hash + "\n"
-         [Path]
-            b += "    path = " + p.path + "\n"
-            p.is_override | b += "    override = true\n"
-         [Archive]
-            b += "    url = " + p.archive_url + "\n"
-            b += "    hash = " + p.archive_hash + "\n"
-
-      ?p.deps > 0
-         |
-            b += "    deps =\n"
-            sorted_deps = sort_lock_deps(p.deps)
-            sorted_deps @ d =>
-               b += "      " + d.alias + " = " + d.id + "\n"
-
-   b += "\nroot =\n"
-   sorted_root = sort_lock_deps(lock.root_deps)
-   sorted_root @ r =>
-      b += "  " + r.alias + " = " + r.id + "\n"
-
-   +b
+decode_file: #! T: Type, String => < T | Error >
+decode_file = path =>
+   parse_file(path)
+      | doc => decode_doc(T, doc, path)
+      | err => <- err +>

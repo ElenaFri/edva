@@ -11,12 +11,14 @@
 // 1. Deterministic UTC timestamp & DateTime formatting
 ts = 1793414400
 io::out $ time::utc_iso(ts)
+io::out $ time::utc_iso_basic(ts)
 io::out $ time::utc_date(ts)
 io::out $ time::utc_clock(ts)
 
 dt = time::utc(ts)
 io::out $ (dt.year, dt.month, dt.day, dt.hour, dt.min, dt.sec, dt.weekday, dt.yearday)
 io::out $ time::utc_iso(dt)
+io::out $ time::utc_iso_basic(dt)
 io::out $ time::utc_format("%a, %d %b %Y %H:%M:%S %Z", dt)
 io::out $ time::epoch(dt)
 
@@ -24,12 +26,14 @@ io::out $ time::epoch(dt)
 io::out $ (time::is_leap_year(2024), time::is_leap_year(2026), time::days_in_month(2024, 2), time::days_in_month(2026, 2))
 
 // 3. Single-call current time (`!`) sanity checks
-s_iso  = time::iso!
-s_uiso = time::utc_iso!
-s_date = time::date!
-s_clk  = time::clock!
-s_fmt  = time::format("%Y-%m-%d")
-io::out $ (?s_iso == 25, ?s_uiso == 20, ?s_date == 10, ?s_clk == 8, s_date == s_fmt)
+s_iso   = time::iso!
+s_uiso  = time::utc_iso!
+s_biso  = time::iso_basic!
+s_ubiso = time::utc_iso_basic!
+s_date  = time::date!
+s_clk   = time::clock!
+s_fmt   = time::format("%Y-%m-%d")
+io::out $ (?s_iso == 25 || ?s_iso == 20, ?s_uiso == 20, ?s_biso == 20 || ?s_biso == 16, ?s_ubiso == 16, ?s_date == 10, ?s_clk == 8, s_date == s_fmt)
 
 // 4. Deterministic PRNG (`rand::new(seed)` and `rand::srand(seed)`)
 rng1 = rand::new(42)

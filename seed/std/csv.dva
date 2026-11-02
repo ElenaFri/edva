@@ -1,0 +1,399 @@
+// Standard RFC 4180 CSV Reader, Writer & Structural Codec Module (std/csv.dva)
+// Configurable-delimiter CSV parser/serializer and `#!` compile-time structural
+// typed row encoder/decoder (`csv::encode`, `csv::decode`).
+
+#use str
+
+#public
+
+#type Row String{}
+#type Table Row{}
+
+#private
+
+csv_err: String, Int, Int => Error
+csv_err = msg, line, col =>
+   Error(400, "csv: " + msg, "std/csv.dva", line, col, (line, col))
+
+needs_csv_quotes: String, Int => <>
+needs_csv_quotes = field, delim =>
+   n = ?field
+   hit' = <->
+   n @ i =>
+      c = field(i) .&. 0xFF
+      c [delim, '"', '\n', '\r']
+         hit' = <+>
+         -->
+   hit'
+
+write_csv_field: Builder, String, Int => ()
+write_csv_field = b, field, delim =>
+   !needs_csv_quotes(field, delim)
+      | b += field
+      |
+         b += '"'
+         ?field @ i =>
+            c = field(i) .&. 0xFF
+            c == '"'
+               | b += "\"\""
+               | b += c
+         b += '"'
+
+#public
+
+// Parses CSV text with custom delimiter byte `delim` (e.g. `','`, `'\t'`, `';'`) into a `Table` (`Row{}`).
+read_all_delim: String, Int => < Table | Error >
+read_all_delim = text, delim =>
+   n = ?text
+   rows = Table()
+   n == 0 | --| <+ rows ->
+   cur_row' = Row()
+   field_b' = {32}
+   in_quotes' = <->
+   at_field_start' = <+>
+   line' = 1
+   col' = 1
+   i' = 0
+   err_line' = 0
+   err_col' = 0
+   err_msg' = ++""
+   (i' < n && err_line' == 0) @
+      c = text(i') .&. 0xFF
+      in_quotes'
+         |
+            c == '"'
+               |
+                  (i' + 1 < n && (text(i' + 1) .&. 0xFF) == '"')
+                     |
+                        field_b' += '"'
+                        i' = i' + 2
+                        col' = col' + 2
+                     |
+                        in_quotes' = <->
+                        at_field_start' = <->
+                        i' = i' + 1
+                        col' = col' + 1
+               |
+                  c == '\n'
+                     |
+                        line' = line' + 1
+                        col' = 1
+                     | col' = col' + 1
+                  field_b' += c
+                  i' = i' + 1
+         |
+            c == '"' && at_field_start'
+               |
+                  in_quotes' = <+>
+                  at_field_start' = <->
+                  i' = i' + 1
+                  col' = col' + 1
+               |
+                  c == delim
+                     |
+                        cur_row' += +field_b'
+                        field_b' = {32}
+                        at_field_start' = <+>
+                        i' = i' + 1
+                        col' = col' + 1
+                     |
+                        (c == '\r' || c == '\n')
+                           |
+                              cur_row' += +field_b'
+                              rows += cur_row'
+                              cur_row' = Row()
+                              field_b' = {32}
+                              at_field_start' = <+>
+                              (c == '\r' && i' + 1 < n && (text(i' + 1) .&. 0xFF) == '\n')
+                                 | i' = i' + 2
+                                 | i' = i' + 1
+                              line' = line' + 1
+                              col' = 1
+                           |
+                              field_b' += c
+                              at_field_start' = <->
+                              i' = i' + 1
+                              col' = col' + 1
+   err_line' > 0
+      | <- csv_err(err_msg', err_line', err_col') +>
+      |
+         in_quotes'
+            | <- csv_err("unterminated quoted field", line', col') +>
+            |
+               (?cur_row' > 0 || ?field_b' > 0 || (n > 0 && (text(n - 1) .&. 0xFF) == delim))
+                  |
+                     cur_row' += +field_b'
+                     rows += cur_row'
+               <+ rows ->
+
+// Parses RFC 4180 comma-separated CSV text into a `Table` (`Row{}`).
+read_all: String => < Table | Error >
+read_all = text =>
+   read_all_delim(text, ',')
+
+// Serializes a `Table` (`Row{}`) into CSV text with custom delimiter `delim`.
+write_all_delim: Table, Int => String
+write_all_delim = rows, delim =>
+   ?rows == 0 | --| ""
+   b = {256}
+   rows @ row =>
+      row @ cell, cidx =>
+         cidx > 0 | b += delim
+         write_csv_field(b, cell, delim)
+      b += '\n'
+   +b
+
+// Serializes a `Table` (`Row{}`) into RFC 4180 comma-separated CSV text.
+write_all: Table => String
+write_all = rows =>
+   write_all_delim(rows, ',')
+
+// --- Structural Typed Row Codec (#!) ----------------------------------------
+
+#private
+
+csv_cell_str: #! V: Type, V => String
+csv_cell_str = v =>
+   V
+      [String] v
+      [Int, i8, i16, i32, i64, u8, u16, u32, u64] str::from_int(Int(v))
+      [Float, f32, f64] str::from_float(Float(v))
+      [<>] (v | "true" | "false")
+      [Rune]
+         b = {4}
+         b += v
+         +b
+      [()] ""
+      [<P|>]
+         (v | inner => csv_cell_str(inner) | "")
+      [<..>]
+         res' = ++""
+         V @ vr =>
+            v.(vr)
+               | pay =>
+                  vr.type
+                     [()] res' = vr.name
+                     | res' = vr.name + ":" + csv_cell_str(pay)
+         res'
+      | V.name
+
+write_record_header: #! R: Type, Builder, Int => ()
+write_record_header = b, delim =>
+   R
+      [(..)]
+         is_named' = <->
+         R @ f =>
+            f.idx == 0 && f.name != "" | is_named' = <+>
+         is_named'
+            |
+               R @ f =>
+                  f.idx > 0 | b += delim
+                  write_csv_field(b, f.name, delim)
+               b += '\n'
+   --|
+
+write_record_row: #! R: Type, Builder, R, Int => ()
+write_record_row = b, rec, delim =>
+   R
+      [(..)]
+         R @ f =>
+            f.idx > 0 | b += delim
+            f.type
+               [<P|>]
+                  vf = rec.(f)
+                  vf | inner => write_csv_field(b, csv_cell_str(inner), delim)
+               |
+                  write_csv_field(b, csv_cell_str(rec.(f)), delim)
+         b += '\n'
+   --|
+
+decode_csv_cell: #! T: Type, String, Int, Int => < T | Error >
+decode_csv_cell = s, line, col =>
+   T
+      [String] <+ s ->
+      [Int]
+         str::parse_int(str::trim(s))
+            | n => <+ n ->
+            | <- csv_err("invalid integer '" + s + "'", line, col) +>
+      [Float]
+         str::parse_float(str::trim(s))
+            | x => <+ x ->
+            | <- csv_err("invalid float '" + s + "'", line, col) +>
+      [<>]
+         ts = str::lower(str::trim(s))
+         (ts == "true" || ts == "1" || ts == "yes")
+            | <+ <+> ->
+            |
+               (ts == "false" || ts == "0" || ts == "no")
+                  | <+ <-> ->
+                  | <- csv_err("invalid boolean '" + s + "'", line, col) +>
+      [<..>]
+         out' = T.zero
+         matched' = <->
+         T @ v =>
+            v.name == s |
+               v.type
+                  [()]
+                     out' = T(v)
+                     matched' = <+>
+         matched'
+            | <+ out' ->
+            | <- csv_err("unknown enum variant '" + s + "' for " + T.name, line, col) +>
+      | <- csv_err("unsupported column type " + T.name + " in csv::decode", line, col) +>
+
+find_col_idx: Row, String => Int
+find_col_idx = hdr, name =>
+   res' = -1
+   ?hdr @ i =>
+      hdr(i)!! == name
+         |
+            res' = i
+            -->
+   res'
+
+decode_one_row: #! R: Type, Row, Row, <>, Int => < R | Error >
+decode_one_row = hdr, row, has_hdr, line_no =>
+   rec' = R.zero
+   has_err' = <->
+   err_val' = csv_err("", line_no, 1)
+   R
+      [(..)]
+         R @ f =>
+            !has_err' |
+               col_idx = has_hdr | find_col_idx(hdr, f.name) | f.idx
+               (col_idx !< 0 && col_idx < ?row)
+                  |
+                     raw_cell = row(col_idx)!!
+                     (?raw_cell == 0)
+                        |
+                           f_def = f.default
+                           f_def
+                              | def => rec'.(f) = def
+                              |
+                                 f.type
+                                    [<P|>] rec'.(f) = <-->
+                                    [String] rec'.(f) = ""
+                                    |
+                                       has_err' = <+>
+                                       err_val' = csv_err("empty required column '" + (f.name != "" | f.name | str::from_int(f.idx)) + "'", line_no, col_idx + 1)
+                        |
+                           f.type
+                              [<P|>]
+                                 dec_p = decode_csv_cell(P, raw_cell, line_no, col_idx + 1)
+                                 dec_p
+                                    | pv => rec'.(f) = <+ pv +>
+                                    | err =>
+                                       has_err' = <+>
+                                       err_val' = err
+                              |
+                                 dec_fv = decode_csv_cell(f.type, raw_cell, line_no, col_idx + 1)
+                                 dec_fv
+                                    | fv => rec'.(f) = fv
+                                    | err =>
+                                       has_err' = <+>
+                                       err_val' = err
+                  |
+                     f_def = f.default
+                     f_def
+                        | def => rec'.(f) = def
+                        |
+                           f.type
+                              [<P|>] rec'.(f) = <-->
+                              |
+                                 has_err' = <+>
+                                 err_val' = csv_err("missing required column '" + (f.name != "" | f.name | str::from_int(f.idx)) + "'", line_no, 1)
+   has_err'
+      | <- err_val' +>
+      | <+ rec' ->
+
+decode_table_into: #! ArrType: Type, #! RowType: Type, Table => < ArrType | Error >
+decode_table_into = tbl =>
+   out' = ArrType.zero
+   ?tbl == 0 | --| <+ out' ->
+   has_hdr' = <->
+   RowType
+      [(..)]
+         RowType @ f =>
+            f.idx == 0 && f.name != "" | has_hdr' = <+>
+   hdr = has_hdr' | tbl(0)!! | Row()
+   start_idx = has_hdr' | 1 | 0
+   has_err' = <->
+   err_val' = csv_err("", 1, 1)
+   start_idx..?tbl @ r_idx =>
+      !has_err' |
+         r_row = tbl(r_idx)!!
+         dec_r = decode_one_row(RowType, hdr, r_row, has_hdr', r_idx + 1)
+         dec_r
+            | rec => out' += rec
+            | err =>
+               has_err' = <+>
+               err_val' = err
+   has_err'
+      | <- err_val' +>
+      | <+ out' ->
+
+#public
+
+// Encodes `val` (`Table`, `R{}` / `R[]` array of records, or single record `R`) into CSV text with custom delimiter.
+encode_delim: #! T: Type, T, Int => String
+encode_delim = val, delim =>
+   T
+      [Table] write_all_delim(val, delim)
+      [E{}]
+         b = {256}
+         write_record_header(E, b, delim)
+         val @ elem =>
+            write_record_row(E, b, elem, delim)
+         +b
+      [E[]]
+         b = {256}
+         write_record_header(E, b, delim)
+         val @ elem =>
+            write_record_row(E, b, elem, delim)
+         +b
+      [(..)]
+         b = {128}
+         write_record_header(T, b, delim)
+         write_record_row(b, val, delim)
+         +b
+      | ""
+
+// Encodes `val` (`Table`, `R{}` / `R[]` array of records, or single record `R`) into comma-separated CSV text.
+encode: #! T: Type, T => String
+encode = val =>
+   encode_delim(T, val, ',')
+
+// Canonical `decode` entry point with custom delimiter:
+// - `csv::decode_delim(csv::Table, text, delim)` returns `< Table | Error >`
+// - `csv::decode_delim(MyRowList, text, delim)` returns `< MyRowList | Error >` (where `#type MyRowList MyRow{}`)
+// - `csv::decode_delim(MyRow, text, delim)` decodes the first data row into `< MyRow | Error >`
+decode_delim: #! T: Type, String, Int => < T | Error >
+decode_delim = text, delim =>
+   T
+      [Table] read_all_delim(text, delim)
+      [E{}]
+         read_all_delim(text, delim)
+            | tbl => decode_table_into(T, E, tbl)
+            | err => <- err +>
+      [(..)]
+         read_all_delim(text, delim)
+            | tbl =>
+               ?tbl == 0
+                  | <- csv_err("no data rows in CSV", 1, 1) +>
+                  |
+                     has_hdr' = <->
+                     T @ f =>
+                        f.idx == 0 && f.name != "" | has_hdr' = <+>
+                     has_hdr' && ?tbl < 2
+                        | <- csv_err("no data rows after header in CSV", 1, 1) +>
+                        |
+                           hdr = has_hdr' | tbl(0)!! | Row()
+                           data_row = has_hdr' | tbl(1)!! | tbl(0)!!
+                           line_no = has_hdr' | 2 | 1
+                           decode_one_row(T, hdr, data_row, has_hdr', line_no)
+            | err => <- err +>
+      | <- csv_err("unsupported target type " + T.name + " in csv::decode", 1, 1) +>
+
+decode: #! T: Type, String => < T | Error >
+decode = text =>
+   decode_delim(T, text, ',')

@@ -738,7 +738,7 @@ root_var_id: Ctx, UType => Int
 root_var_id = ctx, t =>
    t
       [Var id]
-         id < 0 || id !< ?ctx.bindings
+         id ![0..?ctx.bindings]
             | id
             |
                b = ctx.bindings(id) | _ | VarBinding(<->, UType(None))
@@ -809,7 +809,7 @@ parse_field_digits = s, i, acc =>
          i < ?s
             |
                c = s(i)
-               c !< '0' && c !> '9'
+               c ['0'...'9']
                   | parse_field_digits(s, i + 1, acc * 10 + (c - '0'))
                   | -1
             | acc
@@ -1042,8 +1042,8 @@ utype_from_type_info = ti =>
       [Bitfield b]
          flds_bf = UFields()
          b.fields @ bf =>
-            flds_bf += UField(bf.name,
-               UType(Prim, vt_to_uprim(b.backing_type)))
+            f_up = bf.is_flag | UPrim(Flag) | vt_to_uprim(b.backing_type)
+            flds_bf += UField(bf.name, UType(Prim, f_up))
          UType(Rec, flds_bf)
       [Ram r]
          s0 = r.0

@@ -1,0 +1,83 @@
+#use io
+#use str
+#use hex
+#use base64
+#use hash
+#use test
+
+#type Color <
+   Red,
+   Rgb(Int)
+>
+
+#type UserKey (
+   id: Int,
+   name: String,
+   color: Color,
+   tag: < String | >
+)
+
+#type StrIntMap String ^ Int
+
+test::reset!
+
+// --- 1. std/hex ---
+test::suite("hex")
+test::eq(hex::encode(""), "", "hex encode empty")
+test::eq(hex::encode("Edva!"), "4564766121", "hex encode lower")
+test::eq(hex::encode_upper("Edva!"), "4564766121" $> str::upper, "hex encode upper")
+test::eq(hex::decode("4564766121") | s => s | "", "Edva!", "hex decode lower")
+test::eq(hex::decode("4564766121" $> str::upper) | s => s | "", "Edva!", "hex decode upper")
+test::err(hex::decode("456"), "hex odd length")
+test::err(hex::decode("45zz"), "hex invalid char")
+
+// --- 2. std/base64 ---
+test::suite("base64")
+test::eq(base64::encode(""), "", "b64 empty")
+test::eq(base64::encode("f"), "Zg==", "b64 1 byte")
+test::eq(base64::encode("fo"), "Zm8=", "b64 2 bytes")
+test::eq(base64::encode("foo"), "Zm9v", "b64 3 bytes")
+test::eq(base64::encode("foobar"), "Zm9vYmFy", "b64 6 bytes")
+test::eq(base64::decode("Zg==") | s => s | "", "f", "b64 decode 1")
+test::eq(base64::decode("Zm8=") | s => s | "", "fo", "b64 decode 2")
+test::eq(base64::decode("Zm9v") | s => s | "", "foo", "b64 decode 3")
+test::eq(base64::decode("Zm9vYmFy") | s => s | "", "foobar", "b64 decode 6")
+test::err(base64::decode("Zm9"), "b64 unpadded rejected in std")
+test::err(base64::decode("Zm9$"), "b64 invalid char")
+
+raw_bin = "\xfb\xff\xfe"
+u_enc = base64::encode_url(raw_bin)
+test::eq(u_enc, "-__-", "base64url encode")
+test::eq(base64::decode_url(u_enc) | s => s | "", raw_bin, "base64url decode unpadded")
+u_pad = base64::encode_url_padded("fo")
+test::eq(u_pad, "Zm8=", "base64url padded")
+test::eq(base64::decode_url(u_pad) | s => s | "", "fo", "base64url decode padded")
+
+// --- 3. std/hash ---
+test::suite("hash")
+// Standard test vectors for "123456789" and "Wikipedia"
+test::eq(Int(hash::crc32("123456789")), 0xCBF43926, "crc32 123456789")
+test::eq(Int(hash::adler32("Wikipedia")), 0x11E60398, "adler32 Wikipedia")
+test::eq(Int(hash::fnv1a32("hello")), 0x4F9F2CAB, "fnv1a32 hello")
+test::check(hash::fnv1a("hello") != hash::fnv1a("world"), "fnv1a distinct")
+test::check(hash::wyhash("hello", 0u64) == hash::wyhash("hello", 0u64), "wyhash deterministic")
+test::check(hash::wyhash("hello", 1u64) != hash::wyhash("hello", 2u64), "wyhash seed sensitivity")
+
+// Structural hash::of
+k1 = UserKey(1, "alice", Color(Rgb, 255), <+ "admin" +>)
+k2 = UserKey(1, "alice", Color(Rgb, 255), <+ "admin" +>)
+k3 = UserKey(1, "alice", Color(Red), <+ "admin" +>)
+k4 = UserKey(1, "alice", Color(Rgb, 255), <-->)
+test::check(hash::of(k1) == hash::of(k2), "hash::of equal records")
+test::check(hash::of(k1) != hash::of(k3), "hash::of enum diff")
+test::check(hash::of(k1) != hash::of(k4), "hash::of option diff")
+
+m1 = StrIntMap()
+m1 ^ "a" = 1
+m1 ^ "b" = 2
+m2 = StrIntMap()
+m2 ^ "b" = 2
+m2 ^ "a" = 1
+test::check(hash::of(m1) == hash::of(m2), "hash::of map order-independent")
+
+test::summary!

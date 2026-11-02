@@ -1,0 +1,55 @@
+---
+meta:
+  audience: "Edva developers working with clocks, durations, and civil calendar dates"
+  status: "current reference"
+  audited: "fb4fbc2"
+  evidence: "`std/time.dva`, `tests/pass/386_time_and_rand.dva`"
+---
+
+# `time` standard library
+
+The `time` module provides monotonic and wall-clock high-resolution timers, sleep
+helpers, civil calendar (`DateTime`) conversion, and polymorphic single-call date/time
+formatting.
+
+```{.dva .run}
+#use io
+#use time
+
+dt = time::utc(1793414400)
+io::out $ time::iso(dt)
+io::out $ time::date(dt)
+io::out $ time::clock(dt)
+```
+
+## Types and Constants
+
+| Symbol | Kind | Description |
+|---|---|---|
+| `time::DateTime` | Record | `(year, month, day, hour, min, sec, nsec, weekday, yearday, utc_off)` |
+| `time::NS_PER_US` / `NS_PER_MS` / `NS_PER_SEC` | `Int` | Nanoseconds per microsecond (`1_000`), millisecond (`1_000_000`), and second (`1_000_000_000`) |
+| `time::SEC_PER_MIN` / `SEC_PER_HOUR` / `SEC_PER_DAY` | `Int` | Seconds per minute (`60`), hour (`3600`), and day (`86400`) |
+
+## Function catalog
+
+| Category | Function | Signature | Description |
+|---|---|---|---|
+| **Clocks** | `time::now_ns()` / `time::now_ms()` / `time::now_s()` | `() => Int` | Current Unix epoch wall-clock time in ns, ms, or s |
+| | `time::mono_ns()` / `time::mono_ms()` / `time::mono_us()` | `() => Int` | Monotonic clock in ns, ms, or us for measuring elapsed durations |
+| **Sleeping** | `time::sleep_ns(ns)` / `time::sleep_us(us)` / `time::sleep_ms(ms)` | `Int => ()` | Suspends execution for the specified integer duration |
+| | `time::sleep_s(secs)` | `Float => ()` | Suspends execution for `secs` floating-point seconds |
+| **Calendar Conversion** | `time::utc!`, `time::utc(sec)` | `() => DateTime`, `Int => DateTime` | Breaks Unix timestamp (or current time) into UTC `DateTime` |
+| | `time::local!`, `time::local(sec)` | `() => DateTime`, `Int => DateTime` | Breaks Unix timestamp (or current time) into local `DateTime` |
+| | `time::from_utc(y, m, d, h, min, s)` | `Int, Int, Int, Int, Int, Int => Int` | Converts UTC civil components to Unix timestamp seconds |
+| | `time::from_datetime_utc(dt)` / `from_datetime_local(dt)` | `DateTime => Int` | Converts `DateTime` to Unix timestamp seconds |
+| | `time::is_leap_year(year)` | `Int => <>` | True if `year` is a Gregorian leap year |
+| | `time::days_in_month(year, month)` | `Int, Int => Int` | Number of days in `month` (`1..12`) of `year` |
+| **Formatting & Parsing** | `time::iso!`, `time::iso(sec_or_dt)` | Polymorphic `=> String` | Formats current time, epoch seconds, or `DateTime` as extended ISO-8601 (`YYYY-MM-DDTHH:MM:SS+HH:MM`) |
+| | `time::utc_iso!`, `time::utc_iso(sec_or_dt)` | Polymorphic `=> String` | Formats as extended UTC ISO-8601 (`YYYY-MM-DDTHH:MM:SSZ`) |
+| | `time::iso_basic!`, `time::iso_basic(sec_or_dt)` | Polymorphic `=> String` | Formats as basic/compact ISO-8601 (`YYYYMMDDTHHMMSS+HHMM`) |
+| | `time::utc_iso_basic!`, `time::utc_iso_basic(sec_or_dt)` | Polymorphic `=> String` | Formats as basic/compact UTC ISO-8601 (`YYYYMMDDTHHMMSSZ`) |
+| | `time::rfc2822!`, `time::rfc2822(sec_or_dt)` | Polymorphic `=> String` | Formats as RFC-2822 / HTTP-date (`Sat, 31 Oct 2026 02:40:00 UTC`) |
+| | `time::date!`, `time::date(sec_or_dt)` | Polymorphic `=> String` | Formats as `YYYY-MM-DD` |
+| | `time::clock!`, `time::clock(sec_or_dt)` | Polymorphic `=> String` | Formats as `HH:MM:SS` |
+| | `time::format(fmt[, sec_or_dt])` | `String[, Int|DateTime] => String` | `strftime`-style formatting |
+| | `time::parse_iso(s)` | `String => < Int | >` | Parses `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SSZ` into Unix seconds |

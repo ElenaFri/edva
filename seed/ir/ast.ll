@@ -930,36 +930,36 @@ entry:
   store ptr %0, ptr %var.triple, align 8
   %var.load = load ptr, ptr %var.triple, align 8
   %call.res = call i1 @"ast::str_has_sub"(ptr %var.load, ptr @str.4.struct)
-  br i1 %call.res, label %or.0.then, label %or.0.else
+  br i1 %call.res, label %or.11.then, label %or.11.else
 
-or.0.then:                                        ; preds = %entry
-  br label %or.0.exit
+or.11.then:                                       ; preds = %entry
+  br label %or.11.exit
 
-or.0.else:                                        ; preds = %entry
+or.11.else:                                       ; preds = %entry
   %var.load1 = load ptr, ptr %var.triple, align 8
   %call.res2 = call i1 @"ast::str_has_sub"(ptr %var.load1, ptr @str.5.struct)
-  br label %or.0.exit
+  br label %or.11.exit
 
-or.0.exit:                                        ; preds = %or.0.else, %or.0.then
-  %or.0.phi = phi i1 [ %call.res, %or.0.then ], [ %call.res2, %or.0.else ]
-  br i1 %or.0.phi, label %or.1.then, label %or.1.else
+or.11.exit:                                       ; preds = %or.11.else, %or.11.then
+  %or.11.phi = phi i1 [ %call.res, %or.11.then ], [ %call.res2, %or.11.else ]
+  br i1 %or.11.phi, label %or.12.then, label %or.12.else
 
-or.1.then:                                        ; preds = %or.0.exit
-  br label %or.1.exit
+or.12.then:                                       ; preds = %or.11.exit
+  br label %or.12.exit
 
-or.1.else:                                        ; preds = %or.0.exit
+or.12.else:                                       ; preds = %or.11.exit
   %var.load3 = load ptr, ptr %var.triple, align 8
   %call.res4 = call i1 @"ast::str_has_sub"(ptr %var.load3, ptr @str.6.struct)
-  br label %or.1.exit
+  br label %or.12.exit
 
-or.1.exit:                                        ; preds = %or.1.else, %or.1.then
-  %or.1.phi = phi i1 [ %or.0.phi, %or.1.then ], [ %call.res4, %or.1.else ]
-  br i1 %or.1.phi, label %choice.then, label %choice.else
+or.12.exit:                                       ; preds = %or.12.else, %or.12.then
+  %or.12.phi = phi i1 [ %or.11.phi, %or.12.then ], [ %call.res4, %or.12.else ]
+  br i1 %or.12.phi, label %choice.then, label %choice.else
 
-choice.then:                                      ; preds = %or.1.exit
+choice.then:                                      ; preds = %or.12.exit
   br label %choice.exit
 
-choice.else:                                      ; preds = %or.1.exit
+choice.else:                                      ; preds = %or.12.exit
   %var.load5 = load ptr, ptr %var.triple, align 8
   %call.res6 = call i1 @"ast::str_has_sub"(ptr %var.load5, ptr @str.7.struct)
   br i1 %call.res6, label %choice.then7, label %choice.else8
@@ -974,40 +974,40 @@ choice.then7:                                     ; preds = %choice.else
 choice.else8:                                     ; preds = %choice.else
   %var.load10 = load ptr, ptr %var.triple, align 8
   %call.res11 = call i1 @"ast::str_has_sub"(ptr %var.load10, ptr @str.8.struct)
-  br i1 %call.res11, label %or.2.then, label %or.2.else
+  br i1 %call.res11, label %or.13.then, label %or.13.else
 
 choice.exit9:                                     ; preds = %choice.exit18, %choice.then7
   %choice.res49 = phi ptr [ @str.7.struct, %choice.then7 ], [ %choice.res48, %choice.exit18 ]
   br label %choice.exit
 
-or.2.then:                                        ; preds = %choice.else8
-  br label %or.2.exit
+or.13.then:                                       ; preds = %choice.else8
+  br label %or.13.exit
 
-or.2.else:                                        ; preds = %choice.else8
+or.13.else:                                       ; preds = %choice.else8
   %var.load12 = load ptr, ptr %var.triple, align 8
   %call.res13 = call i1 @"ast::str_has_sub"(ptr %var.load12, ptr @str.9.struct)
-  br label %or.2.exit
+  br label %or.13.exit
 
-or.2.exit:                                        ; preds = %or.2.else, %or.2.then
-  %or.2.phi = phi i1 [ %call.res11, %or.2.then ], [ %call.res13, %or.2.else ]
-  br i1 %or.2.phi, label %or.3.then, label %or.3.else
+or.13.exit:                                       ; preds = %or.13.else, %or.13.then
+  %or.13.phi = phi i1 [ %call.res11, %or.13.then ], [ %call.res13, %or.13.else ]
+  br i1 %or.13.phi, label %or.14.then, label %or.14.else
 
-or.3.then:                                        ; preds = %or.2.exit
-  br label %or.3.exit
+or.14.then:                                       ; preds = %or.13.exit
+  br label %or.14.exit
 
-or.3.else:                                        ; preds = %or.2.exit
+or.14.else:                                       ; preds = %or.13.exit
   %var.load14 = load ptr, ptr %var.triple, align 8
   %call.res15 = call i1 @"ast::str_has_sub"(ptr %var.load14, ptr @str.10.struct)
-  br label %or.3.exit
+  br label %or.14.exit
 
-or.3.exit:                                        ; preds = %or.3.else, %or.3.then
-  %or.3.phi = phi i1 [ %or.2.phi, %or.3.then ], [ %call.res15, %or.3.else ]
-  br i1 %or.3.phi, label %choice.then16, label %choice.else17
+or.14.exit:                                       ; preds = %or.14.else, %or.14.then
+  %or.14.phi = phi i1 [ %or.13.phi, %or.14.then ], [ %call.res15, %or.14.else ]
+  br i1 %or.14.phi, label %choice.then16, label %choice.else17
 
-choice.then16:                                    ; preds = %or.3.exit
+choice.then16:                                    ; preds = %or.14.exit
   br label %choice.exit18
 
-choice.else17:                                    ; preds = %or.3.exit
+choice.else17:                                    ; preds = %or.14.exit
   %var.load19 = load ptr, ptr %var.triple, align 8
   %call.res20 = call i1 @"ast::str_has_sub"(ptr %var.load19, ptr @str.11.struct)
   br i1 %call.res20, label %choice.then21, label %choice.else22

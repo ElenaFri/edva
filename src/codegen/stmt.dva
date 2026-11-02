@@ -1224,6 +1224,10 @@ cycle_has_field_index = e, idx_name =>
          cycle_has_field_index(c.cond, idx_name)
             | <+>
             | cycle_has_field_index_branches(c.branches, idx_name, 0, ?c.branches)
+      [Cycle cyc]
+         cycle_has_field_index(cyc.iterable, idx_name)
+            | <+>
+            | (cyc.body_fn [Fn f] cycle_has_field_index(f.body, idx_name) | <->)
       [Record r] cycle_has_field_index_fields(r.fields, idx_name, 0, ?r.fields)
       | <->
 
@@ -1243,7 +1247,9 @@ cycle_has_field_index_branches = brs, idx_name, i, n =>
       | <->
       |
          br = brs(i)!!
-         cycle_has_field_index(br.block, idx_name)
+         cycle_has_field_index_exprs(br.case_values, idx_name, 0, ?br.case_values) ||
+            cycle_has_field_index(br.pred_fn, idx_name) ||
+            cycle_has_field_index(br.block, idx_name)
             | <+>
             | cycle_has_field_index_branches(brs, idx_name, i + 1, n)
 
@@ -1256,6 +1262,22 @@ cycle_has_field_index_fields = flds, idx_name, i, n =>
          cycle_has_field_index(f.val, idx_name)
             | <+>
             | cycle_has_field_index_fields(flds, idx_name, i + 1, n)
+
+codegen_cycle_unroll_type: types::Cg, ast::CycleExpr => (ast::TypeInfo, Int, <>)
+codegen_cycle_unroll_type = cg, cyc =>
+   rtv = types::resolve_type_value(cg, cyc.iterable)
+   rtv.1
+      |
+         can_ti = types::ctfe_canonical_ti(cg, rtv.0)
+         can_ti
+            [Rec r]
+               !r.1
+                  | (can_ti, ?r.0, <+>)
+                  | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), 0, <->)
+            [Enum slots]
+               (can_ti, ?slots, <+>)
+            | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), 0, <->)
+      | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), 0, <->)
 
 // A compile-time unroll candidate: "0..N @ i => body" where N is a constant
 // and body references "x.(i)" or "T.(i)". Returns (trip_count, <+>) or (0, <->).
@@ -1282,7 +1304,7 @@ codegen_cycle_unroll_range = cg, cyc =>
                                           | r_val =>
                                              LLVMIsConstant(r_val) != 0
                                                 |
-                                                   n = LLVMConstIntGetZExtValue(r_val)
+                                                   n = LLVMConstIntGetZExtValue(r_val) + (rng.is_inclusive | 1 | 0)
                                                    (n, <+>)
                                                 | (0, <->)
                                           | (0, <->)
@@ -1293,39 +1315,58 @@ codegen_cycle_unroll_range = cg, cyc =>
             | (0, <->)
       | (0, <->)
 
-codegen_eval_cycle_unrolled: types::Cg, ast::CycleExpr, Int => (Addr, ast::ValueType)
-codegen_eval_cycle_unrolled = cg, c, n =>
+codegen_eval_cycle_unrolled_with_type: types::Cg, ast::CycleExpr, Int, <>,
+   ast::TypeInfo => (Addr, ast::ValueType)
+codegen_eval_cycle_unrolled_with_type = cg, c, n, has_type, type_ti =>
    bfn = c.body_fn
    bfn
       [Fn f]
          idx_name = ?f.params > 0 | (f.params(0) | _ | "") | ""
-         codegen_eval_cycle_unrolled_step(cg, f.body, idx_name, 0, n,
+         idx2_name = ?f.params > 1 | (f.params(1) | _ | "") | ""
+         codegen_eval_cycle_unrolled_step(cg, f.body, idx_name, idx2_name, 0, n,
+            has_type, type_ti,
             (LLVMConstInt(LLVMInt64Type!, 0, 0), ast::ValueType(Unit)))
       | (LLVMConstInt(LLVMInt64Type!, 0, 0), ast::ValueType(Unit))
 
-codegen_eval_cycle_unrolled_step: types::Cg, ast::Expr, String, Int, Int,
-   (Addr, ast::ValueType) => (Addr, ast::ValueType)
-codegen_eval_cycle_unrolled_step = cg, body, idx_name, k, n, last_val =>
+codegen_eval_cycle_unrolled: types::Cg, ast::CycleExpr, Int => (Addr, ast::ValueType)
+codegen_eval_cycle_unrolled = cg, c, n =>
+   codegen_eval_cycle_unrolled_with_type(cg, c, n, <->,
+      ast::TypeInfo(Prim, ast::ValueType(Unknown)))
+
+codegen_eval_cycle_unrolled_step: types::Cg, ast::Expr, String, String, Int, Int,
+   <>, ast::TypeInfo, (Addr, ast::ValueType) => (Addr, ast::ValueType)
+codegen_eval_cycle_unrolled_step = cg, body, idx_name, idx2_name, k, n, has_type, type_ti, last_val =>
    k == n
       | last_val
       |
          saved_nvars = ?cg.vars
          saved_nbindings = ?cg.bindings
+         saved_cur_n = ?types::g.ct_cursor_names
          i64t = LLVMInt64Type!
          k_val = LLVMConstInt(i64t, k, 0)
-         cg.vars += types::CgVar(idx_name, ast::ValueType(Int), <->, "",
-            <-->, ast::Names(), <-->, <+>, <->, ast::VTypes(), <+ k_val +>)
+         idx_name != ""
+            |
+               cg.vars += types::CgVar(idx_name, ast::ValueType(Int), <->, "",
+                  <-->, ast::Names(), <-->, <+>, <->, ast::VTypes(), <+ k_val +>)
+               has_type | types::ct_cursor_push(idx_name, type_ti, k)
+         idx2_name != ""
+            |
+               cg.vars += types::CgVar(idx2_name, ast::ValueType(Int), <->, "",
+                  <-->, ast::Names(), <-->, <+>, <->, ast::VTypes(), <+ k_val +>)
          saved_discard = cg.discard_result
          k < n - 1
             | cg.discard_result = <+>
             | cg.discard_result = saved_discard
          v = expr::codegen_eval(cg, body)
          cg.discard_result = saved_discard
+         types::ct_cursor_pop_to(saved_cur_n)
          cg.vars = truncate_vars(cg.vars, saved_nvars)
          cg.bindings = runtime::binding_truncate(cg.bindings, saved_nbindings)
          cg.error
             | (LLVMConstInt(LLVMInt64Type!, 0, 0), ast::ValueType(Unknown))
-            | codegen_eval_cycle_unrolled_step(cg, body, idx_name, k + 1, n, v)
+            |
+               codegen_eval_cycle_unrolled_step(cg, body, idx_name, idx2_name,
+                  k + 1, n, has_type, type_ti, v)
 
 // "N @ i => body" (and iterable cycles): a header/body/latch/exit loop. The
 // counter is an i64 phi; the body's lambda param is bound to it. "-->" breaks
@@ -1333,13 +1374,17 @@ codegen_eval_cycle_unrolled_step = cg, body, idx_name, k, n, last_val =>
 // continues to the latch.
 codegen_eval_cycle: types::Cg, ast::CycleExpr => (Addr, ast::ValueType)
 codegen_eval_cycle = cg, c =>
-   unroll = codegen_cycle_unroll_range(cg, c)
-   unroll.1
-      | codegen_eval_cycle_unrolled(cg, c, unroll.0)
+   tu = codegen_cycle_unroll_type(cg, c)
+   tu.2
+      | codegen_eval_cycle_unrolled_with_type(cg, c, tu.1, <+>, tu.0)
       |
-         cycle_iter_heterogeneous_record(cg, c.iterable)
-            | codegen_cycle_record_iter_error(cg)
-            | codegen_eval_cycle_valid(cg, c)
+         unroll = codegen_cycle_unroll_range(cg, c)
+         unroll.1
+            | codegen_eval_cycle_unrolled(cg, c, unroll.0)
+            |
+               cycle_iter_heterogeneous_record(cg, c.iterable)
+                  | codegen_cycle_record_iter_error(cg)
+                  | codegen_eval_cycle_valid(cg, c)
 
 cycle_iter_heterogeneous_record: types::Cg, ast::Expr => <>
 cycle_iter_heterogeneous_record = cg, e =>
@@ -1378,7 +1423,11 @@ cycle_range_end: types::Cg, ast::RangeExpr => Addr
 cycle_range_end = cg, rng =>
    i64t = LLVMInt64Type!
    rng.has_rhs
-      | expr::codegen_eval(cg, rng.rhs).0
+      |
+         rv = expr::codegen_eval(cg, rng.rhs).0
+         rng.is_inclusive
+            | LLVMBuildAdd(cg.builder, rv, LLVMConstInt(i64t, 1, 0), "rng.incl.end")
+            | rv
       | LLVMConstInt(i64t, 0, 0)
 
 cycle_str_elem: types::Cg, Addr, Addr => Addr
@@ -1706,7 +1755,7 @@ codegen_eval_indexed_cycle = cg, c, is_rng, iv_opt =>
    types::g.tmpc = types::g.tmpc + 1
    i64t = LLVMInt64Type!
    dummy_rng = ast::RangeExpr(<->, <->, ast::Expr(Var, "?"),
-      ast::Expr(Var, "?"))
+      ast::Expr(Var, "?"), <->)
    rng = c.iterable [Range r] r | dummy_rng
    start_val = is_rng
       | cycle_range_start(cg, rng)
@@ -2106,10 +2155,34 @@ infer_ret = e, params, ptypes =>
             |
                idx = ct.0
                idx !< 0 && idx < ?c.branches
-                  | infer_ret(c.branches(idx)!!.block, params, ptypes)
+                  |
+                     br = c.branches(idx)!!
+                     saved_ct_n = ?types::g.ct_bind_names
+                     types::ctfe_push_branch_type_binds_simple(br, c.cond)
+                     r_vt = infer_ret(br.block, params, ptypes)
+                     types::ct_bind_pop_to(saved_ct_n)
+                     r_vt
                   | ast::ValueType(Unknown)
             | infer_ret_choice_branches(c.branches, params, ptypes, 0,
                ?c.branches, <->)
+      [Member m]
+         m.field_name == "name"
+            |
+               rtv = types::resolve_type_value_simple(m.target)
+               rtv.1 | ast::ValueType(Str) | ast::ValueType(Unknown)
+            |
+               m.field_name == "zero"
+                  |
+                     rtv = types::resolve_type_value_simple(m.target)
+                     rtv.1
+                        | types::vt_from_ti(types::ctfe_canonical_ti_simple(rtv.0))
+                        | ast::ValueType(Unknown)
+                  | ast::ValueType(Unknown)
+      [Variant v]
+         is_flag = v.tag_name [Positive, Negative] && ?v.args == 0
+         is_flag | ast::ValueType(Flag) | ast::ValueType(Ram)
+      [CycleEscape ce]
+         infer_ret(ce.branch, params, ptypes)
       [Bin t]
          t.0
             [Seq] infer_ret(t.2, params, ptypes)
@@ -2143,7 +2216,14 @@ infer_ret = e, params, ptypes =>
       [Call c]
          c.fn_name == "%bitcast" && ?c.args == 2
             | ((c.args(0)!!) [SizeOf so] so.val_type | ast::ValueType(Unknown))
-            | ast::ValueType(Unknown)
+            |
+               c.fn_name != ""
+                  |
+                     rtv = types::resolve_type_value_simple(ast::Expr(Var, c.fn_name))
+                     rtv.1
+                        | types::vt_from_ti(types::ctfe_canonical_ti_simple(rtv.0))
+                        | ast::ValueType(Unknown)
+                  | ast::ValueType(Unknown)
       | ast::ValueType(Unknown)
 
 // The return type of a block body: the last statement's (0 statements = Unit).
@@ -3220,8 +3300,11 @@ codegen_fn_add_params = cg, fn, params, dtypes, ptis, ptypes, i, n =>
          is_unboxed = types::g.is_typed_pipeline && types::is_unboxed_ram_ti(cg, pti)
          niche = types::g.is_typed_pipeline | types::is_niche_ram_ti(cg, pti) |
             (<->, <->, ast::ValueType(Unknown))
-         is_heap_ram = !is_unboxed && !niche.0 &&
-            (pti [Ram s] s.0.has_payload || s.1.has_payload | <->)
+         has_ram_pay = (pti [Ram s] s.0.has_payload || s.1.has_payload | <->)
+         is_heap_ram = has_ram_pay || (!is_unboxed && !niche.0 && (pvt [Ram]))
+         pv_stored = (is_unboxed || niche.0)
+            | match::convert_abi_ram_to_heap_union(cg, pv, pti)
+            | pv
          is_anon_ram = pdtype' == "" && is_ram_ti
          is_anon_ram
             |
@@ -3237,10 +3320,18 @@ codegen_fn_add_params = cg, fn, params, dtypes, ptis, ptypes, i, n =>
                !types::has_type_name(cg, param_tname')
                   | runtime::add_type(cg, param_tname', pti)
                pdtype' = param_tname'
+         is_map_ti = pti [Map]
+         is_anon_map = pdtype' == "" && is_map_ti
+         is_anon_map
+            |
+               param_tname' = "#param_" + types::g.last_compiling_fn + "_" + pname
+               !types::has_type_name(cg, param_tname')
+                  | runtime::add_type(cg, param_tname', pti)
+               pdtype' = param_tname'
          prec_rt_opt = !is_sl | (prec | p => <+ p.0 +> | <-->) | <-->
          prec_fnames = prec | p => p.1 | ast::Names()
          cg.vars += types::CgVar(pname, pvt, is_heap_ram, pdtype',
-            prec_rt_opt, prec_fnames, <--> , <+>, <->, pr2, <+ pv +>)
+            prec_rt_opt, prec_fnames, <--> , <+>, <->, pr2, <+ pv_stored +>)
          codegen_fn_add_params(cg, fn, params, dtypes, ptis, ptypes, i + 1, n)
 
 // Compiles one user function: params are direct SSA values (no allocas), the
@@ -3498,6 +3589,18 @@ codegen_compile_fn = cg, fd, h, dts, pts, d_ret, d_ret_ti, decl, gen, vs, exp =>
    saved_fn = cg.current_fn
    saved_bb = LLVMGetInsertBlock(cg.builder)
    saved_in_fn = cg.in_fn
+   saved_exited = cg.exited
+   saved_restore_scope = cg.in_restore_scope
+   saved_breaks = cg.cycle_breaks
+   saved_conts = cg.cycle_conts
+   saved_init = cg.init
+   saved_choice_frames = cg.choice_frames
+   saved_escape_bb = cg.escape_bb
+   saved_last_type = cg.last_type
+   saved_last_rt = cg.last_rt
+   saved_last_fnames = cg.last_fnames
+   saved_last_fvts = cg.last_fvts
+   saved_last_closure_fn = cg.last_closure_fn
    saved_nvars = ?cg.vars
    saved_var_start = cg.fn_var_start
    saved_nbindings = ?cg.bindings
@@ -3510,6 +3613,12 @@ codegen_compile_fn = cg, fd, h, dts, pts, d_ret, d_ret_ti, decl, gen, vs, exp =>
    cg.fn_var_start = saved_nvars
    cg.bindings = types::BindingMuts()
    cg.fn_binding_start = 0
+   cg.in_restore_scope = 0
+   cg.cycle_breaks = types::Addrs()
+   cg.cycle_conts = types::Addrs()
+   cg.init = types::FieldInitState(ast::Names(), ast::Names())
+   cg.choice_frames = types::ChoiceInitFrames()
+   cg.escape_bb = <-->
    saved_last_fn = types::g.last_compiling_fn
    types::g.last_compiling_fn = fd.name
    ptypes = infer_param_types(fd, hints)
@@ -3598,9 +3707,10 @@ codegen_compile_fn = cg, fd, h, dts, pts, d_ret, d_ret_ti, decl, gen, vs, exp =>
                      fnms' = m.1
                      fvts' = types::field_vts(cg, sig_ti)
                      dt' = sig_ti [TypeVar tn] tn | dt'
-         fn_ret_rec_add(cg, fd.name, rt_opt', fnms', fvts', dt')
+         !<>(fn_ret_rec_of(cg, fd.name))
+            | fn_ret_rec_add(cg, fd.name, rt_opt', fnms', fvts', dt')
       |
-         cg.last_type != ""
+         !declared && !<>(fn_ret_rec_of(cg, fd.name)) && cg.last_type != ""
             | fn_ret_rec_add(cg, fd.name, <--> , ast::Names(), ast::VTypes(),
                cg.last_type)
    is_fn_ret = main::is_fn_vt(actual_ret) || main::is_fn_vt(ret_vt')
@@ -3626,9 +3736,13 @@ codegen_compile_fn = cg, fd, h, dts, pts, d_ret, d_ret_ti, decl, gen, vs, exp =>
                               cg.union_t, bvv, 0, "tag.gep")
                            tag = LLVMBuildLoad2(cg.builder,
                               LLVMInt64Type!, tgep, "tag")
-                           is_pos = LLVMBuildICmp(cg.builder, 33,
+                           eq1 = LLVMBuildICmp(cg.builder, 32,
                               tag, LLVMConstInt(
-                                 LLVMInt64Type!, 0, 0), "is_pos")
+                                 LLVMInt64Type!, 1, 0), "tag.eq.one")
+                           eq2 = LLVMBuildICmp(cg.builder, 32,
+                              tag, LLVMConstInt(
+                                 LLVMInt64Type!, 2, 0), "tag.eq.two")
+                           is_pos = LLVMBuildOr(cg.builder, eq1, eq2, "is_pos")
                            pgep = LLVMBuildStructGEP2(cg.builder,
                               cg.union_t, bvv, 1, "pay.gep")
                            pay_ptr = LLVMBuildLoad2(cg.builder,
@@ -3665,6 +3779,18 @@ codegen_compile_fn = cg, fd, h, dts, pts, d_ret, d_ret_ti, decl, gen, vs, exp =>
          cg.fninfos(cur_fn_idx) = types::FnInfo(fd.name, <+ fn +>, <+ fty +>, ?fd.params,
             ptypes, actual_ret, declared, generic, value_safe, <+>) !| _
    cg.in_fn = saved_in_fn
+   cg.exited = saved_exited
+   cg.in_restore_scope = saved_restore_scope
+   cg.cycle_breaks = saved_breaks
+   cg.cycle_conts = saved_conts
+   cg.init = saved_init
+   cg.choice_frames = saved_choice_frames
+   cg.escape_bb = saved_escape_bb
+   cg.last_type = saved_last_type
+   cg.last_rt = saved_last_rt
+   cg.last_fnames = saved_last_fnames
+   cg.last_fvts = saved_last_fvts
+   cg.last_closure_fn = saved_last_closure_fn
    // Drop the function's params + body locals from the var table (they live
    // inside the fn's own allocas) so a same-named top-level var does not
    // resolve to a stale function-local slot.

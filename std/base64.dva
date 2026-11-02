@@ -1,0 +1,194 @@
+// Standard RFC 4648 Base64 & Base64URL Module (std/base64.dva)
+// Standard and URL-safe Base64 encoding and decoding.
+
+#public
+
+#private
+
+b64_err: String, Int => Error
+b64_err = msg, col =>
+   Error(400, "base64: " + msg, "std/base64.dva", 1, col + 1, (col, 0))
+
+std_char: Int => Int
+std_char = idx =>
+   idx
+      [0...25]  'A' + idx
+      [26...51] 'a' + (idx - 26)
+      [52...61] '0' + (idx - 52)
+      [62]      '+'
+      |         '/'
+
+url_char: Int => Int
+url_char = idx =>
+   idx
+      [0...25]  'A' + idx
+      [26...51] 'a' + (idx - 26)
+      [52...61] '0' + (idx - 52)
+      [62]      '-'
+      |         '_'
+
+std_val: Int => Int
+std_val = c =>
+   c
+      ['A'...'Z'] c - 'A'
+      ['a'...'z'] c - 'a' + 26
+      ['0'...'9'] c - '0' + 52
+      ['+']       62
+      ['/']       63
+      |           -1
+
+url_val: Int => Int
+url_val = c =>
+   c
+      ['A'...'Z'] c - 'A'
+      ['a'...'z'] c - 'a' + 26
+      ['0'...'9'] c - '0' + 52
+      ['-', '+']  62
+      ['_', '/']  63
+      |           -1
+
+encode_impl: String, <>, <> => String
+encode_impl = bytes, is_url, pad =>
+   n = ?bytes
+   n == 0 | --| ""
+   full_groups = n / 3
+   rem = n % 3
+   out_cap = (full_groups + (rem > 0 | 1 | 0)) * 4
+   b = {out_cap}
+   full_groups @ g =>
+      base = g * 3
+      b0 = bytes(base) .&. 0xFF
+      b1 = bytes(base + 1) .&. 0xFF
+      b2 = bytes(base + 2) .&. 0xFF
+      triple = (b0 .<. 16) .|. (b1 .<. 8) .|. b2
+      c0 = (triple .>. 18) .&. 0x3F
+      c1 = (triple .>. 12) .&. 0x3F
+      c2 = (triple .>. 6) .&. 0x3F
+      c3 = triple .&. 0x3F
+      is_url
+         |
+            b += url_char(c0)
+            b += url_char(c1)
+            b += url_char(c2)
+            b += url_char(c3)
+         |
+            b += std_char(c0)
+            b += std_char(c1)
+            b += std_char(c2)
+            b += std_char(c3)
+   rem == 1
+      |
+         b0 = bytes(full_groups * 3) .&. 0xFF
+         c0 = (b0 .>. 2) .&. 0x3F
+         c1 = (b0 .&. 0x03) .<. 4
+         b += (is_url | url_char(c0) | std_char(c0))
+         b += (is_url | url_char(c1) | std_char(c1))
+         pad
+            |
+               b += '='
+               b += '='
+   rem == 2
+      |
+         base = full_groups * 3
+         b0 = bytes(base) .&. 0xFF
+         b1 = bytes(base + 1) .&. 0xFF
+         c0 = (b0 .>. 2) .&. 0x3F
+         c1 = ((b0 .&. 0x03) .<. 4) .|. ((b1 .>. 4) .&. 0x0F)
+         c2 = (b1 .&. 0x0F) .<. 2
+         b += (is_url | url_char(c0) | std_char(c0))
+         b += (is_url | url_char(c1) | std_char(c1))
+         b += (is_url | url_char(c2) | std_char(c2))
+         pad | b += '='
+   +b
+
+decode_impl: String, <>, <> => < String | Error >
+decode_impl = s, is_url, require_pad =>
+   // Strip ASCII whitespace first
+   clean_b = {?s}
+   ?s @ i =>
+      ch = s(i)
+      !(ch [' ', '\t', '\n', '\r']) | clean_b += ch
+   clean = +clean_b
+   n = ?clean
+   n == 0 | --| <+ "" ->
+   require_pad && (n % 4 != 0) | --| <- b64_err("invalid base64 length (must be a multiple of 4)", n) +>
+   // Strip up to 2 trailing '=' padding chars
+   eff_len' = n
+   pad_cnt' = 0
+   eff_len' > 0 && clean(eff_len' - 1) == '='
+      |
+         eff_len' = eff_len' - 1
+         pad_cnt' = pad_cnt' + 1
+   eff_len' > 0 && clean(eff_len' - 1) == '='
+      |
+         eff_len' = eff_len' - 1
+         pad_cnt' = pad_cnt' + 1
+   rem = eff_len' % 4
+   rem == 1 | --| <- b64_err("invalid base64 group length", eff_len') +>
+   full_quads = eff_len' / 4
+   out = {(full_quads + 1) * 3}
+   bad_idx' = -1
+   full_quads @ q =>
+      base = q * 4
+      v0 = is_url | url_val(clean(base)) | std_val(clean(base))
+      v1 = is_url | url_val(clean(base + 1)) | std_val(clean(base + 1))
+      v2 = is_url | url_val(clean(base + 2)) | std_val(clean(base + 2))
+      v3 = is_url | url_val(clean(base + 3)) | std_val(clean(base + 3))
+      (v0 < 0 || v1 < 0 || v2 < 0 || v3 < 0)
+         |
+            bad_idx' = base
+            -->
+         |
+            triple = (v0 .<. 18) .|. (v1 .<. 12) .|. (v2 .<. 6) .|. v3
+            out += ((triple .>. 16) .&. 0xFF)
+            out += ((triple .>. 8) .&. 0xFF)
+            out += (triple .&. 0xFF)
+   bad_idx' < 0 && rem == 2
+      |
+         base = full_quads * 4
+         v0 = is_url | url_val(clean(base)) | std_val(clean(base))
+         v1 = is_url | url_val(clean(base + 1)) | std_val(clean(base + 1))
+         (v0 < 0 || v1 < 0)
+            | bad_idx' = base
+            | out += (((v0 .<. 2) .|. (v1 .>. 4)) .&. 0xFF)
+   bad_idx' < 0 && rem == 3
+      |
+         base = full_quads * 4
+         v0 = is_url | url_val(clean(base)) | std_val(clean(base))
+         v1 = is_url | url_val(clean(base + 1)) | std_val(clean(base + 1))
+         v2 = is_url | url_val(clean(base + 2)) | std_val(clean(base + 2))
+         (v0 < 0 || v1 < 0 || v2 < 0)
+            | bad_idx' = base
+            |
+               out += (((v0 .<. 2) .|. (v1 .>. 4)) .&. 0xFF)
+               out += (((v1 .<. 4) .|. (v2 .>. 2)) .&. 0xFF)
+   bad_idx' !< 0
+      | <- b64_err("invalid base64 character", bad_idx') +>
+      | <+ +out ->
+
+#public
+
+// Encodes `bytes` into standard RFC 4648 Base64 with `=` padding.
+encode: String => String
+encode = bytes =>
+   encode_impl(bytes, <->, <+>)
+
+// Decodes a standard RFC 4648 Base64 string into raw bytes.
+decode: String => < String | Error >
+decode = s =>
+   decode_impl(s, <->, <+>)
+
+// Encodes `bytes` into RFC 4648 URL-safe Base64 (`-` and `_`, unpadded).
+encode_url: String => String
+encode_url = bytes =>
+   encode_impl(bytes, <+>, <->)
+
+// Encodes `bytes` into RFC 4648 URL-safe Base64 with `=` padding.
+encode_url_padded: String => String
+encode_url_padded = bytes =>
+   encode_impl(bytes, <+>, <+>)
+
+// Decodes an RFC 4648 URL-safe Base64 string (padded or unpadded) into raw bytes.
+decode_url: String => < String | Error >
+decode_url = s =>
+   decode_impl(s, <+>, <->)

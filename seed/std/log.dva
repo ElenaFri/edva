@@ -1,0 +1,414 @@
+// Standard Structured Logging Module (std/log.dva)
+// Lightweight leveled logger with optional ISO-8601 timestamps, ANSI color
+// auto-detection, component prefixes, and structured key=value fields.
+
+#use libc
+#use str
+#use sys
+#use time
+#use utf
+
+#foreign "c"
+   c_getenv = getenv: (name: String) => Addr
+
+#public
+   #type Level < Debug, Info, Warn, Error, Silent >
+   #type Fields String{}
+
+#private
+   ::min_level    = 1 // 0=Debug, 1=Info, 2=Warn, 3=Error, 4=Silent
+   ::out_fd       = 2 // default: stderr
+   ::owned_fd     = -1
+   ::show_ts      = <+>
+   ::ts_utc       = <-> // <-> = zoned (local TZ), <+> = Zulu (UTC)
+   ::ts_basic     = <-> // <-> = extended ISO-8601, <+> = basic/compact ISO-8601
+   ::color_mode   = 0 // 0=auto (isatty), 1=force on, 2=force off
+   ::prefix_tag   = ""
+
+   O_LOG_APPEND = #! (os ["darwin"] 0x0209 | 0x0441) // O_WRONLY | O_CREAT | O_APPEND
+
+   #type LevelMeta (
+      level: Level,
+      rank:  Int,
+      name:  String,
+      color: String
+   )
+
+   // Single master table of log level metadata (rank, label, ANSI color prefix).
+   LEVELS = (
+      debug  = LevelMeta(Level(Debug),  0, "DEBUG",  "\x1b[36m"),
+      info   = LevelMeta(Level(Info),   1, "INFO",   "\x1b[32m"),
+      warn   = LevelMeta(Level(Warn),   2, "WARN",   "\x1b[33m"),
+      error  = LevelMeta(Level(Error),  3, "ERROR",  "\x1b[31m"),
+      silent = LevelMeta(Level(Silent), 4, "SILENT", "")
+   )
+
+   level_meta: Level => LevelMeta
+   level_meta =
+      [Debug]  LEVELS.debug
+      [Info]   LEVELS.info
+      [Warn]   LEVELS.warn
+      [Error]  LEVELS.error
+      [Silent] LEVELS.silent
+
+   rank_to_level: Int => Level
+   rank_to_level =
+      [0] LEVELS.debug.level
+      [1] LEVELS.info.level
+      [2] LEVELS.warn.level
+      [3] LEVELS.error.level
+      |   LEVELS.silent.level
+
+   env_val: String => String
+   env_val = name =>
+      raw = c_getenv(name)
+      raw == sys::addr_null | "" | sys::c_str(raw)
+
+   auto_color_enabled: () => <>
+   auto_color_enabled = !=>
+      ?env_val("NO_COLOR") > 0 | --| <->
+      fc = env_val("FORCE_COLOR")
+      ?fc > 0 && fc != "0" | --| <+>
+      env_val("TERM") == "dumb" | --| <->
+      libc::isatty(out_fd) == 1
+
+   should_color: () => <>
+   should_color = !=>
+      color_mode
+         [1] <+>
+         [2] <->
+         |   auto_color_enabled!
+
+   level_plain: Level => String
+   level_plain = lvl =>
+      "[" + level_meta(lvl).name + "]"
+
+   level_ansi: Level => String
+   level_ansi = lvl =>
+      m = level_meta(lvl)
+      badge = "[" + m.name + "]"
+      ?m.color > 0 | m.color + badge + "\x1b[0m" | badge
+
+   needs_quoting: String => <>
+   needs_quoting = s =>
+      ?s == 0 | --| <+>
+      hit' = <->
+      ?s @ i =>
+         c = s(i)
+         c [' ', '\t', '\n', '\r', '"', '=']
+            |
+               hit' = <+>
+               -->
+      hit'
+
+   quote_value: String => String
+   quote_value = s =>
+      !needs_quoting(s) | --| s
+      b = {?s + 8}
+      b += '"'
+      ?s @ i =>
+         c = s(i)
+         c
+            ['"']  b += "\\\""
+            ['\\'] b += "\\\\"
+            ['\n'] b += "\\n"
+            ['\r'] b += "\\r"
+            ['\t'] b += "\\t"
+            |      b += c
+      b += '"'
+      +b
+
+   append_fields: String, Fields => String
+   append_fields = msg, fields =>
+      ?fields == 0 | --| msg
+      total' = ?msg
+      ?fields @ i =>
+         total' = total' + 1 + ?(fields(i)!!)
+      b = {total' + 8}
+      b += msg
+      ?fields @ i =>
+         f = fields(i)!!
+         ?f > 0
+            |
+               b += ' '
+               b += f
+      +b
+
+#public
+   // Numeric severity rank: Debug=0, Info=1, Warn=2, Error=3, Silent=4.
+   level_rank: Level => Int
+   level_rank = lvl => level_meta(lvl).rank
+
+   // Uppercase name of a log level.
+   level_name: Level => String
+   level_name = lvl => level_meta(lvl).name
+
+   // Parses a log level string (case-insensitive):
+   // "debug", "info", "warn"/"warning", "error", "silent"/"off"/"none".
+   parse_level: String => < Level | >
+   parse_level = s =>
+      str::lower(str::trim(s))
+         ["debug"]                  <+ Level(Debug) +>
+         ["info"]                   <+ Level(Info) +>
+         ["warn", "warning"]        <+ Level(Warn) +>
+         ["error", "err"]           <+ Level(Error) +>
+         ["silent", "off", "none"]  <+ Level(Silent) +>
+         |                          <-->
+
+   // Sets the minimum active log level. Messages below this level are ignored.
+   set_level: Level => ()
+   set_level = lvl =>
+      min_level ::= level_rank(lvl)
+
+   // Returns the current minimum active log level.
+   get_level: () => Level
+   get_level = !=>
+      rank_to_level(min_level)
+
+   // Returns `<+>` if `lvl` is enabled under the current minimum level.
+   enabled: Level => <>
+   enabled = lvl =>
+      r = level_rank(lvl)
+      r < 4 && r !< min_level
+
+   // Enables (`<+>`) or disables (`<->`) ISO-8601 timestamps on log lines.
+   set_timestamps: <> => ()
+   set_timestamps = on =>
+      show_ts ::= on
+
+   // Selects UTC/Zulu (`<+>`) or local zoned (`<->`, default) timestamps.
+   set_utc: <> => ()
+   set_utc = on =>
+      ts_utc ::= on
+
+   // Selects basic/compact (`<+>`) or extended (`<->`, default) ISO-8601 timestamps.
+   set_basic_iso: <> => ()
+   set_basic_iso = on =>
+      ts_basic ::= on
+
+   // Explicitly enables (`<+>`) or disables (`<->`) ANSI color output.
+   set_color: <> => ()
+   set_color = on =>
+      color_mode ::= (on | 1 | 2)
+
+   // Restores automatic ANSI color detection based on `isatty(fd)`.
+   use_auto_color: () => ()
+   use_auto_color = !=>
+      color_mode ::= 0
+
+   // Sets an optional component prefix tag (e.g. `"http"` -> `[http]`).
+   set_prefix: String => ()
+   set_prefix = pfx =>
+      prefix_tag ::= pfx
+
+   // Returns the current component prefix tag.
+   get_prefix: () => String
+   get_prefix = !=> prefix_tag
+
+   // Sets the output file descriptor (default: `2` for stderr).
+   set_fd: Int => ()
+   set_fd = fd =>
+      owned_fd !< 0 && owned_fd != fd
+         |
+            libc::close(owned_fd)
+            owned_fd ::= -1
+      out_fd ::= fd
+
+   // Returns the current output file descriptor.
+   get_fd: () => Int
+   get_fd = !=> out_fd
+
+   // Opens `path` for appending and routes subsequent log output to it.
+   set_file: String => <>
+   set_file = path =>
+      fd = libc::open_mode(path, O_LOG_APPEND, 0o644)
+      fd < 0
+         | <->
+         |
+            owned_fd !< 0 | libc::close(owned_fd)
+            owned_fd ::= fd
+            out_fd ::= fd
+            <+>
+
+   // Closes any log file opened via `set_file` and resets output to stderr (`2`).
+   close_file: () => ()
+   close_file = !=>
+      owned_fd !< 0
+         |
+            libc::close(owned_fd)
+            owned_fd ::= -1
+      out_fd ::= 2
+
+   // --- Structured `key=value` Field Builders ---------------------------------
+
+   log_key_str: #! K: Type, K => String
+   log_key_str = k =>
+      K
+         [String] k
+         [Int, i8, i16, i32, i64, u8, u16, u32, u64] str::from_int(Int(k))
+         [<>] (k | "<+>" | "<->")
+         [Rune] utf::encode_rune(k)
+         | K.name
+
+   format_val: #! V: Type, V => String
+   format_val = v =>
+      V
+         [String] quote_value(v)
+         [Int, i8, i16, i32, i64, u8, u16, u32, u64] str::from_int(Int(v))
+         [Float, f32, f64] str::from_float(Float(v))
+         [<>] (v | "<+>" | "<->")
+         [Rune] quote_value(utf::encode_rune(v))
+         [()] "()"
+         [<P|>]
+            (v | inner => format_val(P, inner) | "none")
+         [E{}]
+            b = {32}
+            b += '['
+            v @ elem, i =>
+               i > 0 | b += ','
+               b += format_val(E, elem)
+            b += ']'
+            +b
+         [E[]]
+            b = {32}
+            b += '['
+            v @ elem, i =>
+               i > 0 | b += ','
+               b += format_val(E, elem)
+            b += ']'
+            +b
+         [K ^ M]
+            b = {32}
+            b += '{'
+            first' = <+>
+            v @ mv, mk =>
+               !first' | b += ','
+               first' = <->
+               b += log_key_str(K, mk) + ":" + format_val(M, mv)
+            b += '}'
+            +b
+         [(..)]
+            b = {32}
+            is_tuple' = <->
+            V @ f =>
+               f.idx == 0 && f.name == "" | is_tuple' = <+>
+            is_tuple'
+               |
+                  b += '('
+                  V @ f =>
+                     f.idx > 0 | b += ','
+                     f.type
+                        [<P|>]
+                           vf = v.(f)
+                           b += (vf | inner => format_val(P, inner) | "none")
+                        |
+                           b += format_val(f.type, v.(f))
+                  b += ')'
+               |
+                  b += '{'
+                  V @ f =>
+                     f.idx > 0 | b += ','
+                     b += f.name + "="
+                     f.type
+                        [<P|>]
+                           vf = v.(f)
+                           b += (vf | inner => format_val(P, inner) | "none")
+                        |
+                           b += format_val(f.type, v.(f))
+                  b += '}'
+            +b
+         [<..>]
+            res' = ++V.name
+            V @ vr =>
+               v.(vr)
+                  | pay =>
+                     vr.type
+                        [()]
+                           res' = vr.name
+                        |
+                           res' = vr.name + "(" + format_val(vr.type, pay) + ")"
+            res'
+         | V.name
+
+   field: #! V: Type, String, V => String
+   field = k, v =>
+      k + "=" + format_val(V, v)
+
+   fields_of: #! R: Type, R => Fields
+   fields_of = rec =>
+      out' = Fields()
+      R
+         [(..)]
+            R @ f =>
+               fname = f.name != "" | f.name | str::from_int(f.idx)
+               f.type
+                  [<P|>]
+                     vf = rec.(f)
+                     vf | inner => out' += fname + "=" + format_val(P, inner)
+                  |
+                     out' += fname + "=" + format_val(f.type, rec.(f))
+         [K ^ V]
+            rec @ mv, mk =>
+               out' += log_key_str(K, mk) + "=" + format_val(V, mv)
+         |
+            out' += field(R, "value", rec)
+      out'
+
+   // --- Formatting & Emission -------------------------------------------------
+
+   // Formats a single log line (without trailing newline).
+   format_entry: Level, String => String
+   format_entry = lvl, msg =>
+      badge = should_color! | level_ansi(lvl) | level_plain(lvl)
+      ts_str = show_ts
+         | (ts_utc
+            | (ts_basic | time::utc_iso_basic! | time::utc_iso!)
+            | (ts_basic | time::iso_basic! | time::iso!)) + " "
+         | ""
+      pfx_part = ?prefix_tag > 0 | " [" + prefix_tag + "]" | ""
+      ts_str + badge + pfx_part + " " + msg
+
+   // Formats a single log line with structured `key=value` fields (without trailing newline).
+   format_kv: Level, String, Fields => String
+   format_kv = lvl, msg, fields =>
+      format_entry(lvl, append_fields(msg, fields))
+
+   // Logs `msg` at `lvl` if `lvl` is enabled.
+   log: Level, String => ()
+   log = lvl, msg =>
+      enabled(lvl)
+         |
+            line = format_entry(lvl, msg) + "\n"
+            libc::write(out_fd, line, ?line)
+
+   // Logs `msg` with structured `fields` at `lvl` if `lvl` is enabled.
+   log_kv: Level, String, Fields => ()
+   log_kv = lvl, msg, fields =>
+      enabled(lvl)
+         |
+            line = format_kv(lvl, msg, fields) + "\n"
+            libc::write(out_fd, line, ?line)
+
+   debug: String => ()
+   debug = msg => log(Level(Debug), msg)
+
+   info: String => ()
+   info = msg => log(Level(Info), msg)
+
+   warn: String => ()
+   warn = msg => log(Level(Warn), msg)
+
+   error: String => ()
+   error = msg => log(Level(Error), msg)
+
+   debug_kv: String, Fields => ()
+   debug_kv = msg, fields => log_kv(Level(Debug), msg, fields)
+
+   info_kv: String, Fields => ()
+   info_kv = msg, fields => log_kv(Level(Info), msg, fields)
+
+   warn_kv: String, Fields => ()
+   warn_kv = msg, fields => log_kv(Level(Warn), msg, fields)
+
+   error_kv: String, Fields => ()
+   error_kv = msg, fields => log_kv(Level(Error), msg, fields)

@@ -1,0 +1,48 @@
+---
+meta:
+  audience: "Edva developers manipulating filesystem paths across platforms"
+  status: "current reference"
+  audited: "fb4fbc2"
+  evidence: "`std/path.dva`, `tests/pass/389_std_path.dva`"
+---
+
+# `path` standard library
+
+The `path` module provides pure lexical path manipulation with zero filesystem or `libc`
+dependencies. It uses compile-time target inspection (`#! os`) to select native
+Windows vs. POSIX separators and drive-prefix semantics, while also exposing explicit
+`posix_*` and `win_*` functions for cross-platform tooling.
+
+```{.dva .run}
+#use io
+#use path
+
+p = path::normalize("/usr/local/../bin/./edva")
+io::out $ p
+io::out $ path::dirname(p)
+io::out $ path::basename(p)
+```
+
+## Constants and Function catalog
+
+| Category | Symbol / Function | Signature | Description |
+|---|---|---|---|
+| **Constants** | `path::SEP` / `path::SEP_STR` | `Int` / `String` | Native path separator (`'/'` or `'\\'`) |
+| | `path::LIST_SEP` / `path::LIST_SEP_STR` | `Int` / `String` | Native `$PATH` list separator (`':'` or `';'`) |
+| **Predicates** | `path::is_sep(c)` | `Int => <>` | True if byte `c` is a path separator on the target OS |
+| | `path::is_abs(p)` / `path::is_rel(p)` | `String => <>` | True if path `p` is absolute / relative |
+| | `path::has_ext(p, ext)` | `String, String => <>` | Case-insensitive extension check (with or without leading `.`) |
+| **Joining & Normalization** | `path::join(a, b)` | `String, String => String` | Joins two path segments with a single separator |
+| | `path::join_all(parts)` | `String{} => String` | Joins an array of path segments |
+| | `path::normalize(p)` | `String => String` | Resolves `.` and `..` segments and collapses redundant separators |
+| | `path::rel(base, target)` | `String, String => String` | Computes lexical relative path from `base` to `target` |
+| **Decomposition** | `path::dirname(p)` / `path::parent(p)` | `String => String` | Directory portion of `p` |
+| | `path::basename(p)` | `String => String` | Final path component of `p` |
+| | `path::split(p)` | `String => (String, String)` | Returns `(dirname(p), basename(p))` |
+| | `path::components(p)` | `String => String{}` | Splits path into logical components |
+| | `path::ext(p)` | `String => String` | Extension including leading `.` (e.g. `".dva"`), or `""` |
+| | `path::get_ext(p)` | `String => String` | Lowercase extension without leading `.` (e.g. `"dva"`) |
+| | `path::stem(p)` | `String => String` | Basename without its final extension |
+| | `path::with_ext(p, ext)` | `String, String => String` | Replaces (or removes when `""`) the extension of `p` |
+| **Glob Matching** | `path::match_glob(pat, text)` | `String, String => <>` | Wildcard matching supporting `*`, `?`, and `[...]` character classes |
+| **Explicit OS Flavors** | `path::posix_*` / `path::win_*` | Various | Explicit POSIX and Windows variants (`join`, `normalize`, `dirname`, `basename`, `is_abs`, `rel`) |

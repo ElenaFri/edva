@@ -1,0 +1,31 @@
+---
+meta:
+  audience: "Edva developers encoding and decoding Base64 and Base64URL payloads"
+  status: "current reference"
+  audited: "fb4fbc2"
+  evidence: "`std/base64.dva`, `tests/pass/396_std_hex_base64_hash.dva`"
+---
+
+# `base64` standard library
+
+The `base64` module implements RFC 4648 Section 4 standard Base64 (`+`, `/`, `=`
+padding) and Section 5 URL/filename-safe Base64URL (`-`, `_`, unpadded or padded).
+
+```{.dva .run}
+#use base64
+#use io
+
+enc = base64::encode("hello world")
+io::out $ enc
+base64::decode(enc) | dec => io::out $ dec
+```
+
+## Function catalog
+
+| Symbol / Function | Signature | Description |
+|---|---|---|
+| `base64::encode(s)` | `String => String` | Encodes `s` using standard RFC 4648 Base64 (`+`, `/`) with `=` padding |
+| `base64::decode(s)` | `String => < String | Error >` | Decodes standard Base64 (ignoring ASCII whitespace); returns `Error` on invalid characters or quantum lengths |
+| `base64::encode_url(s)` | `String => String` | Encodes `s` using URL-safe RFC 4648 Section 5 Base64URL (`-`, `_`) without `=` padding |
+| `base64::encode_url_padded(s)` | `String => String` | Encodes `s` using URL-safe Base64URL (`-`, `_`) with `=` padding |
+| `base64::decode_url(s)` | `String => < String | Error >` | Decodes URL-safe Base64URL (accepts both padded and unpadded inputs) |

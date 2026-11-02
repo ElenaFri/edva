@@ -17,12 +17,13 @@
    ln10     = 2.30258509299404568402
 
    // Signed integer limits
-   max_i64  = 0x7fffffffffffffff
-   min_i64  = 0x8000000000000000
-   max_i32  = 0x7fffffffi32
-   min_i32  = -2147483648i32
+   max_i64      = 0x7fffffffffffffff
+   min_i64      = 0x8000000000000000
+   max_safe_int = 0x1fffffffffffff // 2^53 - 1 (max exact integer in IEEE-754 f64)
+   max_i32      = 0x7fffffffi32
+   min_i32  = -0x80000000i32
    max_i16  = 0x7fffi16
-   min_i16  = -32768i16
+   min_i16  = -0x8000i16
    max_i8   = 0x7fi8
    min_i8   = -128i8
 

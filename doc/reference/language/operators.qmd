@@ -39,88 +39,83 @@ Right Binding Power (RBP), associativity, and semantic groupings.
 
 <!-- END operators.yaml -->
 
-Notable precedence characteristics:
+| Rule | Behavior |
+|---|---|
+| Left-associative tiers (`RBP > LBP`) | Operator binds tightly on the left (`a - b - c` $\equiv$ `(a - b) - c`) |
+| Right-associative tiers (`RBP <= LBP`) | Operator extends rightward (`f $ g $ x` $\equiv$ `f(g(x))`) |
+| Choice absorption (`$` / `$>`) | `$` (LBP 30) and `$>` (LBP 40) sit below `choice` (LBP 50), absorbing unparenthesized RHS choices (`a $> b | c | d` $\equiv$ `a $> (b | c | d)`) |
+| Operator sections (`op rhs`) | Binary operators `+`, `-`, `*`, `/`, `%`, `<`, `>`, `==`, `.<.`, `.>.`, `.&.`, `.^.`, `.|.` with a leading operand omitted form a 1-arg function over `_` (RBP 130). See [Operator sections](operator-sections.qmd) |
 
-- **Feed vs Apply:** `$>` (left-associative) prepends an argument (`x $> f` $\equiv$ `f(x)`), while `$` (right-associative) appends an argument (`f $ x` $\equiv$ `f(x)`).
-- **Choice Absorption:** Both `$` and `$>` sit below the choice tier (tier 5), so an unparenthesized choice expression on the RHS is absorbed as the operand (`a $> b | c | d` $\equiv$ `a $> (b | c | d)`).
-- **Binding Powers:** On right-associative tiers such as assignment (LBP 60, RBP 50) and apply (LBP 30, RBP 30), RBP $\le$ LBP allows operators to extend rightward. On left-associative tiers, RBP $>$ LBP forces left binding.
+## Relational, equality, and chained comparisons
 
-## Values and control flow
+Comparisons sit at LBP 120, RBP 130 and return a bare flag `<>` (`<+>` or `<->`). Note that Edva writes greater-or-equal as `!<` ("not less") and less-or-equal as `!>` ("not greater"); `<=` and `>=` are not comparison operators (`=>` is function arrow).
 
-- `=` binds an immutable name; a primed identifier is rebindable with `=`.
-- `+=` appends to a Builder in place.
-- `|` and `[guard]` form choices; `!|` selects a ram's negative branch.
-- `|->`, `|+>`, `|-->`, and `|++>` are syntactic shortcuts for early returning unit ramifications (`| --| <->`, `| --| <+>`, `| --| <-->`, `| --| <++>`).
-- `@` and `@@` iterate; `-->`, `--^`, and `>--` control cycle escape.
-- `--|` performs an early return from an enclosing function (`--| val` with a value, or bare `--|` for void functions).
-- `..` forms ranges, including string and slice views.
+| Operator | Meaning | Valid Operand Types | Floating-Point / Special Semantics |
+|---|---|---|---|
+| `<` | Less than | Numeric, `Rune`, `String`, `Addr` | Ordered (`OLT`); `<->` if either operand is `NaN`. Rejected on rams/enums (`E3127`) |
+| `>` | Greater than | Numeric, `Rune`, `String`, `Addr` | Ordered (`OGT`); `<->` if either operand is `NaN`. Rejected on rams/enums (`E3127`) |
+| `!<` | Greater than or equal ($\ge$) | Numeric, `Rune`, `String`, `Addr` | Ordered (`OGE`); `<->` if either operand is `NaN` (distinct from `!(a < b)`) |
+| `!>` | Less than or equal ($\le$) | Numeric, `Rune`, `String`, `Addr` | Ordered (`OLE`); `<->` if either operand is `NaN` (distinct from `!(a > b)`) |
+| `==` | Equal | Scalars, `String`, records, enums, `Type` | Deep structural equality on records and enums (`E3084` on non-enum rams or fn payloads); zero-alloc segment check on `str == (p1, p2, ...)` |
+| `!=` | Not equal | Scalars, `String`, records, enums, `Type` | Logical negation of `==` (`UNE` on floats: `<+>` if either operand is `NaN`) |
 
-```{.dva .run}
-score = 2
-label = score [1] "one" [2] "two" | "other"
-```
+### Chained comparisons
 
-## Calls and composition
+Relational operators (`<`, `>`, `!<`, `!>`) on the **same source line** chain mathematically:
 
-`f(a, b)` calls directly. `$` appends a call argument and is
-right-associative; `$>` prepends one and is left-associative. `$>>` chains a
-ram with a positive payload (`RamPP` or `RamPN`) through a continuation that must
-return a ramification of compatible shape (passing a non-ram continuation emits `E3091`).
-When `$` is followed immediately by an indented block, it attaches the block's expressions as a record argument.
+| Chained Expression | Equivalent Short-Circuit Evaluation | Middle Operand Evaluation |
+|---|---|---|
+| `a < x < b` | `t = x; (a < t) && (t < b)` | Evaluated **at most once** |
+| `a !> x < b` | `t = x; (a !> t) && (t < b)` | Evaluated **at most once** |
+| `a !> x !> b` | `t = x; (a !> t) && (t !> b)` | Evaluated **at most once** |
+| `b > f(x) > a` | `t = f(x); (b > t) && (t > a)` | `f(x)` called **at most once** (only if needed) |
 
 ```{.dva .run}
 #use io
 
-sum: Int, Int => Int
-sum = left, right => left + right
+in_half_open: Int, Int, Int => <>
+in_half_open = x, lo, hi => lo !> x < hi
 
-io::out $ 2 $> sum(3)
+io::out $ in_half_open(5, 0, 10)   // <+>
+io::out $ in_half_open(10, 0, 10)  // <->
 ```
 
-## Numeric, logical, and bitwise operators
+## Range operators (`..`, `...`, `..=`)
 
-Arithmetic uses `+ - * / %`; shifts use `.<.` and `.>.`; bitwise operations
-use `.|.`, `.^.`, `.&.`, and `.!.`. Bitwise operators accept integerish values only.
-Shift sections (`.<. n`, `.>. n`) infer `Int => Int` without explicit type signatures.
-Operator sections (`op rhs`) form single-parameter functions over an implicit `_`
-with an RHS binding power of 130; `||`, `&&`, `$`, `$>`, `$>>`, `!>`, `!<`, and `!=`
-are excluded from forming sections.
-Comparisons produce a flag. `&&` and `||` short-circuit; combining heap rams
-requires compatible winner layouts, while flags only combine with flags.
+Range operators sit at LBP 70, RBP 80. Endpoints must be adjacent to the operator without whitespace (`E2025`). Ranges are consumed by choice guards `[...]`, cycles `@`, and slice/substring calls `x(...)` (see [Expressions — Range expressions](expressions.qmd#range-expressions-..-..)):
 
-`==` and `!=` between two enums perform deep structural equality, comparing
-both variant tag and payload value (yielding a bare flag). If a payload type
-does not support equality (e.g. function values), comparison is rejected at
-compile time (`E3084`). Non-enum ramifications do not support equality (`E3084`).
-Relational operators `<` (less), `>` (greater), `!<` (greater-or-equal), and `!>` (less-or-equal)
-perform numeric ordering. On floating-point types, `!<` and `!>` follow ordered comparison semantics
-(LLVM `OGE` / `OLE`) and evaluate to `<->` (false) if either operand is NaN, distinct from logical
-negation `!(x < y)`. Ordering (`<`, `>`, `!<`, `!>`) on any ram or enum is rejected (`E3127`).
-Comparing a String with a tuple of strings (`str == (p1, p2, ...)`) tests
-concatenated segment equality without allocating. Unary `-` is integer/float negation.
+| Operator | Interval Kind | Math Notation | Lower Bound `a` | Upper Bound `b` | Choice Guard `[...]` | Cycle `@` | Slice / View `x(...)` |
+|---|---|---|---|---|---|---|---|
+| `a..b` | Half-open (left-closed, right-open) | $[a, b)$ | Closed ($a \le x$) | Open ($x < b$) | `a !> x < b` | `a` through `b - 1` | Elements `[a, b)` |
+| `a...b` / `a..=b` | Closed (both inclusive) | $[a, b]$ | Closed ($a \le x$) | Closed ($x \le b$) | `a !> x !> b` | `a` through `b` | Elements `[a, b]` |
+| `a..` | Lower-bounded closed | $[a, \infty)$ | Closed ($a \le x$) | Unbounded | `x !< a` | Unbounded from `a` | From `a` to `?x` (`-k..` from `?x - k`) |
+| `..b` | Upper-bounded open | $(-\infty, b)$ | Unbounded | Open ($x < b$) | `x < b` | `0` through `b - 1` | Elements `[0, b)` |
+| `...b` / `..=b` | Upper-bounded closed | $(-\infty, b]$ | Unbounded | Closed ($x \le b$) | `x !> b` | `0` through `b` | Elements `[0, b]` |
+| `..` | Unbounded | $(-\infty, \infty)$ | Unbounded | Unbounded | `<+>` | Unbounded from `0` | Full view `[0, ?x)` |
+
+## Arithmetic, bitwise, shift, and logical operators
+
+| Category | Operators | Operand Types | Result Type & Notes |
+|---|---|---|---|
+| Arithmetic | `+` `-` `*` `/` `%` | Numeric (`Int`, `Float`, `i8`..`u64`, `f32`, SIMD vectors) | Same numeric type (`+` also concatenates `String` and `Rune`) |
+| Bitwise | `.|.` `.^.` `.&.` `.!.` | Integerish (`Int`, `i8`..`u64`, integer SIMD vectors) | Same integer type (`.!.` is unary bitwise NOT) |
+| Bit shift | `.<.` `.>.` | Integerish | Left shift (`.<.`) and zero-fill/logical or signed right shift (`.>.`); sections infer `Int => Int` |
+| Logical | `&&` `||` | `<>` (Flag) or compatible heap ramifications | Short-circuiting AND / OR |
+| Map access | `m ^ k`<br>`m ^? k`<br>`m ^- k` | Map `K ^ V`, key `K` | `^`: `< V | >` lookup (`m ^ k = v` inserts)<br>`^?`: `<>` key existence check<br>`^-`: `<>` key removal |
 
 ## Type-directed and postfix operators
 
 | Form | Meaning |
 |---|---|
-| `!flag` | flag negation (flags only; emits E3008 on other types) |
-| `+builder` | freeze a Builder into an immutable String (in-place) |
-| `&buffer` / `&string` | adjacent unary buffer address for FFI |
-| `?value` | byte, element, entry, or field count (`?s`, `?b`, `?a`, `?m`) |
-| `??string` | Unicode codepoint count |
-| `++value` | copy String, record, slice, or growable array |
-| `result!!` | unwrap positive ram payload or abort |
-| `result--!` | unwrap or propagate a negative ram from its function |
-| `~~lvalue` | two-way state binding lens record `(get = !=> ..., set = v => ...)` |
-| `expr {N}` | record repetition |
-| `@[addr T]` | volatile typed memory load (`@[addr] = val` for store; `@[addr T] = val` is an error) |
-| `#size Type` | compile-time type size |
-
-Arithmetic multiplication (`a * b`) and operator sections (`* 2`) use `*`.
-Unary prefix `+` (without trailing space) is Builder freeze; `+ 2` with a space
-is the addition section.
-
-Strings and Builders have no member access; use `?` (length), `&` (address),
-and `+` (freeze) as appropriate.
-
-
+| `!flag` | Flag negation (`<>` only; emits `E3008` on other types) |
+| `+builder` | Freeze a `Builder` into an immutable `String` in-place (no space after `+`) |
+| `&buffer` / `&string` | Adjacent unary buffer/data address (`Addr`) for FFI (no space after `&`) |
+| `?value` | Byte, element, entry, field, or variant count (`?s`, `?b`, `?a`, `?m`, `?T`) |
+| `??string` | UTF-8 Unicode codepoint count |
+| `++value` | Deep arena copy of `String`, `Builder`, record, slice, or growable array |
+| `result!!` | Unwrap positive ram payload or abort |
+| `result--!` | Unwrap positive ram payload or early-return negative ram from enclosing function |
+| `~~lvalue` | Two-way state binding lens record `(get = !=> ..., set = v => ...)` |
+| `expr {N}` | Repeat `expr` `N` times into a homogeneous record `(T * N)` |
+| `@[addr T]` | Volatile typed memory load (`@[addr] = val` for store; `@[addr T] = val` is an error) |
+| `#size Type` | Compile-time byte size of `Type` |

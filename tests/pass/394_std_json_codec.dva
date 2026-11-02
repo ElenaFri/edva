@@ -1,0 +1,111 @@
+#use io
+#use str
+#use json
+
+#type Role <
+   Admin,
+   Custom(String),
+   Level(Int)
+>
+
+#type Address (
+   city: String = "Helsinki",
+   zip: Int = 100
+)
+
+#type UserProfile (
+   name: String,
+   age: Int = 30,
+   active: <> = <+>,
+   email: < String | >,
+   tags: String{},
+   meta: String ^ Int,
+   role: Role = Role(Admin),
+   addr: Address = Address("Helsinki", 100)
+)
+
+#type Pair (Int, String)
+
+#type IntMap String ^ Int
+
+// --- 1. Structural encode & decode round-trip ---
+io::out("--- test 1: structural encode & decode ---")
+tags = String{}("edva", "json")
+meta = IntMap()
+meta ^ "score" = 99
+u1 = UserProfile("Alice", 28, <+>, <+ "alice@example.com" +>, tags, meta, Role(Custom, "editor"), Address("Espoo", 210))
+encoded = json::encode(u1)
+io::out(encoded)
+
+json::decode(UserProfile, encoded)
+   | u2 =>
+      io::out(u2.name)
+      io::out(str::from_int(u2.age))
+      io::out(u2.active | "true" | "false")
+      io::out(u2.email | e => e | "none")
+      io::out(str::from_int(?u2.tags))
+      io::out(u2.tags(0)!!)
+      io::out(u2.tags(1)!!)
+      io::out(str::from_int(u2.meta ^ "score" | v => v | 0))
+      u2.role
+         [Admin] io::out("role:admin")
+         [Custom c] io::out("role:custom:" + c)
+         [Level n] io::out("role:level:" + str::from_int(n))
+      io::out(u2.addr.city)
+      io::out(str::from_int(u2.addr.zip))
+   | err =>
+      io::out("FAIL1: " + err.msg)
+
+// --- 2. Defaults, null options, and forward compatibility ---
+io::out("--- test 2: defaults & forward compatibility ---")
+partial_json = "{\"name\":\"Bob\",\"email\":null,\"unknown_field\":[1,2,3],\"role\":\"Admin\"}"
+json::decode(UserProfile, partial_json)
+   | u3 =>
+      io::out(u3.name)
+      io::out(str::from_int(u3.age))
+      io::out(u3.active | "true" | "false")
+      io::out(u3.email | e => e | "none")
+      io::out(str::from_int(?u3.tags))
+      io::out(str::from_int(?u3.meta))
+      u3.role
+         [Admin] io::out("role:admin")
+         [Custom c] io::out("role:custom:" + c)
+         [Level n] io::out("role:level:" + str::from_int(n))
+      io::out(u3.addr.city)
+   | err =>
+      io::out("FAIL2: " + err.msg)
+
+// --- 3. Tuple, Value passthrough, and pretty printing ---
+io::out("--- test 3: tuple & Value & pretty ---")
+p_json = json::encode(Pair(7, "lucky"))
+io::out(p_json)
+json::decode(Pair, p_json)
+   | p =>
+      io::out(str::from_int(p.0))
+      io::out(p.1)
+   | err =>
+      io::out("FAIL3: " + err.msg)
+
+json::decode(json::Value, "{\"x\":10,\"y\":\"ok\"}")
+   | v =>
+      io::out(str::from_int(json::get_int(v, "x") | n => n | 0))
+      io::out(json::get_str(v, "y") | s => s | "")
+      io::out(json::encode_pretty(Pair(1, "a"), 2))
+   | err =>
+      io::out("FAIL3V: " + err.msg)
+
+// --- 4. Decode errors ---
+io::out("--- test 4: decode errors ---")
+json::decode(UserProfile, "{\"age\":25}")
+   | ok => io::out("unexpected ok")
+   | err => io::out(err.msg)
+
+json::decode(UserProfile, "{\"name\":123}")
+   | ok => io::out("unexpected ok")
+   | err => io::out(err.msg)
+
+json::decode(Role, "\"SuperAdmin\"")
+   | ok => io::out("unexpected ok")
+   | err => io::out(err.msg)
+
+io::out("--- done ---")

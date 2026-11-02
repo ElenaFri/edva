@@ -2,96 +2,196 @@
 meta:
   audience: "Edva users"
   status: "current reference"
-  audited: "8b8cb19"
-  evidence: "`operators.yaml`, `src/annotate.dva`, `src/codegen.dva`"
+  audited: "df88a80"
+  evidence: "`operators.yaml`, `src/parser.dva`, `src/annotate.dva`, `src/codegen/match.dva`, `src/codegen/stmt.dva`"
 ---
 
 # Expressions
 
-Edva programs are composed from expressions. Calls, bindings, choices, cycles,
-and blocks all have expression forms. The generated
-[operator table](../../../GRAMMAR.md#16-operators--precedence) is the single
-precedence reference; this page describes how the principal forms fit together.
+Edva programs are composed from expressions: calls, choices, ranges, cycles, assignments, and blocks. For operator precedence and binding powers, see [Operators](operators.qmd).
 
 ## Calls and application
 
-Use `f(a, b)` for a direct call. `$` appends an argument to a call-shaped
-function expression, while `$>` feeds a value into the first argument position.
-Both are multi-argument operators, so pipelines can remain flat.
+| Form | Syntax | Associativity | Equivalent / Semantics |
+|---|---|---|---|
+| Direct call | `f(a, b)` | left (postfix, LBP 170) | Invokes `f` with positional arguments; no space before `(` (`E2032`) |
+| Chained call | `f(a)(b)` | left (postfix, LBP 170) | Calls the function value returned by `f(a)` with `b` |
+| Nullary call | `f!` | left (postfix, LBP 170) | Invokes 0-argument function `f` (defined with `!=>`) |
+| Infix apply | `f $ x` / `f(a) $ b` | right (LBP 30, RBP 30) | Appends `x` / `b` as last argument: `f(x)` / `f(a, b)` |
+| Block apply | `f $` + indented block | right (LBP 30, RBP 30) | Passes indented `k = v` block as a single record argument |
+| Feed | `x $> f` / `x $> f(a)` | left (LBP 40, RBP 50) | Prepends `x` as first argument: `f(x)` / `f(x, a)` |
+| Ram bind | `ram $>> cont` | left (LBP 40, RBP 50) | Threads positive payload of `RamPN` / `RamPP` into ram-returning `cont` (`E3091`) |
+| Coercion | `Type(x)` / `x $> Type` | — | Scalar width cast, nominal type construction, or empty container `Type()` |
+
+Both `$` and `$>` sit below the choice tier (LBP 50), so an unparenthesized choice on their right-hand side is absorbed as the operand (`f $ a [1] x | y` $\equiv$ `f(a [1] x | y)`).
+
+## Choice expressions
+
+A choice expression evaluates a scrutinee against an ordered sequence of branches at the choice tier (LBP 50, RBP 60). The scrutinee is the entire preceding expression above LBP 50 (`a + b [7] "x" | "y"` $\equiv$ `(a + b) [7] "x" | "y"`).
+
+### Top-level choice forms
+
+| Form | Syntax | Result Type | Semantics |
+|---|---|---|---|
+| Guarded choice | `s [g1] b1 [g2] b2 | fb` | Unified body type | Evaluates first matching `[g_i]` branch body, or trailing `| fb` |
+| Positional ram choice | `r | pos_body | neg_body` | Unified body type | First `|` matches positive slot; second `|` matches negative slot |
+| Ram payload binding | `r | x => b1 | err => b2` | Unified body type | Binds slot payload to lambda parameter (or `_` in implicit body) |
+| Skip-first ram choice | `r !| neg_body` | Unified body type | Sugar for `r | (void) | neg_body`; skips unit positive slot |
+| Bodyless guard | `s [guard]` | `<>` (Flag) | Evaluates to `<+>` on match, `<->` otherwise |
+| Negated guard | `s ![guard]` | `<>` (Flag) | Evaluates to `<->` on match, `<+>` otherwise (`!` adjacent to `[`) |
+| Headless choice fn | `[g1] b1 [g2] b2 | fb` | `T => U` | 1-parameter function `_ => _ [g1] b1 [g2] b2 | fb` (outside statement `@` body) |
+| Headless guard fn | `[guard]` / `![guard]` | `T => <>` | 1-parameter predicate `_ => _ [guard]` / `_ => _ ![guard]` |
+
+### Choice guard kinds (`[...]`)
+
+Every bracketed guard `[...]` parses as one of six formal guard kinds:
+
+| Guard Kind | Syntax | Match Condition | Binders & Constraints |
+|---|---|---|---|
+| **Value (Case)** | `[v1]`<br>`[v1, v2, v3]` | `s == v_i` (any in comma OR-list) | None. Values may be literals, variables, or range-tier expressions |
+| **Range (Case)** | `[a..b]` (`[a, b)`)<br>`[a...b]` / `[a..=b]` (`[a, b]`)<br>`[a..]`, `[..b]`, `[...b]`, `[..=b]` | Interval membership (see table below) | None. Combinable with values in comma OR-lists (`['0'...'9', '_']`) |
+| **Predicate** | `[op rhs]`<br>`[(expr_with_underscore)]`<br>`[x => expr]`<br>`[pred_fn]` | `pred(s)` yields `<+>` | Operator section (`[< 0]`), implicit-`_` lambda (`[(0 < _ < 10)]`), explicit lambda, or function name. Commas forbidden (`E2052`) |
+| **Enum Variant** | `[Tag]`<br>`[Tag1, Tag2]`<br>`[Tag x]`<br>`[Tag (a, b)]`<br>`[Tag SubTag x]` | Scrutinee enum tag equals `Tag` (plus nested subpatterns) | Juxtaposed identifier `x` binds payload; `_` also bound to payload in body. Explicit `[Tag _]` is forbidden (`E2109`; write `[Tag]`) |
+| **Record / Tuple Pattern** | `[(p1, p2)]`<br>`[(f1 = p1, f2 = p2)]` | Structural match across positional or named record fields | Subpatterns `p_i` may be literals, variable binders, `_` wildcards, nested records, or enum variants |
+| **Type-Shape (`#!`)** | `[Int, f64]`<br>`[()]`, `[<>]`<br>`[<P|>]`, `[<|N>]`, `[<P|N>]`<br>`[E{}]`, `[E[]]`, `[(E * ..)]`, `[(E * N)]`<br>`[K ^ V]`, `[(..)]`, `[<..>]` | Compile-time `Type` equality or structural shape match on `T: Type` | Prunes untaken branches before typecheck/codegen; binds inner `Type` parameters (`P`, `N`, `E`, `K`, `V`) in branch scope |
+
+#### Open, closed, and half-open interval guards
+
+Range operators (`..` and `...` / `..=`) always treat a present **lower bound `a` as closed (inclusive)**, while the operator selects whether the **upper bound `b` is open (`..`, exclusive) or closed (`...` / `..=`, inclusive)**. For an **open (exclusive) lower bound**, use a chained-comparison predicate guard `[(a < _ ...)]`:
+
+| Guard Syntax | Interval Kind | Math Notation | Lower Bound `a` | Upper Bound `b` | Equivalent Condition on Scrutinee `s` |
+|---|---|---|---|---|---|
+| `[a..b]` | Half-open (left-closed, right-open) | $[a, b)$ | **Closed** ($a \le s$) | **Open** ($s < b$) | `a !> s < b` |
+| `[a...b]` / `[a..=b]` | Closed (both endpoints inclusive) | $[a, b]$ | **Closed** ($a \le s$) | **Closed** ($s \le b$) | `a !> s !> b` |
+| `[(a < _ < b)]` | Open (both endpoints exclusive) | $(a, b)$ | **Open** ($a < s$) | **Open** ($s < b$) | `a < s < b` |
+| `[(a < _ !> b)]` | Half-open (left-open, right-closed) | $(a, b]$ | **Open** ($a < s$) | **Closed** ($s \le b$) | `a < s !> b` |
+| `[a..]` / `[a...]` / `[!< a]` | Lower-bounded closed | $[a, \infty)$ | **Closed** ($a \le s$) | **Unbounded** | `s !< a` |
+| `[> a]` | Lower-bounded open | $(a, \infty)$ | **Open** ($a < s$) | **Unbounded** | `s > a` |
+| `[..b]` / `[< b]` | Upper-bounded open | $(-\infty, b)$ | **Unbounded** | **Open** ($s < b$) | `s < b` |
+| `[...b]` / `[..=b]` / `[!> b]` | Upper-bounded closed | $(-\infty, b]$ | **Unbounded** | **Closed** ($s \le b$) | `s !> b` |
+| `[..]` / `[...]` | Unbounded (full range) | $(-\infty, \infty)$ | **Unbounded** | **Unbounded** | `<+>` |
 
 ```{.dva .run}
-sum: Int, Int => Int
-sum = left, right => left + right
+#use io
 
-first = sum(2) $ 3
-second = 2 $> sum(3)
+classify: Int => String
+classify =
+   [< 0]        "negative"
+   [0]          "zero"
+   [1, 2, 3]    "small"
+   [4..10]      "medium"
+   [10...100]   "large"
+   |            "huge"
+
+io::out $ classify(2)    // small
+io::out $ classify(10)   // large
+io::out $ 7 [4..10]      // <+>
+io::out $ 7 ![4..10]     // <->
 ```
 
-`$` is right-associative and `$>` is left-associative. Their right-hand side
-absorbs a following choice, so parenthesize when a tighter interpretation is
-needed.
+### Branch chaining and syntax diagnostics
 
-## Choices, cycles, and assignments
+| Rule | Valid Form | Rejected Form | Diagnostic |
+|---|---|---|---|
+| Guard adjacency | `x [1] "a" [2] "b" | "c"` | `x [1] "a" | [2] "b"` | `E2096`: `|` before `[guard]` |
+| Bare `|` position | First branch (ram) or final fallback | `x [1] "a" | "b" | "c"` | `E2024`: bare `|` in middle position |
+| Bare vs guarded mix | `r | a | b` or `x [1] a | b` | `x | a [2] b` | `E2054`: mixing initial `|` with `[guard]` |
+| Predicate OR-list | `x [(_ < 0 || _ > 9)]` | `x [< 0, > 9]` | `E2052`: comma in predicate guard |
+| Redundant flag tail | `x > 0` or `x [1]` | `x > 0 | <+> | <->` | `E2105`: redundant `| <+> | <->` tail |
+| Variant wildcard | `e [Some] body` | `e [Some _] body` | `E2109`: redundant `_` in variant pattern |
+| Ram slot labels | `r | pos | neg` | `r [Positive] a [Negative] b` | `E3125` / `E3004`: rams have no named tags |
 
-A choice has adjacent guarded branches and an optional trailing bare fallback. Omitting the scrutinee before `[guard]` produces a first-class 1-argument function over `_` (except when used as a direct statement inside an `@` cycle body):
+### Exhaustiveness and implicit ram fallbacks
 
-```{.dva .run}
-value = 2
-label = value [1] "one" [2] "two" | "other"
+| Position & Shape | Exhaustiveness Requirement | Implicit Fallback Synthesis | Result Type |
+|---|---|---|---|
+| Statement choice | Not required (`cond | side_effect`) | Unmatched path is a no-op | `()` |
+| Expression choice (general) | Required (`E3093` if inexhaustive) | None | Unified branch type (`E3084` on mismatch) |
+| Expression choice (`RamPN` `<T|>` branches) | Auto-completed | Appends implicit `| <-->` (absence) | `<T|>` |
+| Expression choice (`RamNP` `<|E>` branches) | Auto-completed | Appends implicit `| <++>` (success) | `<|E>` |
+| Expression choice (Enum scrutinee) | All variants covered or trailing `|` (`E3102`) | None | Unified branch type |
 
-describe = [1] "one" [2] "two" | "other"
-piped = 2 $> describe
-```
+## Range expressions (`..`, `...`, `..=`)
 
-One-branch choices are statements, not exhaustive values. In an assignable choice
-(used as a binding value, argument, or return value), all branches—including every
-guarded alternative and any trailing fallback—**must evaluate to the exact same type**.
-If branches yield differing types, the compiler rejects the expression with a type
-mismatch error (`E3084`). The choice must be exhaustive across all execution paths;
-never add a dummy `| 0` fallback (which corrupts the unified type to `Int`).
-When an inexhaustive choice in expression position has branches that all return `RamPN`
-(`< T | >`) or `RamNP` (`< | E >`), the compiler automatically synthesizes an implicit fallback
-branch (`| <-->` for `RamPN` absence, or `| <++>` for `RamNP` success).
+Range operators sit at LBP 70, RBP 80. Both `...` and `..=` denote inclusive upper bounds. Range endpoints must be adjacent to the operator with **no whitespace** (`E2025`). Ranges are not standalone first-class values (`E3063`); they are consumed by choice guards `[...]`, cycles `@`, and collection/string slices `x(...)`.
 
-`@` iterates an iterable or range. `-->` breaks and `--^` continues the
-current cycle; `>--` supplies an escape-expression branch. See the
-[choices guide](../../guide/choices-and-cycles.qmd) for examples.
+| Range Form | Interval Kind | Math Notation | In Choice Guard `x [...]` | In Cycle `... @ i =>` | In Slice `x(...)` (`String`, `T{}`, `T[]`, `(T * N)`) |
+|---|---|---|---|---|---|
+| `a..b` | Half-open (left-closed, right-open) | $[a, b)$ | `a !> x < b` | `i` from `a` to `b - 1` | Subview from index `a` to `b - 1` (length `b - a`) |
+| `a...b` / `a..=b` | Closed (both endpoints inclusive) | $[a, b]$ | `a !> x !> b` | `i` from `a` through `b` | Subview from index `a` through `b` (length `b + 1 - a`) |
+| `a..` | Lower-bounded closed | $[a, \infty)$ | `x !< a` | Unbounded cycle starting at `a` | Subview from `a` to `?x - 1` (`-k..` starts at `?x - k`) |
+| `..b` | Upper-bounded open | $(-\infty, b)$ | `x < b` | `i` from `0` to `b - 1` | Subview from `0` to `b - 1` (length `b`) |
+| `...b` / `..=b` | Upper-bounded closed | $(-\infty, b]$ | `x !> b` | `i` from `0` through `b` | Subview from `0` through `b` (length `b + 1`) |
+| `..` | Unbounded | $(-\infty, \infty)$ | Always `<+>` | Unbounded cycle starting at `0` | Full view `0..?x` |
 
-`=` creates or writes a binding according to its mutability. `+=` appends to a
-Builder in place. A Builder length assignment has the special form `?builder =
-n`. Every assignment evaluates to Unit. Expressions immediately after `=` and
-choice conditions are written without surrounding parentheses. A function returns its final expression's value, so a final assignment makes the function
-return Unit; write `()` only as that type in a declaration, never as a value.
+## Cycle expressions (`@`, `-->`, `--^`, `>--`)
+
+Cycles iterate at LBP 10, RBP 20 without keywords.
+
+### Iterable forms and loop binders
+
+| Iterable | Syntax | Explicit Binders | Implicit Block Binders (`iterable @` + block) | Semantics |
+|---|---|---|---|---|
+| Count | `n @ body` | `i =>` (`0..n`) | `_` (`Int`), `_i` (`Int`) | Repeats `n` times (`0` to `n - 1`) |
+| Bounded range | `a..b @ body`<br>`a...b @ body` | `i =>` (`Int`) | `_` (`Int`), `_i` (`Int`) | Iterates integer interval $[a, b)$ or $[a, b]$ |
+| Infinite range | `0.. @ body` | `i =>` (`Int`) | `_` (`Int`), `_i` (`Int`) | Unbounded loop; terminate via `-->` or `--|` |
+| `String` | `s @ body` | `b =>` or `b, i =>` | `_` (`Int` byte), `_i` (`Int` index) | Iterates raw UTF-8 bytes; index `i` persists after `-->` break |
+| `T{}` / `T[]` / `(T * N)` | `xs @ body` | `elem =>` or `elem, i =>` | `_` (`T`), `_i` (`Int` index) | Iterates elements in index order `0..?xs` |
+| Map `K ^ V` | `m @ body` | `val =>` or `val, key =>` | `_` (`V` value), `_i` (`K` key) | Iterates live map entries (**value first, key second**) |
+| Record `Type` (`#!`) | `T @ f => body` | `f =>` (field descriptor) | — | Compile-time unrolled over `0..?T` (`f.name`, `f.type`, `f.index`) |
+| Enum `Type` (`#!`) | `T @ v => body` | `v =>` (variant descriptor) | — | Compile-time unrolled over `0..?T` (`v.name`, `v.type`, `v.index`) |
+
+### Cycle jump and escape operators
+
+| Operator | Syntax | Result Type | Semantics |
+|---|---|---|---|
+| Break | `-->` / `-->N` | Void (diverges) | Exits innermost cycle (or `N`-th enclosing cycle, `-->2`) |
+| Continue | `--^` / `--^N` | Void (diverges) | Advances innermost cycle (or `N`-th enclosing cycle, `--^2`) |
+| Escape branch | `iterable @ body >-- esc_body` | `< T | >` (`RamPN`) | Returns `<+ esc_body +>` if terminated by `-->`, or `<-->` on normal completion |
+
+## Assignments and mutations
+
+Assignments sit at LBP 60, RBP 50 (right-associative) and always evaluate to `()`.
+
+| Target Form | Syntax | Semantics |
+|---|---|---|
+| Immutable binding | `x = expr` | Binds immutable local or module constant (`E3033` on reassignment) |
+| Rebindable binding | `x' = expr` | Declares or updates a primed mutable variable (`x'` or `x = new_val`) |
+| Marked global | `::g = expr` | Declares a module global mutable inside functions via `g = expr` or `::g = expr` |
+| Forward annotation | `x: Type` | Declares type without allocating storage (`E3045` if read before write) |
+| Append | `b += expr` / `xs += elem` | Appends in-place to `Builder` `b` or growable array `xs` (`T{}`) |
+| Builder length set | `?b = n` | Sets written byte length of `Builder` `b` to `n` |
+| Field write | `r.field = expr` / `r.0 = expr` | Mutates record field in-place (tracks definite initialization, `E3130`) |
+| Array / slice write | `xs(i) = val` | Writes slot `i`; returns `< | Error >` on `T{}` (`xs(i) = val !| _` to panic on OOB) |
+| Map insert / update | `m ^ k = val` | Inserts or overwrites key `k` with `val` in map `m` |
+| Map key delete | `m ^- k` | Removes key `k` from map `m`; returns `<>` (`<+>` if removed, `<->` if absent) |
+| Volatile memory store | `@[addr] = val` | Stores `val` to raw memory address `addr` |
 
 ## Early return and branch return sugars
 
-Functions can exit early before their trailing expression:
+| Form | Syntax | Desugaring | Enclosing Return Type |
+|---|---|---|---|
+| Value return | `--| expr` | — | Matches declared return type `T` |
+| Void return | `--|` | — | `()` (void function) |
+| Return negative flag | `cond |->` | `cond | --| <->` | `<>` (`RamNN`) |
+| Return positive flag | `cond |+>` | `cond | --| <+>` | `<>` (`RamNN`) |
+| Return option absence | `cond |-->` | `cond | --| <-->` | `< T | >` (`RamPN`) |
+| Return fallible success | `cond |++>` | `cond | --| <++>` | `< | E >` (`RamNP`) |
 
-- `--| expr`: returns `expr` immediately from the enclosing function. The type of `expr` must match the declared return type.
-- Bare `--|`: returns early from a void function (`() => ()`).
+## Type-directed unary and postfix forms
 
-When returning a unit ramification from a choice branch, Edva provides compact syntactic shortcuts:
-
-| Sugar | Desugars to | Target Return Type |
-|---|---|---|
-| `cond |->` | `cond | --| <->` | `RamNN` (`<>`) negative flag |
-| `cond |+>` | `cond | --| <+>` | `RamNN` (`<>`) positive flag |
-| `cond |-->` | `cond | --| <-->` | `RamPN` (`< T | >`) absence unit |
-| `cond |++>` | `cond | --| <++>` | `RamNP` (`< | E >`) success unit |
-
-```{.dva .run}
-find_positive: Int => < Int | >
-find_positive = n =>
-   n !> 0 |-->
-   <+ n +>
-```
-
-## Type-directed forms
-
-`!` is flag negation (flags only; emits `E3008` on other types); `+` (unary prefix) freezes a Builder
-into an immutable String in place; `&` (unary prefix) extracts a buffer address (`Addr`);
-`?` measures the byte or element count of its operand; `++` copies strings, records, and
-growable arrays. `!!` unwraps a positive ram payload or aborts on its negative slot.
-Explicit scalar conversion uses call syntax such as `Int(rune)`. `<>(ram)` observes a ram's
-polarity and returns a flag; it cannot convert one ram shape into another.
-
+| Form | Operand Type | Result Type | Semantics |
+|---|---|---|---|
+| `!x` | `<>` (Flag) | `<>` | Logical flag negation (`E3008` on non-flag types) |
+| `+b` | `Builder` | `String` | Freezes `Builder` into `String` in-place (O(1) buffer transfer) |
+| `?x` | `String`, `Builder`, `T{}`, `T[]`, `(T * N)`, `K ^ V`, `Type` | `Int` | Byte, element, entry, field, or variant count |
+| `??s` | `String` | `Int` | UTF-8 Unicode codepoint count |
+| `&x` | `String`, `Builder`, composite, or call-arg scalar | `Addr` | Raw data pointer / buffer address (no space after `&`) |
+| `++x` | `String`, `Builder`, record, `T{}`, `T[]` | Same as `x` | Deep arena copy |
+| `~~lvalue` | Mutable variable, field, or collection slot | `(get: () => T, set: T => ())` | Two-way state binding lens record |
+| `x!!` | `< A | B >` or `< A | >` | `A` | Unwraps positive payload or aborts on negative slot (`E3091` on `<|B>` / `<>`) |
+| `x--!` | `< A | E >`, `< A | >`, `< | E >`, `<>` | `A` or `()` | Unwraps positive slot or early-returns negative slot from enclosing function |
+| `expr {N}` | Any expression, integer literal `N` | `(T * N)` | Repeats `expr` `N` times (splices flat inside tuple literals) |
+| `{cap}` | `Int` capacity expression | `Builder` | Allocates `Builder` with initial byte capacity `cap` |
+| `@[addr T]` | `Addr`, type `T` | `T` | Volatile typed memory load (or zero-copy record view) |
+| `#size T` | Any type `T` | `Int` | Compile-time byte size of `T` |

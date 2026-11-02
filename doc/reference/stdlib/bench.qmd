@@ -1,0 +1,32 @@
+---
+meta:
+  audience: "Edva developers benchmarking functions and hot loops"
+  status: "current reference"
+  audited: "fb4fbc2"
+  evidence: "`std/bench.dva`, `tests/pass/387_str_os_cli_test_bench.dva`"
+---
+
+# `bench` standard library
+
+The `bench` module provides monotonic-clock microbenchmarking with warmup iterations
+and formatted `ns/op` (or `us/op`, `ms/op`) throughput reporting.
+
+```{.dva .run}
+#use bench
+#use io
+
+r = bench::measure(100, i => i * i + 1)
+io::out $ r.iters
+```
+
+## Types and Function catalog
+
+| Symbol / Function | Signature | Description |
+|---|---|---|
+| `bench::BenchResult` | Record `(name: String, iters: Int, total_ns: Int, ns_per_op: Int)` | Benchmark timing result |
+| `bench::measure_warmup(name, warmup, iters, fn)` | `String, Int, Int, (() => ()) => BenchResult` | Runs `warmup` unmeasured iterations, then times `iters` iterations of `fn` |
+| `bench::measure(name, iters, fn)` | `String, Int, (() => ()) => BenchResult` | Measures `iters` iterations of `fn` with automatic 10% warmup |
+| `bench::format_result(r)` | `BenchResult => String` | Formats result as `BENCH <name>: <iters> iters in <total> (<rate>/op)` |
+| `bench::run(name, iters, fn)` | `String, Int, (() => ()) => BenchResult` | Measures `fn` and prints the formatted benchmark line to stdout |
+| `bench::elapsed_ns(fn)` | `(() => ()) => Int` | Executes `fn` once and returns elapsed monotonic nanoseconds |
+| `bench::elapsed_ms(fn)` | `(() => ()) => Float` | Executes `fn` once and returns elapsed monotonic milliseconds |

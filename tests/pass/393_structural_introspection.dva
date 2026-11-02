@@ -1,0 +1,258 @@
+// Comprehensive test for #! Structural Type Introspection:
+// 1. Structural type-shape patterns in T [...]:
+//    [()], [<>], [<P|>], [<|N>], [<P | N>], [E{}], [E[]],
+//    [(E * 3)], [(E * ..)], [String ^ V], [K ^ V], [(..)], [<..>]
+// 2. Type properties: T.name, T.zero (with record field defaults), ?T
+// 3. Compile-time unrolled record field cursor:
+//    T @ f => (f.idx, f.name, f.type, f.default, val.(f), res.(f) = ...)
+// 4. Compile-time unrolled enum variant cursor:
+//    T @ v => (v.idx, v.name, v.type, val.(v), T(v), T(v, payload))
+// 5. Generic serializer & deserializer round-trip with explicit Type args.
+
+#use "str"
+#use io
+
+#type OptInt <Int|>
+#type NegStr <|String>
+#type BothRam <Int | String>
+#type IntArr Int{}
+#type IntSlice Int[]
+#type Vec3 (Int * 3)
+#type Vec4 (Float * 4)
+#type StrIntMap String ^ Int
+#type IntStrMap Int ^ String
+
+#type Shape <
+   Point
+   Circle(Int)
+   Label(String)
+>
+
+#type User (
+   id: Int = 100
+   name: String = "anon"
+   active: <> = <+>
+   tags: String{}
+   score: <Int|>
+)
+
+// --- 1. Structural Type-Shape Pattern Matching & Type Bindings ---
+
+describe_type: #! T: Type => String
+describe_type = !=>
+   T
+      [()] "unit_type:" + T.name
+      | "non_unit:" + T.name
+
+describe_shape: #! T: Type, T => String
+describe_shape = val =>
+   T
+      [()] "unit:" + T.name
+      [<>] "flag:" + T.name
+      [Int] "int:" + T.name
+      [String] "str:" + T.name
+      [Float] "float:" + T.name
+      [<P|>] "pos_ram<" + P.name + ">"
+      [<|N>] "neg_ram<" + N.name + ">"
+      [<P | N>] "both_ram<" + P.name + "|" + N.name + ">"
+      [E{}] "array<" + E.name + ">#" + str::from_int(?val)
+      [E[]] "slice<" + E.name + ">#" + str::from_int(?val)
+      [(E * 3)] "vec3<" + E.name + ">"
+      [(E * ..)] "tupleN<" + E.name + ">#" + str::from_int(?T)
+      [String ^ V] "strmap<" + V.name + ">"
+      [K ^ V] "map<" + K.name + "^" + V.name + ">"
+      [(..)] "record:" + T.name + "#" + str::from_int(?T)
+      [<..>] "enum:" + T.name + "#" + str::from_int(?T)
+      | "other"
+
+describe_enum_variants: #! T: Type => String
+describe_enum_variants = !=>
+   out = {64}
+   T @ v =>
+      v.idx > 0 | out += ';'
+      out += (str::from_int(v.idx), ":", v.name, ":", describe_type(v.type))
+   +out
+
+io::out $ describe_enum_variants(Shape)
+io::out $ describe_shape(<+>)
+io::out $ describe_shape(42)
+io::out $ describe_shape("hi")
+io::out $ describe_shape(3.5)
+
+oi: OptInt
+oi = <+ 7 +>
+ns: NegStr
+ns = <- "err" ->
+br: BothRam
+br = <+ 9 ->
+io::out $ describe_shape(oi)
+io::out $ describe_shape(ns)
+io::out $ describe_shape(br)
+
+ia = IntArr()
+ia += 10
+ia += 20
+io::out $ describe_shape(ia)
+
+isl: IntSlice
+isl = ia(0..2)
+io::out $ describe_shape(isl)
+
+v3 = Vec3(1, 2, 3)
+v4 = Vec4(1.0, 2.0, 3.0, 4.0)
+io::out $ describe_shape(v3)
+io::out $ describe_shape(v4)
+
+sim = StrIntMap()
+ism = IntStrMap()
+io::out $ describe_shape(sim)
+io::out $ describe_shape(ism)
+io::out $ describe_shape(User.zero)
+io::out $ describe_shape(Shape(Point))
+
+// --- 2. Type Properties (T.name, T.zero, ?T) ---
+
+io::out $ User.name + ":" + str::from_int(?User)
+io::out $ Shape.name + ":" + str::from_int(?Shape)
+io::out $ Int.name + ":" + str::from_int(Int.zero)
+
+u_def = User.zero
+io::out $ "u_def=" + str::from_int(u_def.id) + "," + u_def.name + "," +
+   (u_def.active | "true" | "false") + "," + str::from_int(?u_def.tags) + "," +
+   (u_def.score | s => str::from_int(s) | "none")
+
+make_zero: #! T: Type => T
+make_zero = !=> T.zero
+
+u_def2 = make_zero(User)
+io::out $ "u_def2=" + str::from_int(u_def2.id) + "," + u_def2.name
+
+// --- 3. Generic Serializer using T @ f => and T @ v => ---
+
+serialize: #! T: Type, Builder, T => ()
+serialize = buf, val =>
+   T
+      [()]
+         buf += "null"
+      [<>]
+         buf += (val | "true" | "false")
+      [Int]
+         buf += str::from_int(val)
+      [String]
+         buf += ('"', val, '"')
+      [<P|>]
+         val
+            | p => serialize(buf, p)
+            | buf += "null"
+      [E{}]
+         buf += '['
+         val @ elem, i =>
+            i > 0 | buf += ','
+            serialize(buf, elem)
+         buf += ']'
+      [(..)]
+         buf += '{'
+         T @ f =>
+            f.idx > 0 | buf += ','
+            buf += ('"', f.name, "\":")
+            serialize(buf, val.(f))
+         buf += '}'
+      [<..>]
+         T @ v =>
+            val.(v)
+               | pay =>
+                  v.type
+                     [()]
+                        buf += ('"', v.name, '"')
+                     |
+                        buf += ("{\"", v.name, "\":")
+                        serialize(buf, pay)
+                        buf += '}'
+
+u1 = User.zero
+u1.id = 7
+u1.name = "Alice"
+u1.active = <+>
+u1.tags += "admin"
+u1.tags += "dev"
+u1.score = <+ 99 +>
+
+b1 = {128}
+serialize(b1, u1)
+io::out $ +b1
+
+sh1 = Shape(Point)
+sh2 = Shape(Circle, 42)
+sh3 = Shape(Label, "box")
+
+b_sh = {64}
+serialize(b_sh, sh1)
+b_sh += ' '
+serialize(b_sh, sh2)
+b_sh += ' '
+serialize(b_sh, sh3)
+io::out $ +b_sh
+
+// --- 4. Record Field Cursor Mutation & Default Inspection ---
+
+inspect_defaults: #! T: Type => String
+inspect_defaults = !=>
+   out = {64}
+   T @ f =>
+      f.idx > 0 | out += ';'
+      out += (str::from_int(f.idx), ":", f.name, ":", f.type.name, "=")
+      f.default
+         | d =>
+            b_d = {16}
+            serialize(b_d, d)
+            out += +b_d
+         |
+            out += "<none>"
+   +out
+
+io::out $ inspect_defaults(User)
+
+clone_and_bump: #! T: Type, T => T
+clone_and_bump = src =>
+   res: T
+   T @ f =>
+      f.type
+         [Int]
+            res.(f) = src.(f) + 1
+         |
+            res.(f) = src.(f)
+   res
+
+u2 = clone_and_bump(u1)
+b2 = {128}
+serialize(b2, u2)
+io::out $ +b2
+
+// --- 5. Enum Variant Cursor Construction T(v) and T(v, payload) ---
+
+make_shape_by_name: #! T: Type, String, Int, String => T
+make_shape_by_name = vname, ival, sval =>
+   res' = T.zero
+   T @ v =>
+      v.name == vname
+         |
+            v.type
+               [()]
+                  res' = T(v)
+               [Int]
+                  res' = T(v, ival)
+               [String]
+                  res' = T(v, sval)
+   res'
+
+s_p = make_shape_by_name(Shape, "Point", 0, "")
+s_c = make_shape_by_name(Shape, "Circle", 77, "")
+s_l = make_shape_by_name(Shape, "Label", 0, "hello")
+
+b_made = {64}
+serialize(b_made, s_p)
+b_made += ' '
+serialize(b_made, s_c)
+b_made += ' '
+serialize(b_made, s_l)
+io::out $ +b_made

@@ -1,15 +1,14 @@
 ---
 meta:
-  audience: "Edva users parsing JSON"
-  status: "current parser reference"
-  audited: "8b8cb19"
-  evidence: "`std/json.dva`, `src/codegen/types.dva`"
+  audience: "Edva users parsing and encoding JSON"
+  status: "current parser and codec reference"
+  audited: "2026-11-02"
+  evidence: "`std/json.dva`, `tests/pass/394_std_json_codec.dva`"
 ---
 
 # `json` standard library
 
-`json::parse` parses a document into the recursive `json::Value` enum. Import
-the module explicitly:
+The `json` module provides an RFC 8259 JSON parser, a recursive `json::Value` DOM model, serializer utilities, and `#!` compile-time structural codecs (`json::encode`, `json::encode_pretty`, `json::decode`).
 
 ```{.dva .run}
 #use io
@@ -19,7 +18,44 @@ value = json::parse("[1, 2, 3]")!!
 value [Array items] io::out(?items) | io::out("not an array")
 ```
 
-## Value model
+## Structural encoding and decoding (`#!`)
+
+`json` provides compile-time structural codecs over records, tuples, enums, options (`<P|>`), arrays (`E{}`), slices (`E[]`), maps (`K ^ V`), primitives, and `json::Value`:
+
+| Function | Signature | Description |
+|---|---|---|
+| `json::encode` | `#! T: Type, T => String` | Serialize any value into a compact JSON string |
+| `json::encode_pretty` | `#! T: Type, T, Int => String` | Serialize any value into an indented JSON string |
+| `json::decode` | `#! T: Type, String => < T | Error >` | Parse JSON text and decode into target type `T` |
+| `json::to_value` | `#! T: Type, T => Value` | Convert any typed value into a `json::Value` |
+| `json::from_value` | `#! T: Type, Value => < T | Error >` | Decode a `json::Value` into target type `T` |
+
+### Structural mapping conventions
+
+- **Records (`[(..)]`)**: Encoded as JSON objects `{...}`. Decoding is forward-compatible: unknown keys in the input are ignored; missing keys use declared field defaults (`f.default`), `<-->` for option fields (`<P|>`), or `f.type.zero` for emptyable containers (`E{}`, `K ^ V`). An `Error` is returned when a required field is missing.
+- **Positional tuples (`[(..)]` with unnamed fields)**: Encoded and decoded as fixed-length JSON arrays `[...]`.
+- **Enums (`[<..>]`) — External tagging**: Unit variants (`v.type [()]`) encode and decode as JSON strings `"VariantName"`; payload variants encode and decode as single-key JSON objects `{"VariantName": payload}`.
+- **Options (`[<P|>]`)**: `<+ v +>` encodes `v`; `<-->` encodes `null`. `null` or an omitted record field decodes to `<-->`.
+
+```{.dva .run}
+#use io
+#use json
+
+#type User (
+   name: String,
+   role: String = "member",
+   email: < String | >
+)
+
+u = User("Alice", "admin", <+ "alice@example.com" +>)
+s = json::encode(u)
+io::out(s)
+
+decoded = json::decode(User, "{\"name\":\"Bob\"}")!!
+io::out(decoded.name + ":" + decoded.role)
+```
+
+## Value model & DOM helpers
 
 | Variant | Payload |
 |---|---|
@@ -30,8 +66,21 @@ value [Array items] io::out(?items) | io::out("not an array")
 | `Array` | `Value[]` |
 | `Object` | `(key: String, value: Value)[]` |
 
-The module also exports the growable arena types `Values` and `Pairs`, plus
-`Result`, an alias for `< Value | Error >`.
+The module also exports growable arena types `Values` and `Pairs`, `Result` (`< Value | Error >`), and DOM inspection/serialization helpers:
+
+| Function | Signature | Description |
+|---|---|---|
+| `json::parse` | `String => < Value | Error >` | Parse a JSON string into a `Value` |
+| `json::stringify` | `Value => String` | Serialize a `Value` into compact JSON |
+| `json::stringify_pretty` | `Value, Int => String` | Serialize a `Value` with indentation |
+| `json::escape_string` | `String => String` | Escape and quote a UTF-8 string as a JSON string literal |
+| `json::format_number` | `Float => String` | Format a finite float as a JSON number (or `"null"` for NaN/Inf) |
+| `json::get` | `Value, String => < Value | >` | Look up an object property by key |
+| `json::has` | `Value, String => <>` | Return `<+>` if `Value` is an `Object` containing `key` |
+| `json::get_str` | `Value, String => < String | >` | Extract a string property from an `Object` |
+| `json::get_int` | `Value, String => < Int | >` | Extract an integer property from an `Object` |
+| `json::get_float` | `Value, String => < Float | >` | Extract a numeric property from an `Object` |
+| `json::get_bool` | `Value, String => < <> | >` | Extract a boolean property from an `Object` |
 
 ## Parsing and failure
 
@@ -72,4 +121,3 @@ The parser operates on an in-memory document slice using module-global scanning 
 - **Reentrancy**: The parser is **not reentrant**. Calling `json::parse` while another parse is active within the same runtime environment is not supported.
 - **Threading**: The parser is **not thread-safe**. Concurrent calls to `json::parse` across threads must be synchronized with a mutex or delegated to separate processes.
 - **Validation**: Raw string bytes are validated as strict UTF-8 (rejecting invalid lead or continuation bytes, overlong encodings, surrogate code points `0xD800`–`0xDFFF`, and out-of-range scalars). Numbers preserve compensated decimal representations without intermediate overflow or underflow.
-

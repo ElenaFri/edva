@@ -1,0 +1,564 @@
+// Standard RFC 3986 URL & Query String Module (std/url.dva)
+// URL parsing, formatting, relative resolution, percent-encoding, and
+// `#!` compile-time structural query string encoding/decoding.
+
+#use str
+#use utf
+
+#public
+
+#type Url (
+   scheme: String,
+   userinfo: String,
+   host: String,
+   port: Int = 0,
+   path: String,
+   query: String,
+   fragment: String
+)
+
+#type QueryEntry (
+   key: String,
+   val: String
+)
+
+#type QueryParams QueryEntry{}
+
+#private
+
+url_err: String, Int => Error
+url_err = msg, col =>
+   Error(400, "url: " + msg, "std/url.dva", 1, col + 1, (col, 0))
+
+hex_upper: Int => Int
+hex_upper = n =>
+   d = n .&. 0x0F
+   d < 10 | '0' + d | 'A' + (d - 10)
+
+from_hex: Int => Int
+from_hex = c =>
+   c
+      ['0'...'9'] c - '0'
+      ['a'...'f'] c - 'a' + 10
+      ['A'...'F'] c - 'A' + 10
+      |           -1
+
+is_unreserved: Int => <>
+is_unreserved = ['A'...'Z', 'a'...'z', '0'...'9', '-', '_', '.', '~']
+
+is_path_safe: Int => <>
+is_path_safe = [is_unreserved, '/', ':', '@', '!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', '=']
+
+percent_encode_impl: String, <>, <> => String
+percent_encode_impl = s, space_as_plus, allow_path =>
+   n = ?s
+   n == 0 | --| ""
+   b = {n + 16}
+   n @ i =>
+      c = s(i) .&. 0xFF
+      space_as_plus && c == ' '
+         | b += '+'
+         |
+            ok = allow_path | is_path_safe(c) | is_unreserved(c)
+            ok
+               | b += c
+               |
+                  b += '%'
+                  b += hex_upper(c .>. 4)
+                  b += hex_upper(c)
+   +b
+
+percent_decode_impl: String, <> => < String | Error >
+percent_decode_impl = s, plus_as_space =>
+   n = ?s
+   n == 0 | --| <+ "" ->
+   b = {n}
+   i' = 0
+   bad_idx' = -1
+   (i' < n && bad_idx' < 0) @
+      c = s(i') .&. 0xFF
+      c
+         ['+']
+            b += (plus_as_space | ' ' | '+')
+            i' = i' + 1
+         ['%']
+            i' + 2 !< n
+               | bad_idx' = i'
+               |
+                  hi = from_hex(s(i' + 1))
+                  lo = from_hex(s(i' + 2))
+                  (hi < 0 || lo < 0)
+                     | bad_idx' = i'
+                     |
+                        b += ((hi .<. 4) .|. lo)
+                        i' = i' + 3
+         |
+            b += c
+            i' = i' + 1
+   bad_idx' !< 0
+      | <- url_err("invalid percent-encoding", bad_idx') +>
+      | <+ +b ->
+
+#public
+
+// Percent-encodes `s` per RFC 3986 (leaving only unreserved characters unescaped).
+encode_component: String => String
+encode_component = s =>
+   percent_encode_impl(s, <->, <->)
+
+// Decodes a percent-encoded RFC 3986 component (`%XX`).
+decode_component: String => < String | Error >
+decode_component = s =>
+   percent_decode_impl(s, <->)
+
+// Encodes `s` for `application/x-www-form-urlencoded` (spaces become `+`).
+encode_form: String => String
+encode_form = s =>
+   percent_encode_impl(s, <+>, <->)
+
+// Decodes an `application/x-www-form-urlencoded` string (`+` -> space, `%XX`).
+decode_form: String => < String | Error >
+decode_form = s =>
+   percent_decode_impl(s, <+>)
+
+// Percent-encodes a URL path while preserving `/` and RFC 3986 path-safe characters.
+encode_path: String => String
+encode_path = s =>
+   percent_encode_impl(s, <->, <+>)
+
+// Normalizes a URL path by resolving `.` and `..` dot segments per RFC 3986 Section 5.2.4.
+normalize_path: String => String
+normalize_path = path =>
+   ?path == 0 | --| ""
+   lead_slash = path(0) == '/'
+   trail_slash = ?path > 1 && path(?path - 1) == '/'
+   parts = str::split(path, "/")
+   stack' = String{}
+   parts @ seg =>
+      !(seg ["", "."]) |
+         seg [".."]
+            ?stack' > 0 |
+               next_stack = String{}
+               (?stack' - 1) @ k =>
+                  next_stack += stack'(k)!!
+               stack' = next_stack
+         | stack' += seg
+   ends_dot = ?parts > 0 && parts(?parts - 1)!! [".", ".."]
+   b = {?path + 4}
+   lead_slash | b += '/'
+   stack' @ item, idx =>
+      idx > 0 | b += '/'
+      b += item
+   ((trail_slash || ends_dot) && ?stack' > 0) | b += '/'
+   out = +b
+   ?out == 0 && lead_slash | "/" | out
+
+#private
+
+parse_authority: String => < (String, String, Int) | Error >
+parse_authority = auth =>
+   ?auth == 0 | --| <+ ("", "", 0) ->
+   uinfo' = ++""
+   hostport' = ++auth
+   str::split_once(auth, "@")
+      | pair =>
+         uinfo' = pair.0
+         hostport' = pair.1
+   hp = hostport'
+   ?hp == 0 | --| <+ (uinfo', "", 0) ->
+   hp(0) == '['
+      |
+         // IPv6 literal [::1]:8080
+         str::find(hp, "]")
+            | close_idx =>
+               h_v6 = hp(0..close_idx + 1)
+               rest = hp(close_idx + 1..?hp)
+               ?rest == 0
+                  | <+ (uinfo', h_v6, 0) ->
+                  | rest(0) != ':'
+                     | <- url_err("invalid authority after IPv6 literal", close_idx + 1) +>
+                     |
+                        pstr = rest(1..?rest)
+                        ?pstr == 0
+                           | <+ (uinfo', h_v6, 0) ->
+                           |
+                              str::parse_int(pstr)
+                                 | pval =>
+                                    pval [1...0xFFFF]
+                                       <+ (uinfo', h_v6, pval) ->
+                                    | <- url_err("port out of range", close_idx + 2) +>
+                                 | <- url_err("invalid port number", close_idx + 2) +>
+            | <- url_err("unterminated IPv6 literal in authority", 0) +>
+      |
+         str::split_once(hp, ":")
+            | pair =>
+               h_str = pair.0
+               p_str = pair.1
+               ?p_str == 0
+                  | <+ (uinfo', h_str, 0) ->
+                  |
+                     str::parse_int(p_str)
+                        | pval =>
+                           pval [1...0xFFFF]
+                              <+ (uinfo', h_str, pval) ->
+                           | <- url_err("port out of range", ?h_str + 1) +>
+                        | <- url_err("invalid port number", ?h_str + 1) +>
+            | <+ (uinfo', hp, 0) ->
+
+#public
+
+// Parses an RFC 3986 URI / URL reference into a `Url` record.
+parse: String => < Url | Error >
+parse = raw =>
+   s' = ++raw
+   frag' = ++""
+   str::split_once(s', "#")
+      | fpair =>
+         s' = fpair.0
+         frag' = fpair.1
+   query' = ++""
+   str::split_once(s', "?")
+      | qpair =>
+         s' = qpair.0
+         query' = qpair.1
+   scheme' = ++""
+   rest' = s'
+   // Scheme must start with ALPHA and contain only ALPHA / DIGIT / '+' / '-' / '.' before ':'
+   colon_opt = str::find(rest', ":")
+   colon_opt
+      | cidx =>
+         cidx > 0
+            |
+               cand = rest'(0..cidx)
+               c0 = cand(0)
+               valid_sch' = c0 ['A'...'Z', 'a'...'z']
+               1..cidx @ k =>
+                  !(cand(k) ['A'...'Z', 'a'...'z', '0'...'9', '+', '-', '.']) | valid_sch' = <->
+               valid_sch'
+                  |
+                     scheme' = str::lower(cand)
+                     rest' = rest'(cidx + 1..?rest')
+   str::starts_with(rest', "//")
+      |
+         after_slashes = rest'(2..?rest')
+         slash_opt = str::find(after_slashes, "/")
+         auth_str = slash_opt | sidx => after_slashes(0..sidx) | after_slashes
+         path_str = slash_opt | sidx => after_slashes(sidx..?after_slashes) | ""
+         parse_authority(auth_str)
+            | ap =>
+               <+ Url(scheme', ap.0, ap.1, ap.2, path_str, query', frag') ->
+            | err => <- err +>
+      |
+         <+ Url(scheme', "", "", 0, rest', query', frag') ->
+
+// Formats a `Url` record into its canonical RFC 3986 string representation.
+format: Url => String
+format = u =>
+   b = {128}
+   ?u.scheme > 0
+      |
+         b += u.scheme
+         b += ':'
+   has_auth = (?u.host > 0) || (?u.userinfo > 0) || (u.port > 0)
+   has_auth
+      |
+         b += "//"
+         ?u.userinfo > 0
+            |
+               b += u.userinfo
+               b += '@'
+         b += u.host
+         u.port > 0
+            |
+               b += ':'
+               b += str::from_int(u.port)
+   ?u.path > 0
+      |
+         has_auth && (u.path(0) != '/') | b += '/'
+         b += u.path
+   ?u.query > 0
+      |
+         b += '?'
+         b += u.query
+   ?u.fragment > 0
+      |
+         b += '#'
+         b += u.fragment
+   +b
+
+// Resolves a relative URI reference `ref_str` against `base` per RFC 3986 Section 5.2.
+resolve: Url, String => < Url | Error >
+resolve = base, ref_str =>
+   parse(ref_str)
+      | r =>
+         ?r.scheme > 0
+            |
+               <+ Url(r.scheme, r.userinfo, r.host, r.port, normalize_path(r.path), r.query, r.fragment) ->
+            |
+               (?r.host > 0 || ?r.userinfo > 0 || r.port > 0)
+                  |
+                     <+ Url(base.scheme, r.userinfo, r.host, r.port, normalize_path(r.path), r.query, r.fragment) ->
+                  |
+                     ?r.path == 0
+                        |
+                           eff_q = ?r.query > 0 | r.query | base.query
+                           <+ Url(base.scheme, base.userinfo, base.host, base.port, base.path, eff_q, r.fragment) ->
+                        |
+                           merged_path = r.path(0) == '/'
+                              | r.path
+                              |
+                                 (?base.host > 0 && ?base.path == 0)
+                                    | "/" + r.path
+                                    |
+                                       str::rfind(base.path, "/")
+                                          | sl_idx => base.path(0..sl_idx + 1) + r.path
+                                          | r.path
+                           <+ Url(base.scheme, base.userinfo, base.host, base.port, normalize_path(merged_path), r.query, r.fragment) ->
+      | err => <- err +>
+
+// --- Query String Parsing & Structural Codec (#!) ---------------------------
+
+// Parses a URL query string (with or without leading `?`) into `QueryParams`.
+parse_query: String => < QueryParams | Error >
+parse_query = raw_qs =>
+   qs = str::starts_with(raw_qs, "?") | raw_qs(1..?raw_qs) | raw_qs
+   out = QueryParams()
+   ?qs == 0 | --| <+ out ->
+   parts = str::split(qs, "&")
+   has_err' = <->
+   err_val' = url_err("", 0)
+   parts @ part =>
+      (!has_err' && ?part > 0) |
+         eq_opt = str::split_once(part, "=")
+         raw_k = eq_opt | p => p.0 | part
+         raw_v = eq_opt | p => p.1 | ""
+         decode_form(raw_k)
+            | k =>
+               decode_form(raw_v)
+                  | v => out += QueryEntry(k, v)
+                  | err =>
+                     has_err' = <+>
+                     err_val' = err
+            | err =>
+               has_err' = <+>
+               err_val' = err
+   has_err'
+      | <- err_val' +>
+      | <+ out ->
+
+// Formats `QueryParams` into a `k1=v1&k2=v2` query string.
+format_query: QueryParams => String
+format_query = params =>
+   ?params == 0 | --| ""
+   b = {64}
+   params @ e, i =>
+      i > 0 | b += '&'
+      b += encode_form(e.key)
+      b += '='
+      b += encode_form(e.val)
+   +b
+
+// Returns the first value associated with `key` in `params`, or `<-->`.
+get_query: QueryParams, String => < String | >
+get_query = params, key =>
+   hit' = <-->
+   params @ e =>
+      e.key == key
+         |
+            hit' = <+ e.val +>
+            -->
+   hit'
+
+// Returns all values associated with `key` in `params`.
+get_query_all: QueryParams, String => String{}
+get_query_all = params, key =>
+   out = String{}
+   params @ e =>
+      e.key == key | out += e.val
+   out
+
+#private
+
+query_scalar_str: #! V: Type, V => String
+query_scalar_str = v =>
+   V
+      [String] v
+      [Int, i8, i16, i32, i64, u8, u16, u32, u64] str::from_int(Int(v))
+      [Float, f32, f64] str::from_float(Float(v))
+      [<>] (v | "true" | "false")
+      [Rune] utf::encode_rune(v)
+      [<..>]
+         res' = ++V.name
+         V @ vr =>
+            v.(vr)
+               | pay =>
+                  vr.type
+                     [()] res' = vr.name
+                     | res' = vr.name + ":" + query_scalar_str(pay)
+         res'
+      | V.name
+
+append_query_field: #! V: Type, QueryParams, String, V => ()
+append_query_field = params, k, v =>
+   V
+      [<P|>]
+         v | inner => append_query_field(params, k, inner)
+      [E{}]
+         v @ elem =>
+            append_query_field(params, k, elem)
+      [E[]]
+         v @ elem =>
+            append_query_field(params, k, elem)
+      |
+         params += QueryEntry(k, query_scalar_str(v))
+
+decode_query_scalar: #! T: Type, String => < T | Error >
+decode_query_scalar = s =>
+   T
+      [String] <+ s ->
+      [Int]
+         str::parse_int(s)
+            | n => <+ n ->
+            | <- url_err("invalid integer in query: '" + s + "'", 0) +>
+      [Float]
+         str::parse_float(s)
+            | f => <+ f ->
+            | <- url_err("invalid float in query: '" + s + "'", 0) +>
+      [<>]
+         s
+            ["true", "1", "yes", "on"]   <+ <+> ->
+            ["false", "0", "no", "off"]  <+ <-> ->
+            | <- url_err("invalid boolean in query: '" + s + "'", 0) +>
+      [<..>]
+         out' = T.zero
+         matched' = <->
+         T @ v =>
+            v.name == s |
+               v.type
+                  [()]
+                     out' = T(v)
+                     matched' = <+>
+         matched'
+            | <+ out' ->
+            | <- url_err("unknown enum variant '" + s + "' for " + T.name, 0) +>
+      | <- url_err("unsupported query field type " + T.name, 0) +>
+
+#public
+
+// Encodes a record `[(..)]`, map `K ^ V`, or `QueryParams` into a URL query string.
+encode_query: #! T: Type, T => String
+encode_query = val =>
+   T
+      [QueryParams] format_query(val)
+      [K ^ V]
+         params = QueryParams()
+         val @ mv, mk =>
+            append_query_field(params, query_scalar_str(mk), mv)
+         format_query(params)
+      [(..)]
+         params = QueryParams()
+         T @ f =>
+            f.type
+               [<P|>]
+                  vf = val.(f)
+                  vf | inner => append_query_field(params, f.name, inner)
+               |
+                  append_query_field(params, f.name, val.(f))
+         format_query(params)
+      | ""
+
+// Decodes a URL query string into target type `T` (`[(..)]`, `K ^ V`, or `QueryParams`).
+decode_query: #! T: Type, String => < T | Error >
+decode_query = raw_qs =>
+   parse_query(raw_qs)
+      | params =>
+         T
+            [QueryParams] <+ params ->
+            [K ^ V]
+               mp' = T.zero
+               has_err' = <->
+               err_val' = url_err("", 0)
+               params @ e =>
+                  !has_err' |
+                     dec_k = decode_query_scalar(K, e.key)
+                     dec_k
+                        | k =>
+                           dec_v = decode_query_scalar(V, e.val)
+                           dec_v
+                              | v => mp' ^ k = v
+                              | err =>
+                                 has_err' = <+>
+                                 err_val' = err
+                        | err =>
+                           has_err' = <+>
+                           err_val' = err
+               has_err'
+                  | <- err_val' +>
+                  | <+ mp' ->
+            [(..)]
+               rec' = T.zero
+               has_err' = <->
+               err_val' = url_err("", 0)
+               T @ f =>
+                  !has_err' |
+                     f.type
+                        [E{}]
+                           raw_list = get_query_all(params, f.name)
+                           arr' = f.type.zero
+                           raw_list @ item_s =>
+                              !has_err' |
+                                 dec_e = decode_query_scalar(E, item_s)
+                                 dec_e
+                                    | elem => arr' += elem
+                                    | err =>
+                                       has_err' = <+>
+                                       err_val' = err
+                           rec'.(f) = arr'
+                        [<P|>]
+                           val_opt = get_query(params, f.name)
+                           val_opt
+                              | raw_v =>
+                                 dec_p = decode_query_scalar(P, raw_v)
+                                 dec_p
+                                    | pv => rec'.(f) = <+ pv +>
+                                    | err =>
+                                       has_err' = <+>
+                                       err_val' = err
+                              |
+                                 rec'.(f) = <-->
+                        |
+                           val_opt = get_query(params, f.name)
+                           val_opt
+                              | raw_v =>
+                                 dec_fv = decode_query_scalar(f.type, raw_v)
+                                 dec_fv
+                                    | fv => rec'.(f) = fv
+                                    | err =>
+                                       has_err' = <+>
+                                       err_val' = err
+                              |
+                                 f_def = f.default
+                                 f_def
+                                    | def => rec'.(f) = def
+                                    |
+                                       has_err' = <+>
+                                       err_val' = url_err("missing required query parameter '" + f.name + "'", 0)
+               has_err'
+                  | <- err_val' +>
+                  | <+ rec' ->
+            | <- url_err("unsupported target type " + T.name + " in url::decode_query", 0) +>
+      | err => <- err +>
+
+// Canonical `encode` entry point: formats a `Url` or encodes a query record/map.
+encode: #! T: Type, T => String
+encode = val =>
+   T
+      [Url] format(val)
+      | encode_query(T, val)
+
+// Canonical `decode` entry point: parses a `Url` when `T` is `Url`, or decodes a query string into `T`.
+decode: #! T: Type, String => < T | Error >
+decode = s =>
+   T
+      [Url] parse(s)
+      | decode_query(T, s)

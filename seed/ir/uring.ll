@@ -1938,8 +1938,8 @@ entry:
   %var.opt = alloca ptr, align 8
   %var._ = alloca i64, align 8
   %var._i = alloca i64, align 8
-  %loop.step.0 = alloca i64, align 8
-  %loop.idx.0 = alloca i64, align 8
+  %loop.step.25 = alloca i64, align 8
+  %loop.idx.25 = alloca i64, align 8
   %"var.cqes'" = alloca ptr, align 8
   %var.ring = alloca ptr, align 8
   store ptr %0, ptr %var.ring, align 8
@@ -1954,16 +1954,16 @@ entry:
   %a.cap.gep = getelementptr inbounds { i64, ptr, i64 }, ptr %a.new, i32 0, i32 2
   store i64 16, ptr %a.cap.gep, align 8
   store ptr %a.new, ptr %"var.cqes'", align 8
-  store i64 0, ptr %loop.idx.0, align 8
-  br label %loop.header.0
+  store i64 0, ptr %loop.idx.25, align 8
+  br label %loop.header.25
 
-loop.header.0:                                    ; preds = %loop.latch.0, %entry
-  %counter.load = load i64, ptr %loop.idx.0, align 8
-  br label %loop.body.0
+loop.header.25:                                   ; preds = %loop.latch.25, %entry
+  %counter.load = load i64, ptr %loop.idx.25, align 8
+  br label %loop.body.25
 
-loop.body.0:                                      ; preds = %loop.header.0
+loop.body.25:                                     ; preds = %loop.header.25
   %loop.rel.i = sub i64 %counter.load, 0
-  store i64 1, ptr %loop.step.0, align 8
+  store i64 1, ptr %loop.step.25, align 8
   store i64 %loop.rel.i, ptr %var._i, align 8
   store i64 %counter.load, ptr %var._, align 8
   %var.load = load ptr, ptr %var.ring, align 8
@@ -1973,22 +1973,22 @@ loop.body.0:                                      ; preds = %loop.header.0
   %niche.ne.null = icmp ne ptr %var.load2, null
   br i1 %niche.ne.null, label %choice.then, label %choice.else
 
-loop.exit.nat.0:                                  ; No predecessors!
-  br label %loop.exit.0
+loop.exit.nat.25:                                 ; No predecessors!
+  br label %loop.exit.25
 
-loop.latch.0:                                     ; preds = %choice.exit
-  %step.val = load i64, ptr %loop.step.0, align 8
+loop.latch.25:                                    ; preds = %choice.exit
+  %step.val = load i64, ptr %loop.step.25, align 8
   %loop.next = add i64 %counter.load, %step.val
-  store i64 %loop.next, ptr %loop.idx.0, align 8
-  br label %loop.header.0
+  store i64 %loop.next, ptr %loop.idx.25, align 8
+  br label %loop.header.25
 
-loop.exit.0:                                      ; preds = %choice.else, %loop.exit.nat.0
+loop.exit.25:                                     ; preds = %choice.else, %loop.exit.nat.25
   %var.load16 = load ptr, ptr %"var.cqes'", align 8
   %a.load17 = load ptr, ptr %"var.cqes'", align 8
   %a.null18 = icmp eq ptr %a.load17, null
   br i1 %a.null18, label %a.create19, label %a.after20
 
-choice.then:                                      ; preds = %loop.body.0
+choice.then:                                      ; preds = %loop.body.25
   store ptr %var.load2, ptr %var._3, align 8
   store ptr %var.load2, ptr %var.c, align 8
   %var.load4 = load ptr, ptr %var.c, align 8
@@ -1996,11 +1996,11 @@ choice.then:                                      ; preds = %loop.body.0
   %a.null = icmp eq ptr %a.load, null
   br i1 %a.null, label %a.create, label %a.after
 
-choice.else:                                      ; preds = %loop.body.0
-  br label %loop.exit.0
+choice.else:                                      ; preds = %loop.body.25
+  br label %loop.exit.25
 
 choice.exit:                                      ; preds = %a.store
-  br label %loop.latch.0
+  br label %loop.latch.25
 
 a.create:                                         ; preds = %choice.then
   %arena.cur5 = call ptr @dva_arena_current()
@@ -2045,7 +2045,7 @@ a.store:                                          ; preds = %a.grow, %a.check
   store i64 %a.next.len, ptr %b.len.gep, align 8
   br label %choice.exit
 
-a.create19:                                       ; preds = %loop.exit.0
+a.create19:                                       ; preds = %loop.exit.25
   %arena.cur21 = call ptr @dva_arena_current()
   %a.create22 = call ptr @dva_arena_alloc(ptr %arena.cur21, i64 24)
   %arena.cur23 = call ptr @dva_arena_current()
@@ -2059,7 +2059,7 @@ a.create19:                                       ; preds = %loop.exit.0
   store ptr %a.create22, ptr %"var.cqes'", align 8
   br label %a.after20
 
-a.after20:                                        ; preds = %a.create19, %loop.exit.0
+a.after20:                                        ; preds = %a.create19, %loop.exit.25
   %a.load228 = load ptr, ptr %"var.cqes'", align 8
   ret ptr %a.load228
 }

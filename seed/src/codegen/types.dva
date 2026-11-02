@@ -13,6 +13,7 @@
 #use "match"
 #use "stmt"
 #use "main"
+#use "log"
 
 #public
 
@@ -241,6 +242,10 @@ param_clo_tys: Addrs,
    last_compiling_fn: String,
    ct_bind_names: ast::Names,
    ct_bind_tis: ast::VInfos,
+   ct_bind_dnames: ast::Names,
+   ct_cursor_names: ast::Names,
+   ct_cursor_tis: ast::VInfos,
+   ct_cursor_idxs: IntArr,
    ct_val_names: ast::Names,
    ct_val_vals: CtVals,
    marked_globals: ast::Names,
@@ -254,7 +259,9 @@ param_clo_tys: Addrs,
    ast::Names(), ast::Names(), ast::Names(), ast::Names(),
    types::FnRetRecs(), ast::Names(), ast::Names(), ast::Names(),
    ast::TypeInfo(Prim, ast::ValueType(Unknown)), <--> , "",
-   ast::Names(), ast::VInfos(), ast::Names(), types::CtVals(),
+   ast::Names(), ast::VInfos(), ast::Names(),
+   ast::Names(), ast::VInfos(), types::IntArr(),
+   ast::Names(), types::CtVals(),
    ast::Names(), types::IntArr(), types::LambdaEnvInfos(), <->)
 
 inc_tmpc: () => Int
@@ -518,12 +525,7 @@ init_error: Cg, String, String, Int, Int => ()
 init_error = cg, code, msg, line, col =>
    fn = ?cg.source_file > 0 | cg.source_file + ":" | ""
    pos = line > 0 | str::from_int(line) + ":" + str::from_int(col) + ": " | ""
-   dbg(fn)
-   dbg(pos)
-   dbg(code)
-   dbg(": ")
-   dbg(msg)
-   dbg("\n")
+   log::error(fn + pos + code + ": " + msg)
    cg.error = <+>
 
 // Whether a partial composite is safe to pass by reference: whole-initialized,
@@ -918,7 +920,7 @@ codegen_init = opts =>
       |
          err_ptr_opt = llvm_val_opt(Addr(err_raw'))
          err_s = c_str_opt(err_ptr_opt)
-         print $ "E3069: No LLVM target registered for triple '" + triple + "'" +
+         log::error $ "E3069: No LLVM target registered for triple '" + triple + "'" +
             (?err_s > 0 | ": " + err_s | "")
          err_ptr_opt | err_ptr => LLVMDisposeMessage(err_ptr)
          codegen_layout
@@ -1212,7 +1214,7 @@ llvm_type_of_vt = vt =>
 // spawned threads install their own arena in dva_arena_tls.
 name_is_qualified: String, Int => <>
 name_is_qualified = name, i =>
-   i + 1 < ?name
+   i + 1 < ?name && name(i) != '$'
       |
          (name(i) == ':') && (name(i + 1) == ':')
             | <+>
@@ -1221,9 +1223,11 @@ name_is_qualified = name, i =>
 
 // The first module component of "module::binding" (or "" for an unqualified
 // declaration). Module names are path-tail prefixes, never runtime values.
+// Stops before '$' so monomorphized type suffixes ("fn$Rec(mod::T:...)") do
+// not corrupt the function's declaring module.
 decl_module_find: String, Int, Int => Int
 decl_module_find = name, i, last =>
-   i + 1 < ?name
+   i + 1 < ?name && name(i) != '$'
       |
          (name(i) == ':') && (name(i + 1) == ':')
             | decl_module_find(name, i + 2, i)
@@ -1243,7 +1247,7 @@ decl_bare_name = name, ignored =>
 
 bare_name_start: String, Int, Int => Int
 bare_name_start = name, i, last =>
-   i + 1 < ?name
+   i + 1 < ?name && name(i) != '$'
       |
          (name(i) == ':') && (name(i + 1) == ':')
             | bare_name_start(name, i + 2, i + 2)
@@ -1764,7 +1768,7 @@ parse_digits = s, i, acc =>
    (i < ?s)
       |
          c = s(i)
-         (c !< '0') && (c !> '9')
+         c ['0'...'9']
             | parse_digits(s, i + 1, acc * 10 + (c - '0'))
             | -1
       | acc
@@ -1955,6 +1959,23 @@ type_name_to_vt = name =>
       ["Type"] (ast::ValueType(Type), <+>)
       | (ast::ValueType(Unknown), <->)
 
+prim_type_tag: ast::ValueType => Int
+prim_type_tag =
+   [Int, I64] 1
+   [Float] 2
+   [Str] 3
+   [Rune] 4
+   [Flag] 5
+   [I8] 6
+   [I16] 7
+   [I32] 8
+   [U8] 9
+   [U16] 10
+   [U32] 11
+   [U64] 12
+   [F32] 13
+   | 0
+
 // Whether a name was declared by a '#type' statement (a pass-through
 // constructor-call target).
 is_user_type: Cg, String => <>
@@ -2007,12 +2028,9 @@ vt_from_ti_cg = cg, ti =>
 
 slot_payload_type: Cg, ast::RamSlotInfo => ast::ValueType
 slot_payload_type = cg, slot =>
-   slot.payload_record
-      [TypeVar tname]
-         ti = typedef_ti(cg, tname)
-         resolved_vt = vt_from_ti(ti)
-         resolved_vt != ast::ValueType(Unknown) | resolved_vt |
-            slot.payload_type
+   resolved_vt = vt_from_ti_cg(cg, ctfe_canonical_ti(cg, slot.payload_record))
+   resolved_vt != ast::ValueType(Unknown)
+      | resolved_vt
       | slot.payload_type
 
 is_niche_payload_vt: ast::ValueType => <>
@@ -2039,7 +2057,9 @@ is_niche_ram_ti = cg, ti =>
                         | (<->, <->, ast::ValueType(Unknown))
                   | (<->, <->, ast::ValueType(Unknown))
       [TypeVar name]
-         is_niche_ram_ti(cg, typedef_ti(cg, name))
+         ?name !< 10 && name(0..10) == "#heap_ram_"
+            | (<->, <->, ast::ValueType(Unknown))
+            | is_niche_ram_ti(cg, typedef_ti(cg, name))
       | (<->, <->, ast::ValueType(Unknown))
 
 is_unboxed_ram_ti: Cg, ast::TypeInfo => <>
@@ -2054,7 +2074,9 @@ is_unboxed_ram_ti = cg, ti =>
                !niche.0
             | <->
       [TypeVar name]
-         is_unboxed_ram_ti(cg, typedef_ti(cg, name))
+         ?name !< 10 && name(0..10) == "#heap_ram_"
+            | <->
+            | is_unboxed_ram_ti(cg, typedef_ti(cg, name))
       | <->
 
 codegen_cond_value_with_ti: Cg, Addr, ast::ValueType, ast::TypeInfo => Addr
@@ -2397,6 +2419,17 @@ truncate_vinfos = tis, n =>
    n @ i => acc += (tis(i) | _ | ast::TypeInfo(Prim, ast::ValueType(Unknown)))
    acc
 
+truncate_ints: IntArr, Int => IntArr
+truncate_ints = arr, n =>
+   acc = IntArr()
+   n @ i => acc += (arr(i) | _ | 0)
+   acc
+
+is_internal_type_name: String => <>
+is_internal_type_name = s =>
+   s == "" || (?s !< 2 && s(0..2) == "__") || (?s !< 1 && s(0..1) == "#") ||
+      (?s !< 1 && s(0..1) == "?")
+
 ct_bind_find_at: String, Int => (ast::TypeInfo, <>)
 ct_bind_find_at = name, i =>
    i < 0
@@ -2414,17 +2447,77 @@ ct_bind_find: String => (ast::TypeInfo, <>)
 ct_bind_find = name =>
    ct_bind_find_at(name, ?g.ct_bind_names - 1)
 
+ct_bind_find_dname_at: String, Int => String
+ct_bind_find_dname_at = name, i =>
+   i < 0
+      | ""
+      |
+         n = g.ct_bind_names(i) | _ | ""
+         n == name
+            | (g.ct_bind_dnames(i) | _ | "")
+            | ct_bind_find_dname_at(name, i - 1)
+
+ct_bind_find_dname: String => String
+ct_bind_find_dname = name =>
+   ct_bind_find_dname_at(name, ?g.ct_bind_names - 1)
+
 ct_bind_push: String, ast::TypeInfo => ()
 ct_bind_push = name, ti =>
    g.ct_bind_names += name
    g.ct_bind_tis += ti
+   dname = ti [TypeVar tv] (!is_internal_type_name(tv) | tv | "") | ""
+   g.ct_bind_dnames += dname
+
+ct_bind_set_last_dname: String => ()
+ct_bind_set_last_dname = dname =>
+   n = ?g.ct_bind_dnames
+   n > 0 && dname != ""
+      |
+         names = truncate_names(g.ct_bind_dnames, n - 1)
+         names += dname
+         g.ct_bind_dnames = names
 
 ct_bind_pop_to: Int => ()
 ct_bind_pop_to = n =>
    names = truncate_names(g.ct_bind_names, n)
    tis = truncate_vinfos(g.ct_bind_tis, n)
+   dnames = truncate_names(g.ct_bind_dnames, n)
    g.ct_bind_names = names
    g.ct_bind_tis = tis
+   g.ct_bind_dnames = dnames
+
+ct_cursor_find_at: String, Int => (ast::TypeInfo, Int, <>)
+ct_cursor_find_at = name, i =>
+   i < 0
+      | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), 0, <->)
+      |
+         n = g.ct_cursor_names(i) | _ | ""
+         n == name
+            |
+               ti = g.ct_cursor_tis(i) | _ |
+                  ast::TypeInfo(Prim, ast::ValueType(Unknown))
+               idx = g.ct_cursor_idxs(i) | _ | 0
+               (ti, idx, <+>)
+            | ct_cursor_find_at(name, i - 1)
+
+ct_cursor_find: String => (ast::TypeInfo, Int, <>)
+ct_cursor_find = name =>
+   ct_cursor_find_at(name, ?g.ct_cursor_names - 1)
+
+ct_cursor_push: String, ast::TypeInfo, Int => ()
+ct_cursor_push = name, ti, idx =>
+   g.ct_cursor_names += name
+   g.ct_cursor_tis += ti
+   g.ct_cursor_idxs += idx
+
+ct_cursor_pop_to: Int => ()
+ct_cursor_pop_to = n =>
+   names = truncate_names(g.ct_cursor_names, n)
+   tis = truncate_vinfos(g.ct_cursor_tis, n)
+   idxs = truncate_ints(g.ct_cursor_idxs, n)
+   g.ct_cursor_names = names
+   g.ct_cursor_tis = tis
+   g.ct_cursor_idxs = idxs
 
 ct_val_bind_find_at: String, Int => (CtVal, <>)
 ct_val_bind_find_at = name, i =>
@@ -2473,12 +2566,8 @@ rec_fields_equal_at = f1, f2, i, n =>
    i == n
       | <+>
       |
-         f1i = f1(i) | _ | ast::RecordFieldType("", ast::ValueType(Unknown),
-            ast::TypeInfo(Prim, ast::ValueType(Unknown)),
-            <->, ast::Expr(Int, 0))
-         f2i = f2(i) | _ | ast::RecordFieldType("", ast::ValueType(Unknown),
-            ast::TypeInfo(Prim, ast::ValueType(Unknown)),
-            <->, ast::Expr(Int, 0))
+         f1i = f1(i)!!
+         f2i = f2(i)!!
          match = f1i.name == f2i.name && f1i.val_type == f2i.val_type &&
             type_info_equal(f1i.rec_type, f2i.rec_type)
          match
@@ -2490,16 +2579,25 @@ enum_slots_equal_at = s1, s2, i, n =>
    i == n
       | <+>
       |
-         s1i = s1(i) | _ | ast::EnumSlotInfo("", <->, ast::ValueType(Unknown),
-            ast::TypeInfo(Prim, ast::ValueType(Unknown)))
-         s2i = s2(i) | _ | ast::EnumSlotInfo("", <->, ast::ValueType(Unknown),
-            ast::TypeInfo(Prim, ast::ValueType(Unknown)))
+         s1i = s1(i)!!
+         s2i = s2(i)!!
          same_p = s1i.has_payload | s2i.has_payload | !s2i.has_payload
          match = s1i.label == s2i.label && same_p &&
             (!s1i.has_payload || (s1i.payload_type == s2i.payload_type &&
                type_info_equal(s1i.payload_record, s2i.payload_record)))
          match
             | enum_slots_equal_at(s1, s2, i + 1, n)
+            | <->
+
+fn_params_equal_at: ast::VInfos, ast::VInfos, Int, Int => <>
+fn_params_equal_at = p1, p2, i, n =>
+   i == n
+      | <+>
+      |
+         p1i = p1(i)!!
+         p2i = p2(i)!!
+         type_info_equal(p1i, p2i)
+            | fn_params_equal_at(p1, p2, i + 1, n)
             | <->
 
 type_info_equal: ast::TypeInfo, ast::TypeInfo => <>
@@ -2521,7 +2619,9 @@ type_info_equal = a, b =>
       [Rec r1]
          b
             [Rec r2]
-               ?r1.0 == ?r2.0 && rec_fields_equal_at(r1.0, r2.0, 0, ?r1.0)
+               same_sl = r1.1 | r2.1 | !r2.1
+               same_sl && ?r1.0 == ?r2.0 &&
+                  rec_fields_equal_at(r1.0, r2.0, 0, ?r1.0)
             | <->
       [Ram ram1]
          b
@@ -2552,16 +2652,79 @@ type_info_equal = a, b =>
             [Array a2]
                a1.0 == a2.0 && type_info_equal(a1.1, a2.1)
             | <->
+      [Map m1]
+         b
+            [Map m2]
+               m1.0 == m2.0 && m1.1 == m2.1 && type_info_equal(m1.2, m2.2)
+            | <->
+      [Fn f1]
+         b
+            [Fn f2]
+               ?f1.1 == ?f2.1 && fn_params_equal_at(f1.1, f2.1, 0, ?f1.1) &&
+                  type_info_equal(f1.3, f2.3)
+            | <->
       | <->
+
+norm_slot_ti: ast::ValueType, ast::TypeInfo => ast::TypeInfo
+norm_slot_ti = vt, ti =>
+   ti
+      [Prim p]
+         p
+            [Unknown] ast::TypeInfo(Prim, vt)
+            | ti
+      | ti
 
 field_type_info: ast::RecordFieldType => ast::TypeInfo
 field_type_info = fld =>
-   fld.rec_type
-      [Prim p]
-         p
-            [Unknown] ast::TypeInfo(Prim, fld.val_type)
-            | fld.rec_type
-      | fld.rec_type
+   norm_slot_ti(fld.val_type, fld.rec_type)
+
+pstmts_typedef_ti_at: ast::Exprs, Int, Int, String => (ast::TypeInfo, <>)
+pstmts_typedef_ti_at = stmts, i, n, name =>
+   i == n
+      | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+      |
+         st = stmts(i) | _ | ast::Expr(Int, 0)
+         st
+            [TypeDecl td]
+               td.name == name || decl_bare_name(td.name, 0) == name
+                  | (td.type_info, <+>)
+                  | pstmts_typedef_ti_at(stmts, i + 1, n, name)
+            | pstmts_typedef_ti_at(stmts, i + 1, n, name)
+
+pstmts_typedef_ti: String => (ast::TypeInfo, <>)
+pstmts_typedef_ti = name =>
+   pstmts_typedef_ti_at(g.pstmts, 0, ?g.pstmts, name)
+
+ctfe_canonical_ti_simple: ast::TypeInfo => ast::TypeInfo
+ctfe_canonical_ti_simple = ti =>
+   ti
+      [Align a] ctfe_canonical_ti_simple(a.1)
+      [TypeVar n]
+         pt = pstmts_typedef_ti(n)
+         pt.1
+            | pt.0
+            |
+               tn = type_name_to_vt(n)
+               tn.1 | ast::TypeInfo(Prim, tn.0) | ti
+      | ti
+
+cursor_member_ti: ast::TypeInfo, Int => (ast::TypeInfo, <>)
+cursor_member_ti = ti, idx =>
+   ti
+      [Align a] cursor_member_ti(a.1, idx)
+      [Rec r]
+         idx !< 0 && idx < ?r.0
+            | (field_type_info(r.0(idx)!!), <+>)
+            | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+      [Enum slots]
+         idx !< 0 && idx < ?slots
+            |
+               sl = slots(idx)!!
+               sl.has_payload
+                  | (norm_slot_ti(sl.payload_type, sl.payload_record), <+>)
+                  | (ast::TypeInfo(Prim, ast::ValueType(Unit)), <+>)
+            | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+      | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
 
 resolve_type_record_index: Cg, ast::TypeInfo, ast::Expr => (ast::TypeInfo, <>)
 resolve_type_record_index = cg, ti, index_expr =>
@@ -2613,33 +2776,49 @@ resolve_type_value_simple = expr =>
                tn = type_name_to_vt(v)
                tn.1
                   | (ast::TypeInfo(Prim, tn.0), <+>)
-                  | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+                  | pstmts_typedef_ti(v)
       [Member m]
          m.field_name == ""
             |
                tgt = resolve_type_value_simple(m.target)
                tgt.1
                   |
-                     tgt.0
+                     can_tgt = ctfe_canonical_ti_simple(tgt.0)
+                     can_tgt
                         [Rec r]
-                           m.index_expr
-                              [Int idx]
-                                 idx !< 0 && idx < ?r.0
-                                    |
-                                       fld = r.0(idx)!!
-                                       (field_type_info(fld), <+>)
-                                    |
-                                       (ast::TypeInfo(Prim,
-                                          ast::ValueType(Unknown)), <->)
+                           idx_val = m.index_expr
+                              [Int idx] idx
+                              [Var iv]
+                                 cur_i = ct_cursor_find(iv)
+                                 cur_i.2 | cur_i.1 | -1
+                              | -1
+                           idx_val !< 0 && idx_val < ?r.0
+                              |
+                                 fld = r.0(idx_val)!!
+                                 (field_type_info(fld), <+>)
                               |
                                  (ast::TypeInfo(Prim,
                                     ast::ValueType(Unknown)), <->)
                         | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
                   | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
             |
-               m.field_name == "Type"
-                  | resolve_type_value_simple(m.target)
+               m.field_name == "type" || m.field_name == "Type"
+                  |
+                     cname = m.target [Var cv] cv | ""
+                     cur = cname != ""
+                        | ct_cursor_find(cname)
+                        | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), 0, <->)
+                     cur.2
+                        | cursor_member_ti(ctfe_canonical_ti_simple(cur.0), cur.1)
+                        |
+                           m.field_name == "Type"
+                              | resolve_type_value_simple(m.target)
+                              | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
                   | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+      [Record r]
+         ?r.fields == 0
+            | (ast::TypeInfo(Prim, ast::ValueType(Unit)), <+>)
+            | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
       | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
 
 resolve_type_value: Cg, ast::Expr => (ast::TypeInfo, <>)
@@ -2661,12 +2840,22 @@ resolve_type_value = cg, expr =>
                         | resolve_type_record_index(cg, tgt.0, m.index_expr)
                         | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
                   |
-                     m.field_name == "Type"
+                     m.field_name == "type" || m.field_name == "Type"
                         |
-                           t_res = resolve_type_value(cg, m.target)
-                           t_res.1
-                              | t_res
-                              | resolve_type_val_member_type(cg, m)
+                           cname = m.target [Var cv] cv | ""
+                           cur = cname != ""
+                              | ct_cursor_find(cname)
+                              | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), 0, <->)
+                           cur.2
+                              | cursor_member_ti(ctfe_canonical_ti(cg, cur.0), cur.1)
+                              |
+                                 m.field_name == "Type"
+                                    |
+                                       t_res = resolve_type_value(cg, m.target)
+                                       t_res.1
+                                          | t_res
+                                          | resolve_type_val_member_type(cg, m)
+                                    | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
                         | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
             | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
 
@@ -2728,9 +2917,7 @@ is_rec_homo_fields = flds, f0_ti, f0_vt, i, n =>
    i == n
       | <+>
       |
-         fi = flds(i) | _ | ast::RecordFieldType("",
-            ast::ValueType(Unknown), ast::TypeInfo(Prim,
-            ast::ValueType(Unknown)), <->, ast::Expr(Int, 0))
+         fi = flds(i)!!
          fi.val_type == f0_vt && type_info_equal(fi.rec_type, f0_ti)
             | is_rec_homo_fields(flds, f0_ti, f0_vt, i + 1, n)
             | <->
@@ -2945,28 +3132,272 @@ eval_type_predicate: Cg, String, ast::TypeInfo => <>
 eval_type_predicate = cg, pred, ti =>
    eval_type_predicate_simple(pred, ctfe_canonical_ti(cg, ti))
 
-ctfe_variant_names_match: Cg, ast::Names, Int, Int, ast::TypeInfo => <>
-ctfe_variant_names_match = cg, vnames, i, n, target_ti =>
+parse_pos_int: String, Int, Int, Int => (Int, <>)
+parse_pos_int = s, i, n, acc =>
    i == n
-      | <->
+      | (acc, n > 0)
       |
-         vname = vnames(i) | _ | ""
-         v_res = resolve_type_value(cg, ast::Expr(Var, vname))
-         v_res.1 && type_info_equal(ctfe_canonical_ti(cg, target_ti),
-            ctfe_canonical_ti(cg, v_res.0))
-            | <+>
-            | ctfe_variant_names_match(cg, vnames, i + 1, n, target_ti)
+         c = s(i)
+         c [48..=57]
+            | parse_pos_int(s, i + 1, n, acc * 10 + (c - 48))
+            | (0, <->)
 
-ctfe_variant_names_match_simple: ast::Names, Int, Int, ast::TypeInfo => <>
-ctfe_variant_names_match_simple = vnames, i, n, target_ti =>
+ctfe_resolve_fixed_type_simple: String => (ast::TypeInfo, <>)
+ctfe_resolve_fixed_type_simple = bname =>
+   tn = type_name_to_vt(bname)
+   tn.1
+      | (ast::TypeInfo(Prim, tn.0), <+>)
+      | pstmts_typedef_ti(bname)
+
+ctfe_resolve_fixed_type: Cg, String => (ast::TypeInfo, <>)
+ctfe_resolve_fixed_type = cg, bname =>
+   tn = type_name_to_vt(bname)
+   tn.1
+      | (ast::TypeInfo(Prim, tn.0), <+>)
+      |
+         is_user_type(cg, bname)
+            | (typedef_ti(cg, bname), <+>)
+            | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+
+ctfe_bind_matches_simple: String, ast::TypeInfo => <>
+ctfe_bind_matches_simple = bname, slot_ti =>
+   bname == "" || bname == "_"
+      | <+>
+      |
+         fx = ctfe_resolve_fixed_type_simple(bname)
+         fx.1
+            | type_info_equal(ctfe_canonical_ti_simple(slot_ti),
+               ctfe_canonical_ti_simple(fx.0))
+            | <+>
+
+ctfe_bind_matches: Cg, String, ast::TypeInfo => <>
+ctfe_bind_matches = cg, bname, slot_ti =>
+   bname == "" || bname == "_"
+      | <+>
+      |
+         fx = ctfe_resolve_fixed_type(cg, bname)
+         fx.1
+            | type_info_equal(ctfe_canonical_ti(cg, slot_ti),
+               ctfe_canonical_ti(cg, fx.0))
+            | <+>
+
+ctfe_binds_match_slots_simple: ast::Names, ast::VInfos, Int, Int => <>
+ctfe_binds_match_slots_simple = binds, slots, i, n =>
+   i == n || i == ?slots
+      | <+>
+      |
+         ctfe_bind_matches_simple(binds(i)!!, slots(i)!!)
+            | ctfe_binds_match_slots_simple(binds, slots, i + 1, n)
+            | <->
+
+ctfe_binds_match_slots: Cg, ast::Names, ast::VInfos, Int, Int => <>
+ctfe_binds_match_slots = cg, binds, slots, i, n =>
+   i == n || i == ?slots
+      | <+>
+      |
+         ctfe_bind_matches(cg, binds(i)!!, slots(i)!!)
+            | ctfe_binds_match_slots(cg, binds, slots, i + 1, n)
+            | <->
+
+ctfe_bind_push_if_var_simple: String, ast::TypeInfo => ()
+ctfe_bind_push_if_var_simple = bname, slot_ti =>
+   bname != "" && bname != "_"
+      |
+         fx = ctfe_resolve_fixed_type_simple(bname)
+         !fx.1 | ct_bind_push(bname, slot_ti)
+
+ctfe_bind_push_if_var: Cg, String, ast::TypeInfo => ()
+ctfe_bind_push_if_var = cg, bname, slot_ti =>
+   bname != "" && bname != "_"
+      |
+         fx = ctfe_resolve_fixed_type(cg, bname)
+         !fx.1 | ct_bind_push(bname, slot_ti)
+
+ctfe_extract_pattern_slots: String, ast::TypeInfo => (ast::VInfos, <>)
+ctfe_extract_pattern_slots = tag, can_ti =>
+   tag
+      ["#type:()"] (ast::VInfos(), type_is_unit(can_ti))
+      ["#type:(..)"]
+         (ast::VInfos(), type_is_record(can_ti) && !type_is_unit(can_ti))
+      ["#type:<..>"] (ast::VInfos(), type_is_enum(can_ti))
+      ["#type:<>"]
+         is_bare_flag = can_ti
+            [Prim p] is_flag_vt(p)
+            [Ram s] !s.0.has_payload && !s.1.has_payload
+            | <->
+         (ast::VInfos(), is_bare_flag)
+      ["#type:<P|>"]
+         can_ti
+            [Ram s]
+               s.0.has_payload && !s.1.has_payload
+                  |
+                     slots = ast::VInfos()
+                     slots += norm_slot_ti(s.0.payload_type, s.0.payload_record)
+                     (slots, <+>)
+                  | (ast::VInfos(), <->)
+            | (ast::VInfos(), <->)
+      ["#type:<|N>"]
+         can_ti
+            [Ram s]
+               !s.0.has_payload && s.1.has_payload
+                  |
+                     slots = ast::VInfos()
+                     slots += norm_slot_ti(s.1.payload_type, s.1.payload_record)
+                     (slots, <+>)
+                  | (ast::VInfos(), <->)
+            | (ast::VInfos(), <->)
+      ["#type:<P|N>"]
+         can_ti
+            [Ram s]
+               s.0.has_payload && s.1.has_payload
+                  |
+                     slots = ast::VInfos()
+                     slots += norm_slot_ti(s.0.payload_type, s.0.payload_record)
+                     slots += norm_slot_ti(s.1.payload_type, s.1.payload_record)
+                     (slots, <+>)
+                  | (ast::VInfos(), <->)
+            | (ast::VInfos(), <->)
+      ["#type:{}"]
+         can_ti
+            [Array a]
+               slots = ast::VInfos()
+               slots += norm_slot_ti(a.0, a.1)
+               (slots, <+>)
+            | (ast::VInfos(), <->)
+      ["#type:[]"]
+         can_ti
+            [Rec r]
+               r.1
+                  |
+                     e_ti = ?r.0 > 0
+                        | field_type_info(r.0(0)!!)
+                        | ast::TypeInfo(Prim, r.3)
+                     slots = ast::VInfos()
+                     slots += e_ti
+                     (slots, <+>)
+                  | (ast::VInfos(), <->)
+            | (ast::VInfos(), <->)
+      ["#type:^"]
+         can_ti
+            [Map m]
+               slots = ast::VInfos()
+               slots += ast::TypeInfo(Prim, m.0)
+               slots += norm_slot_ti(m.1, m.2)
+               (slots, <+>)
+            | (ast::VInfos(), <->)
+      ["#type:(*..)"]
+         can_ti
+            [Rec r]
+               !r.1 && ?r.0 > 0 && is_rec_homo(can_ti)
+                  |
+                     slots = ast::VInfos()
+                     slots += field_type_info(r.0(0)!!)
+                     (slots, <+>)
+                  | (ast::VInfos(), <->)
+            | (ast::VInfos(), <->)
+      |
+         ?tag > 9 && tag(0..8) == "#type:(*"
+            |
+               np = parse_pos_int(tag, 8, ?tag - 1, 0)
+               np.1
+                  |
+                     can_ti
+                        [Rec r]
+                           !r.1 && ?r.0 == np.0 && is_rec_homo(can_ti)
+                              |
+                                 slots = ast::VInfos()
+                                 slots += field_type_info(r.0(0)!!)
+                                 (slots, <+>)
+                              | (ast::VInfos(), <->)
+                        | (ast::VInfos(), <->)
+                  | (ast::VInfos(), <->)
+            | (ast::VInfos(), <->)
+
+ctfe_push_branch_type_binds_simple: ast::ChoiceBranch, ast::Expr => ()
+ctfe_push_branch_type_binds_simple = br, cond =>
+   is_var = br.kind [Variant]
+   is_var && ?br.variant_names > 0 && ?br.bind_vars > 0
+      |
+         tag = br.variant_names(0)!!
+         ?tag > 6 && tag(0..6) == "#type:"
+            |
+               cond_ti = resolve_type_value_simple(cond)
+               cond_ti.1
+                  |
+                     ext = ctfe_extract_pattern_slots(tag,
+                        ctfe_canonical_ti_simple(cond_ti.0))
+                     ext.1
+                        |
+                           nb = ?br.bind_vars < ?ext.0 | ?br.bind_vars | ?ext.0
+                           nb @ i =>
+                              ctfe_bind_push_if_var_simple(br.bind_vars(i)!!,
+                                 ext.0(i)!!)
+
+ctfe_push_branch_type_binds: Cg, ast::ChoiceBranch, ast::Expr => ()
+ctfe_push_branch_type_binds = cg, br, cond =>
+   is_var = br.kind [Variant]
+   is_var && ?br.variant_names > 0 && ?br.bind_vars > 0
+      |
+         tag = br.variant_names(0)!!
+         ?tag > 6 && tag(0..6) == "#type:"
+            |
+               cond_ti = resolve_type_value(cg, cond)
+               cond_ti.1
+                  |
+                     ext = ctfe_extract_pattern_slots(tag,
+                        ctfe_canonical_ti(cg, cond_ti.0))
+                     ext.1
+                        |
+                           nb = ?br.bind_vars < ?ext.0 | ?br.bind_vars | ?ext.0
+                           nb @ i =>
+                              ctfe_bind_push_if_var(cg, br.bind_vars(i)!!,
+                                 ext.0(i)!!)
+
+ctfe_variant_names_match: Cg, ast::Names, ast::Names, Int, Int,
+   ast::TypeInfo => <>
+ctfe_variant_names_match = cg, vnames, binds, i, n, target_ti =>
    i == n
       | <->
       |
          vname = vnames(i) | _ | ""
-         v_res = resolve_type_value_simple(ast::Expr(Var, vname))
-         v_res.1 && type_info_equal(target_ti, v_res.0)
-            | <+>
-            | ctfe_variant_names_match_simple(vnames, i + 1, n, target_ti)
+         ?vname > 6 && vname(0..6) == "#type:"
+            |
+               ext = ctfe_extract_pattern_slots(vname,
+                  ctfe_canonical_ti(cg, target_ti))
+               ext.1 && ctfe_binds_match_slots(cg, binds, ext.0, 0, ?binds)
+                  | <+>
+                  | ctfe_variant_names_match(cg, vnames, binds, i + 1, n,
+                     target_ti)
+            |
+               v_res = resolve_type_value(cg, ast::Expr(Var, vname))
+               v_res.1 && type_info_equal(ctfe_canonical_ti(cg, target_ti),
+                  ctfe_canonical_ti(cg, v_res.0))
+                  | <+>
+                  | ctfe_variant_names_match(cg, vnames, binds, i + 1, n,
+                     target_ti)
+
+ctfe_variant_names_match_simple: ast::Names, ast::Names, Int, Int,
+   ast::TypeInfo => <>
+ctfe_variant_names_match_simple = vnames, binds, i, n, target_ti =>
+   i == n
+      | <->
+      |
+         vname = vnames(i) | _ | ""
+         ?vname > 6 && vname(0..6) == "#type:"
+            |
+               ext = ctfe_extract_pattern_slots(vname,
+                  ctfe_canonical_ti_simple(target_ti))
+               ext.1 && ctfe_binds_match_slots_simple(binds, ext.0, 0, ?binds)
+                  | <+>
+                  | ctfe_variant_names_match_simple(vnames, binds, i + 1, n,
+                     target_ti)
+            |
+               v_res = resolve_type_value_simple(ast::Expr(Var, vname))
+               v_res.1 && type_info_equal(ctfe_canonical_ti_simple(target_ti),
+                  ctfe_canonical_ti_simple(v_res.0))
+                  | <+>
+                  | ctfe_variant_names_match_simple(vnames, binds, i + 1, n,
+                     target_ti)
 
 ctfe_case_values_match: Cg, ast::Exprs, Int, Int, ast::TypeInfo => <>
 ctfe_case_values_match = cg, cvals, i, n, target_ti =>
@@ -3003,7 +3434,8 @@ ctfe_case_values_match_simple = cvals, i, n, target_ti =>
                   | ctfe_case_values_match_simple(cvals, i + 1, n, target_ti)
             |
                c_res = resolve_type_value_simple(cval)
-               c_res.1 && type_info_equal(target_ti, c_res.0)
+               c_res.1 && type_info_equal(ctfe_canonical_ti_simple(target_ti),
+                  ctfe_canonical_ti_simple(c_res.0))
                   | <+>
                   | ctfe_case_values_match_simple(cvals, i + 1, n, target_ti)
 
@@ -3015,7 +3447,7 @@ ctfe_branch_matches_type = cg, br, target_ti =>
       |
          br.kind
             [Variant]
-               ctfe_variant_names_match(cg, br.variant_names, 0,
+               ctfe_variant_names_match(cg, br.variant_names, br.bind_vars, 0,
                   ?br.variant_names, target_ti)
             [Case]
                ctfe_case_values_match(cg, br.case_values, 0,
@@ -3035,8 +3467,8 @@ ctfe_branch_matches_type_simple = br, target_ti =>
       |
          br.kind
             [Variant]
-               ctfe_variant_names_match_simple(br.variant_names, 0,
-                  ?br.variant_names, target_ti)
+               ctfe_variant_names_match_simple(br.variant_names, br.bind_vars,
+                  0, ?br.variant_names, target_ti)
             [Case]
                ctfe_case_values_match_simple(br.case_values, 0,
                   ?br.case_values, target_ti)
@@ -3514,6 +3946,115 @@ codegen_eval_record_ctor = cg, ti, t =>
                t.fn_name != "" | cg.last_type = t.fn_name
                (dst', ast::ValueType(Record))
 
+find_typedef_name_for_ti_at: TypeDefs, Int, Int, ast::TypeInfo => String
+find_typedef_name_for_ti_at = tds, i, n, ti =>
+   i == n
+      | ""
+      |
+         td = tds(i)!!
+         !is_internal_type_name(td.name) && type_info_equal(td.ti, ti)
+            | td.name
+            | find_typedef_name_for_ti_at(tds, i + 1, n, ti)
+
+find_typedef_name_for_ti: Cg, ast::TypeInfo => String
+find_typedef_name_for_ti = cg, ti =>
+   ti
+      [TypeVar tv] (!is_internal_type_name(tv) | tv | "")
+      [Prim] ""
+      | find_typedef_name_for_ti_at(cg.typedefs, 0, ?cg.typedefs, ti)
+
+prim_vt_display_name: ast::ValueType => String
+prim_vt_display_name = vt =>
+   vt
+      [Int] "Int"
+      [I8] "I8"
+      [I16] "I16"
+      [I32] "I32"
+      [I64] "I64"
+      [U8] "U8"
+      [U16] "U16"
+      [U32] "U32"
+      [U64] "U64"
+      [Rune] "Rune"
+      [Float] "Float"
+      [F32] "F32"
+      [Str] "String"
+      [Builder] "Builder"
+      [Flag] "<>"
+      [Unit] "()"
+      [RawPtr] "Addr"
+      [Type] "Type"
+      [Record] "Record"
+      [Enum] "Enum"
+      [Ram] "Ram"
+      [Array] "Array"
+      [Slice] "Slice"
+      [Map] "Map"
+      [Fn] "Fn"
+      | ""
+
+type_info_display_name: Cg, ast::Expr, ast::TypeInfo => String
+type_info_display_name = cg, expr, ti =>
+   vname = expr [Var v] v | ""
+   dname = vname != "" | ct_bind_find_dname(vname) | ""
+   dname != ""
+      | dname
+      |
+         vname != "" && is_user_type(cg, vname) && !is_internal_type_name(vname)
+            | vname
+            |
+               is_nominal_ti = ti
+                  [Enum] <+>
+                  [TypeVar] <+>
+                  [Rec r] (!r.1 && ?r.0 > 0 && r.0(0)!!.name != "")
+                  | <->
+               td_name = is_nominal_ti | find_typedef_name_for_ti(cg, ti) | ""
+               td_name != ""
+                  | td_name
+                  |
+                     ti
+                        [TypeVar tv]
+                           !is_internal_type_name(tv)
+                              | tv
+                              | type_info_display_name(cg, expr, typedef_ti(cg, tv))
+                        [Align a] type_info_display_name(cg, expr, a.1)
+                        [Prim p] prim_vt_display_name(p)
+                        [Array a]
+                           type_info_display_name(cg, ast::Expr(Int, 0),
+                              norm_slot_ti(a.0, a.1)) + "{}"
+                        [Rec r]
+                           r.1
+                              |
+                                 e_ti = ?r.0 > 0
+                                    | field_type_info(r.0(0)!!)
+                                    | ast::TypeInfo(Prim, r.3)
+                                 type_info_display_name(cg, ast::Expr(Int, 0),
+                                    e_ti) + "[]"
+                              | "(..)"
+                        [Map m]
+                           prim_vt_display_name(m.0) + " ^ " +
+                              type_info_display_name(cg, ast::Expr(Int, 0),
+                                 norm_slot_ti(m.1, m.2))
+                        [Enum] "<..>"
+                        [Ram r]
+                           !r.0.has_payload && !r.1.has_payload
+                              | "<>"
+                              |
+                                 p_str = r.0.has_payload
+                                    | type_info_display_name(cg,
+                                       ast::Expr(Int, 0),
+                                       norm_slot_ti(r.0.payload_type,
+                                          r.0.payload_record))
+                                    | ""
+                                 n_str = r.1.has_payload
+                                    | type_info_display_name(cg,
+                                       ast::Expr(Int, 0),
+                                       norm_slot_ti(r.1.payload_type,
+                                          r.1.payload_record))
+                                    | ""
+                                 "<" + p_str + "|" + n_str + ">"
+                        | ""
+
 // A declared type constructor call: an ENUM builds a heap union (tag = the
 // variant label's slot index, payload from the optional second arg); a RAM's
 // single arg is passed through (it is already a heap union).
@@ -3538,28 +4079,56 @@ codegen_eval_ctor = cg, ti, t =>
          slots = ti [Enum s2] s2 | ast::EnumSlots()
          lbl = t.args(0)!!
          lname = lbl [Var v] v | ""
-         is_pt = var_dtype(cg, lname) == t.fn_name
+         dname0 = ct_bind_find_dname(t.fn_name)
+         dname1 = dname0 != "" | dname0 | find_typedef_name_for_ti(cg, ti)
+         eff_tname = dname1 != "" | dname1 | t.fn_name
+         is_pt = var_dtype(cg, lname) == eff_tname
          is_pt
             |
                lv = codegen_load(cg, lname)
-               cg.last_type = t.fn_name
+               cg.last_type = eff_tname
                lv | _ | (LLVMConstInt(LLVMInt64Type!, 0, 0), ast::ValueType(Unknown))
             |
-               codegen_check_enum_ctor(cg, t.fn_name, slots, t)
-               idx = enum_slot_index(slots, lname) | _ | 0
-               na = ?t.args
-               na > 1
+               cur = lname != ""
+                  | ct_cursor_find(lname)
+                  | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), 0, <->)
+               cur.2
                   |
-                     pv = t.args(1)!!
-                     payargs = ast::Exprs()
-                     payargs += pv
-                     u' = codegen_build_union(cg, idx, payargs, "enum.alloc")
-                     cg.last_type = t.fn_name
-                     (u', ast::ValueType(Enum))
+                     idx = cur.1
+                     sl_has_pay = idx !< 0 && idx < ?slots
+                        | slots(idx)!!.has_payload
+                        | <->
+                     na = ?t.args
+                     na > 1 && sl_has_pay
+                        |
+                           pv = t.args(1)!!
+                           payargs = ast::Exprs()
+                           payargs += pv
+                           u' = codegen_build_union(cg, idx, payargs, "enum.alloc")
+                           cg.last_type = eff_tname
+                           (u', ast::ValueType(Enum))
+                        |
+                           na > 1
+                              | expr::codegen_eval(cg, t.args(1)!!)
+                           u2 = codegen_build_union(cg, idx, ast::Exprs(), "enum.alloc")
+                           cg.last_type = eff_tname
+                           (u2, ast::ValueType(Enum))
                   |
-                     u2 = codegen_build_union(cg, idx, ast::Exprs(), "enum.alloc")
-                     cg.last_type = t.fn_name
-                     (u2, ast::ValueType(Enum))
+                     codegen_check_enum_ctor(cg, eff_tname, slots, t)
+                     idx = enum_slot_index(slots, lname) | _ | 0
+                     na = ?t.args
+                     na > 1
+                        |
+                           pv = t.args(1)!!
+                           payargs = ast::Exprs()
+                           payargs += pv
+                           u' = codegen_build_union(cg, idx, payargs, "enum.alloc")
+                           cg.last_type = eff_tname
+                           (u', ast::ValueType(Enum))
+                        |
+                           u2 = codegen_build_union(cg, idx, ast::Exprs(), "enum.alloc")
+                           cg.last_type = eff_tname
+                           (u2, ast::ValueType(Enum))
       [Rec rr]
          codegen_eval_record_ctor(cg, ti, t)
       [Ram slots]
@@ -4086,7 +4655,12 @@ codegen_eval_record = cg, r =>
 rec_meta: Cg, ast::ValueType => <(Addr, ast::Names)|>
 rec_meta = cg, vt =>
    vt [Record]
-      (cg.last_rt | rt => <+ (rt, cg.last_fnames) +> | <-->)
+      (cg.last_rt
+         | rt =>
+            ?cg.last_fnames > 0
+               | <+ (rt, cg.last_fnames) +>
+               | (cg.last_type != "" | td_record_meta_by_name(cg, cg.last_type) | <+ (rt, cg.last_fnames) +>)
+         | (cg.last_type != "" | td_record_meta_by_name(cg, cg.last_type) | <-->))
       | <-->
 
 td_record_meta: Cg, Int => <(Addr, ast::Names)|>
@@ -4160,9 +4734,43 @@ record_field_ti = cg, ti, idx =>
             | ast::TypeInfo(Prim, ast::ValueType(Unknown))
       | ast::TypeInfo(Prim, ast::ValueType(Unknown))
 
+find_any_typedef_name_for_ti_at: TypeDefs, Int, Int, ast::TypeInfo => String
+find_any_typedef_name_for_ti_at = tds, i, n, ti =>
+   i == n
+      | ""
+      |
+         td = tds(i)!!
+         !(?td.name !< 10 && td.name(0..10) == "#heap_ram_") &&
+            type_info_equal(td.ti, ti)
+            | td.name
+            | find_any_typedef_name_for_ti_at(tds, i + 1, n, ti)
+
+ensure_ti_dtype: Cg, ast::TypeInfo => String
+ensure_ti_dtype = cg, ti =>
+   ti
+      [Align a] ensure_ti_dtype(cg, a.1)
+      [TypeVar name] resolve_type_name(cg, name)
+      [Prim] ""
+      |
+         existing = find_any_typedef_name_for_ti_at(cg.typedefs, 0,
+            ?cg.typedefs, ti)
+         existing != ""
+            | existing
+            |
+               tname = "__fld_ti_" + str::from_int(?cg.typedefs) + "_" +
+                  str::from_int(g.tmpc)
+               g.tmpc = g.tmpc + 1
+               is_rec_ti = ti [Rec r] !r.1 | <->
+               rm = is_rec_ti | runtime::record_meta_from_ti(cg, ti) | <-->
+               rm_rt = rm | m => <+ m.0 +> | <-->
+               rm_fns = rm | m => m.1 | ast::Names()
+               runtime::add_type_rec(cg, tname, ti, rm_rt, rm_fns)
+               tname
+
 record_field_dtype: Cg, ast::TypeInfo, Int => String
 record_field_dtype = cg, ti, idx =>
    ti
+      [Align a] record_field_dtype(cg, a.1, idx)
       [Rec rr]
          fields = rr.0
          idx < ?fields
@@ -4171,9 +4779,15 @@ record_field_dtype = cg, ti, idx =>
                rf.rec_type
                   [TypeVar name] resolve_type_name(cg, name)
                   [Rec rr2]
-                     meta = runtime::build_rec_meta(cg, rr2.0, 0, ?rr2.0,
-                        Addrs(), ast::Names())
-                     typedef_name_of_rt(cg, meta.0)
+                     !rr2.1
+                        |
+                           meta = runtime::build_rec_meta(cg, rr2.0, 0, ?rr2.0,
+                              Addrs(), ast::Names())
+                           tn = typedef_name_of_rt(cg, meta.0)
+                           tn != "" | tn | ensure_ti_dtype(cg, rf.rec_type)
+                        | ensure_ti_dtype(cg, rf.rec_type)
+                  [Array, Map, Ram, Enum]
+                     ensure_ti_dtype(cg, rf.rec_type)
                   | ""
             | ""
       [TypeVar name] record_field_dtype(cg, typedef_ti(cg, name), idx)

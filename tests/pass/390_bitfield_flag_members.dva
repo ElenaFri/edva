@@ -1,0 +1,72 @@
+#use io
+#use str
+#use fs
+
+WsHeader: #packed u8 (
+   opcode: 4,
+   rsv3: <>,
+   rsv2: <>,
+   rsv1: <>,
+   fin: <>
+)
+
+MixedBits: #packed u16 (
+   mode: 3,
+   enabled: <>,
+   raw_bit: 1,
+   urgent: <>,
+   count: 10
+)
+
+WsFrame: #packed (
+   hdr: WsHeader,
+   payload_len: u8
+)
+
+// Named construction with omitted <> and integer fields (defaults to <-> and 0)
+h' = WsHeader(fin = <+>, opcode = 1)
+io::out $ (h'.fin | "fin:1" | "fin:0")
+io::out $ (h'.rsv1 | "rsv1:1" | "rsv1:0")
+io::out $ (h'.rsv2 | "rsv2:1" | "rsv2:0")
+io::out $ (h'.rsv3 | "rsv3:1" | "rsv3:0")
+io::out $ "opcode:" + str::from_int(h'.opcode)
+io::out $ "raw:" + str::from_int(u8(h'))
+
+// Member write of <> flag fields and integer fields
+h'.rsv1 = <+>
+h'.fin = <->
+h'.opcode = 9
+io::out $ (h'.fin | "fin:1" | "fin:0")
+io::out $ (h'.rsv1 | "rsv1:1" | "rsv1:0")
+io::out $ "opcode:" + str::from_int(h'.opcode)
+io::out $ "raw:" + str::from_int(u8(h'))
+
+// Positional construction mixing numeric 1-bit and <> 1-bit fields
+m' = MixedBits(5, <+>, 1, <->, 777)
+io::out $ "mode:" + str::from_int(m'.mode)
+io::out $ (m'.enabled | "enabled:true" | "enabled:false")
+io::out $ "raw_bit:" + str::from_int(m'.raw_bit)
+io::out $ (m'.urgent | "urgent:true" | "urgent:false")
+io::out $ "count:" + str::from_int(m'.count)
+
+m'.enabled = <->
+m'.raw_bit = 0
+m'.urgent = <+>
+io::out $ (m'.enabled | "enabled:true" | "enabled:false")
+io::out $ "raw_bit:" + str::from_int(m'.raw_bit)
+io::out $ (m'.urgent | "urgent:true" | "urgent:false")
+io::out $ "count:" + str::from_int(m'.count)
+
+// Nested bitfield inside a packed record
+frame: WsFrame
+frame.hdr.fin = <+>
+frame.hdr.rsv2 = <+>
+frame.hdr.opcode = 2
+frame.payload_len = 42u8
+io::out $ (frame.hdr.fin | "frame.fin:1" | "frame.fin:0")
+io::out $ (frame.hdr.rsv2 | "frame.rsv2:1" | "frame.rsv2:0")
+io::out $ (frame.hdr.rsv1 | "frame.rsv1:1" | "frame.rsv1:0")
+io::out $ "frame.opcode:" + str::from_int(frame.hdr.opcode)
+io::out $ "frame.len:" + str::from_int(frame.payload_len)
+io::out $ fs::format_perms(0o755, <->)
+io::out $ fs::format_perms(0o640, <+>)

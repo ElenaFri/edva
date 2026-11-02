@@ -1,0 +1,183 @@
+// Test: std/url.dva and std/csv.dva
+// Covers RFC 3986 URL parsing, formatting, resolution, percent-encoding,
+// `#!` query string codec (`url::encode_query`, `url::decode_query`, `url::encode`, `url::decode`),
+// and RFC 4180 CSV reader/writer plus `#!` typed row codec (`csv::encode`, `csv::decode`).
+
+#use url
+#use csv
+#use test
+
+#type SortOrder <
+   Asc,
+   Desc
+>
+
+#type SearchQuery (
+   q: String,
+   page: Int = 1,
+   active: <> = <+>,
+   sort: SortOrder = SortOrder(Asc),
+   tag: String{},
+   cursor: < String | >
+)
+
+#type UserRow (
+   id: Int,
+   name: String,
+   role: SortOrder = SortOrder(Asc),
+   active: <> = <+>,
+   score: Float = 0.0,
+   bio: < String | >
+)
+
+#type UserTable UserRow{}
+
+#type TupleRow (
+   Int,
+   String,
+   <>
+)
+
+#type TupleTable TupleRow{}
+#type IntMap String ^ Int
+
+test::reset!
+test::suite("url")
+
+// --- 1. URL Percent-Encoding & Path Normalization ---
+enc_c = url::encode_component("hello world/foo?bar=1&baz=2")
+test::eq(enc_c, "hello%20world%2Ffoo%3Fbar%3D1%26baz%3D2", "url::encode_component")
+url::decode_component(enc_c)
+   | dec_c => test::eq(dec_c, "hello world/foo?bar=1&baz=2", "url::decode_component round-trip")
+   | err => test::check(<->, "url::decode_component failed: " + err.msg)
+
+enc_f = url::encode_form("a b+c=d")
+test::eq(enc_f, "a+b%2Bc%3Dd", "url::encode_form")
+url::decode_form(enc_f)
+   | dec_f => test::eq(dec_f, "a b+c=d", "url::decode_form round-trip")
+   | err => test::check(<->, "url::decode_form failed: " + err.msg)
+
+test::err(url::decode_component("bad%2"), "url::decode_component truncated %")
+test::err(url::decode_component("bad%ZZ"), "url::decode_component invalid hex")
+
+test::eq(url::normalize_path("/a/b/c/./../../g"), "/a/g", "url::normalize_path /a/g")
+test::eq(url::normalize_path("mid/content=5/../6"), "mid/6", "url::normalize_path mid/6")
+test::eq(url::normalize_path("/a/b/.."), "/a/", "url::normalize_path trailing ..")
+
+// --- 2. URL Parsing, Formatting & Relative Resolution ---
+url::parse("HTTPS://alice:secret@example.com:8443/api/v1/items?limit=10#top")
+   | u1 =>
+      test::eq(u1.scheme, "https", "u1.scheme lowercased")
+      test::eq(u1.userinfo, "alice:secret", "u1.userinfo")
+      test::eq(u1.host, "example.com", "u1.host")
+      test::eq(u1.port, 8443, "u1.port")
+      test::eq(u1.path, "/api/v1/items", "u1.path")
+      test::eq(u1.query, "limit=10", "u1.query")
+      test::eq(u1.fragment, "top", "u1.fragment")
+      test::eq(url::format(u1), "https://alice:secret@example.com:8443/api/v1/items?limit=10#top", "url::format u1")
+   | err => test::check(<->, "url::parse full failed: " + err.msg)
+
+url::parse("http://[::1]:8080/health")
+   | u_v6 =>
+      test::eq(u_v6.host, "[::1]", "IPv6 host")
+      test::eq(u_v6.port, 8080, "IPv6 port")
+      test::eq(url::encode(u_v6), "http://[::1]:8080/health", "url::encode Url")
+   | err => test::check(<->, "url::parse IPv6 failed: " + err.msg)
+
+url::decode(url::Url, "http://a/b/c/d;p?q")
+   | base_u =>
+      url::resolve(base_u, "g")
+         | res1 => test::eq(url::format(res1), "http://a/b/c/g", "resolved 'g'")
+         | err => test::check(<->, "resolve g failed")
+      url::resolve(base_u, "../g")
+         | res2 => test::eq(url::format(res2), "http://a/b/g", "resolved '../g'")
+         | err => test::check(<->, "resolve ../g failed")
+      url::resolve(base_u, "/g")
+         | res3 => test::eq(url::format(res3), "http://a/g", "resolved '/g'")
+         | err => test::check(<->, "resolve /g failed")
+      url::resolve(base_u, "?y")
+         | res4 => test::eq(url::format(res4), "http://a/b/c/d;p?y", "resolved '?y'")
+         | err => test::check(<->, "resolve ?y failed")
+   | err => test::check(<->, "url::decode Url base failed: " + err.msg)
+
+// --- 3. Structural Query String Codec (#!) ---
+tags = String{}("edva", "lang")
+sq = SearchQuery("hello world", 3, <+>, SortOrder(Desc), tags, <+ "cur_42" +>)
+qs_enc = url::encode_query(sq)
+test::eq(qs_enc, "q=hello+world&page=3&active=true&sort=Desc&tag=edva&tag=lang&cursor=cur_42", "url::encode_query record")
+
+url::decode_query(SearchQuery, qs_enc)
+   | sq_dec => test::eq(sq_dec, sq, "url::decode_query record structural equality")
+   | err => test::check(<->, "url::decode_query failed: " + err.msg)
+
+// Defaults and omitted optional field
+url::decode(SearchQuery, "?q=minimal")
+   | sq_def =>
+      test::eq(sq_def.q, "minimal", "sq_def.q")
+      test::eq(sq_def.page, 1, "sq_def.page default")
+      test::eq(sq_def.active, <+>, "sq_def.active default")
+      test::eq(sq_def.sort, SortOrder(Asc), "sq_def.sort default")
+      test::eq(?sq_def.tag, 0, "sq_def.tag empty")
+      test::err(sq_def.cursor, "sq_def.cursor none")
+   | err => test::check(<->, "url::decode defaults failed: " + err.msg)
+
+// Map query decode
+url::decode_query(IntMap, "a=10&b=20")
+   | mp_dec =>
+      test::eq((mp_dec ^ "a")!!, 10, "mp_dec['a']")
+      test::eq((mp_dec ^ "b")!!, 20, "mp_dec['b']")
+   | err => test::check(<->, "url::decode_query map failed: " + err.msg)
+
+test::suite("csv")
+
+// --- 4. CSV Raw Reader & Writer ---
+raw_csv = "name,quote,notes\nAlice,\"She said \"\"Hi\"\"\",\"line 1\nline 2\"\nBob,plain,ok\n"
+csv::read_all(raw_csv)
+   | tbl =>
+      test::eq(?tbl, 3, "csv table row count")
+      r1 = tbl(1)!!
+      test::eq(r1(0)!!, "Alice", "csv row 1 col 0")
+      test::eq(r1(1)!!, "She said \"Hi\"", "csv row 1 escaped quotes")
+      test::eq(r1(2)!!, "line 1\nline 2", "csv row 1 multiline field")
+      test::eq(csv::write_all(tbl), raw_csv, "csv::write_all round-trip")
+   | err => test::check(<->, "csv::read_all failed: " + err.msg)
+
+test::err(csv::read_all("a,\"unterminated"), "csv::read_all unterminated quote")
+
+// --- 5. CSV Structural Typed Row Codec (#!) ---
+users = UserTable()
+users += UserRow(1, "Ada, Countess", SortOrder(Desc), <+>, 98.5, <+ "math & code" +>)
+users += UserRow(2, "Grace", SortOrder(Asc), <->, 99.0, <-->)
+
+csv_text = csv::encode(users)
+test::eq(csv_text, "id,name,role,active,score,bio\n1,\"Ada, Countess\",Desc,true,98.5,math & code\n2,Grace,Asc,false,99,\n", "csv::encode UserTable")
+
+csv::decode(UserTable, csv_text)
+   | users_dec =>
+      test::eq(?users_dec, 2, "users_dec len")
+      test::eq(users_dec(0)!!, users(0)!!, "users_dec(0) structural equality")
+      test::eq(users_dec(1)!!, users(1)!!, "users_dec(1) structural equality")
+   | err => test::check(<->, "csv::decode UserTable failed: " + err.msg)
+
+// Reordered columns + default values in CSV header decoding
+reordered_csv = "name,id\nLinus,7\n"
+csv::decode(UserRow, reordered_csv)
+   | u_single =>
+      test::eq(u_single.id, 7, "u_single.id")
+      test::eq(u_single.name, "Linus", "u_single.name")
+      test::eq(u_single.role, SortOrder(Asc), "u_single.role default")
+      test::eq(u_single.active, <+>, "u_single.active default")
+      test::err(u_single.bio, "u_single.bio none")
+   | err => test::check(<->, "csv::decode single UserRow failed: " + err.msg)
+
+// Positional tuple rows (no header row) with custom TSV delimiter
+trows = TupleTable()
+trows += TupleRow(10, "ten", <+>)
+trows += TupleRow(20, "twenty", <->)
+tsv_text = csv::encode_delim(trows, '\t')
+test::eq(tsv_text, "10\tten\ttrue\n20\ttwenty\tfalse\n", "csv::encode_delim TupleTable TSV")
+csv::decode_delim(TupleTable, tsv_text, '\t')
+   | trows_dec => test::eq(trows_dec, trows, "TupleTable TSV round-trip")
+   | err => test::check(<->, "csv::decode_delim TupleTable TSV failed: " + err.msg)
+
+test::summary!

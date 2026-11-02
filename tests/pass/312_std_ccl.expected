@@ -11,41 +11,31 @@ apple
 8080
 line one
 line two
---- test 2: manifest validation ---
-my_app
-1.2.3
-0.3.0
-2
-alpha
-zeta
-2
-crypto
-ssl
-1
-libuv
-1
-vendor/zeta
+--- test 2: structural encode & decode ---
+0.0.0.0
+9090
 <+>
---- test 3: manifest errors ---
-edva.ccl: missing required key 'name'
-edva.ccl: missing required key 'version'
-edva.ccl: duplicate key 'name'
-edva.ccl: package name 'FooBar' must be a lowercase snake_case identifier
-edva.ccl: invalid version format: '1-beta'
-edva.ccl: dependency 'bar' must specify exactly one of: git, path, url
-edva.ccl: dependency 'bar' needs 'rev'
-edva.ccl: unknown key 'foo'
-edva.ccl: override 'bar' needs 'path'
---- test 4: lockfile validation ---
+/etc/ssl/cert.pem
+2
+api
+prod
+info
+mode:custom:json
+<+>
+--- test 3: defaults & forward compatibility ---
+127.0.0.1
+3000
+<->
+none
+0
+mode:quiet
+--- test 4: decode errors ---
+missing required key 'name'
+invalid integer: 'not_an_int'
+unknown variant 'UnknownVariant' for LogMode
+--- test 5: tuple & CclDoc ---
+42
+answer
 1
 2
-alpha_pkg
-zeta_pkg
-2
-alpha
-zeta
-<+>
---- test 5: lockfile errors ---
-edva.lock.ccl: missing required key 'lock'
-edva.lock.ccl: invalid lock version 'one'
 --- done ---

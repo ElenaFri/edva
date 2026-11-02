@@ -142,7 +142,7 @@ export def gen-vscode [] {
       "ramification_constants": {
         "patterns": [
           {
-            "name": "constant.language.ramification.dva",
+            "name": "constant.numeric.ramification.dva",
             "match": "<\\+\\+>|<-->|<\\+>|<->"
           }
         ]
@@ -166,8 +166,16 @@ export def gen-vscode [] {
       "directives": {
         "patterns": [
           {
+            "name": "meta.import.dva",
+            "match": "(#use(?:-dynamic)?(?:\\s*\\((?:dynamic|import|,|\\s)*\\))?)\\s+(\"[^\"]*\"|[^\\s;]+)",
+            "captures": {
+              "1": { "name": "keyword.control.directive.dva" },
+              "2": { "name": "string.quoted.other.import.dva" }
+            }
+          },
+          {
             "name": "keyword.control.directive.dva",
-            "match": "#(use|type|foreign|pragma|public|pub|private|export|spawn|join|!|size)\\b"
+            "match": "#(!|(?:use|type|packed|align|foreign|pragma|public|pub|private|export|spawn|join|exit|error|warn|size)\\b)"
           }
         ]
       },
@@ -175,7 +183,7 @@ export def gen-vscode [] {
         "patterns": [
           {
             "name": "storage.type.primitive.dva",
-            "match": "\\b(Int|Float|String|Address|Rune|Builder|Error|Type|i1|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|float|double|void|ptr)\\b|<>"
+            "match": "<\\|>|<>|<\\.\\.>|\\(\\.\\.\\)|\\(\\)|\\b(Int|Float|String|Addr|Address|Rune|Builder|Error|Type|i1|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|float|double|void|ptr)\\b"
           }
         ]
       },
@@ -199,28 +207,32 @@ export def gen-vscode [] {
         "patterns": [
           {
             "name": "constant.numeric.float.dva",
-            "match": "\\b[0-9]+\\.[0-9]+([eE][-+]?[0-9]+)?(f32|f|F)?\\b"
+            "match": "(?<![a-zA-Z0-9_])-?[0-9][0-9_]*\\.[0-9][0-9_]*([eE][-+]?[0-9_]+)?(f32|f64|f|F)?\\b"
           },
           {
             "name": "constant.numeric.hex.dva",
-            "match": "\\b0x[0-9a-fA-F]+(i8|i16|i32|i64|u8|u16|u32|u64)?\\b"
+            "match": "(?<![a-zA-Z0-9_])-?0x[0-9a-fA-F_]+(i8|i16|i32|i64|u8|u16|u32|u64)?\\b"
           },
           {
             "name": "constant.numeric.octal.dva",
-            "match": "\\b0o[0-7]+(i8|i16|i32|i64|u8|u16|u32|u64)?\\b"
+            "match": "(?<![a-zA-Z0-9_])-?0o[0-7_]+(i8|i16|i32|i64|u8|u16|u32|u64)?\\b"
           },
           {
             "name": "constant.numeric.binary.dva",
-            "match": "\\b0b[01]+(i8|i16|i32|i64|u8|u16|u32|u64)?\\b"
+            "match": "(?<![a-zA-Z0-9_])-?0b[01_]+(i8|i16|i32|i64|u8|u16|u32|u64)?\\b"
           },
           {
             "name": "constant.numeric.integer.dva",
-            "match": "\\b[0-9]+(i8|i16|i32|i64|u8|u16|u32|u64)?\\b"
+            "match": "(?<![a-zA-Z0-9_])-?[0-9][0-9_]*(i8|i16|i32|i64|u8|u16|u32|u64)?\\b"
           }
         ]
       },
       "operators": {
         "patterns": [
+          {
+            "name": "keyword.operator.range.dva",
+            "match": "(\\.\\.\\.|\\.\\.=|\\.\\.)"
+          },
           {
             "name": "keyword.operator.function.dva",
             "match": "(=>|!=>)"

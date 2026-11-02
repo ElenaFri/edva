@@ -32,6 +32,7 @@
 //   ./lexer
 
 #use "diag"
+#use "log"
 #use ascii
 #use libc
 #use str
@@ -233,9 +234,8 @@ fail = code, line, col, msg =>
    b = {128}
    fn = cur_lex_file != "" | cur_lex_file + ":" | ""
    b += (fn, str::from_int(line), ":", str::from_int(col), ": E",
-      str::from_int(code), ": ", msg, "\n")
-   out = +b
-   libc::write(2, out, ?out)
+      str::from_int(code), ": ", msg)
+   log::error(+b)
    #exit 1
    0
 
@@ -261,11 +261,11 @@ esc_val = e =>
 hex_digit_val: Rune => <Int|>
 hex_digit_val = r =>
    ci = Int(r)
-   ci !< '0' && ci !> '9'
+   ci ['0'...'9']
       | <+ ci - '0' +>
-      | ci !< 'a' && ci !> 'f'
+      | ci ['a'...'f']
          | <+ ci - 'a' + 10 +>
-         | ci !< 'A' && ci !> 'F'
+         | ci ['A'...'F']
             | <+ ci - 'A' + 10 +>
             | <-->
 
@@ -452,9 +452,8 @@ radix_ok = c, kind =>
    is_o = kind ['o', 'O']
    is_x = kind ['x', 'X']
    ci = Int(c)
-   dec = ascii::is_digit(ci)
    bin = c ['0', '1']
-   oct = ci !< '0' && ci !> '7'
+   oct = ci ['0'...'7']
    hex = ascii::is_hex(ci)
    (is_b && bin) || (is_o && oct) || (is_x && hex)
 
@@ -510,7 +509,7 @@ finish_float = lx, start, line, col =>
 scan_frac_opt: Lx, Int, Int, Int, Int => <>
 scan_frac_opt = lx, q, start, line, col => 
    d = pk_off(lx, 1)
-   dig = d !< '0' && d !> '9'
+   dig = d ['0'...'9']
    ok = pk(lx, 0) == '.' && pk_off(lx, 1) != '.' && dig
    ok
       |
@@ -582,6 +581,13 @@ scan_op = lx, start, line, col =>
          | -->
    lx.pos = i'
    lx.col = ncol'
+
+   is_dotdotdot = i' - start !< 3 && lx.src(start) == '.' &&
+      lx.src(start + 1) == '.' && (lx.src(start + 2) == '.' || lx.src(start + 2) == '=')
+   is_dotdotdot |
+      lx.pos = start + 3
+      lx.col = col + 3
+      --| mktok(lx, TokKind(Op), start, 3, line, col, "...")
 
    // Range ".." followed by negative sign, '?', or other operator characters:
    // split ".." into the range operator and the separate trailing operator.

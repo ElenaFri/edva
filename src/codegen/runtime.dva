@@ -14,6 +14,7 @@
 #use "match"
 #use "stmt"
 #use "main"
+#use "log"
 
 #public
 
@@ -820,7 +821,7 @@ codegen_emit_runtime_full = cg =>
    LLVMPositionBuilderAtEnd(cg.builder, hs_l)
    h_phi = LLVMBuildPhi(cg.builder, i64t, "h.phi")
    i_phi = LLVMBuildPhi(cg.builder, i64t, "i.phi")
-   stmt::llvm_add_incoming1(cg, h_phi, LLVMConstInt(i64t, -3750763034362895579, 0), hs_e)
+   stmt::llvm_add_incoming1(cg, h_phi, LLVMConstInt(i64t, 0xcbf29ce484222325, 0), hs_e)
    stmt::llvm_add_incoming1(cg, i_phi, zero, hs_e)
    lt = LLVMBuildICmp(cg.builder, 40, i_phi, hl, "hash.lt")
    LLVMBuildCondBr(cg.builder, lt, hs_b, hs_d)
@@ -829,7 +830,7 @@ codegen_emit_runtime_full = cg =>
    bv = LLVMBuildLoad2(cg.builder, LLVMInt8Type!, bgep, "hash.byte")
    bz = LLVMBuildZExt(cg.builder, bv, i64t, "hash.byte.zext")
    hadd = LLVMBuildAdd(cg.builder, h_phi, bz, "hash.add")
-   hmul = LLVMBuildMul(cg.builder, hadd, LLVMConstInt(i64t, 1099511628211, 0), "hash.mul")
+   hmul = LLVMBuildMul(cg.builder, hadd, LLVMConstInt(i64t, 0x100000001b3, 0), "hash.mul")
    inx = LLVMBuildAdd(cg.builder, i_phi, one, "hash.i.next")
    stmt::llvm_add_incoming1(cg, h_phi, hmul, hs_b)
    stmt::llvm_add_incoming1(cg, i_phi, inx, hs_b)
@@ -1089,12 +1090,10 @@ codegen_forward_registry = cg, t =>
    lt = is_bf_fwd
       | types::llvm_type_of_vt(vt')
       |
-         types::is_record_vt(vt')
+         types::is_record_vt(vt') || types::is_ram_vt(vt') ||
+            (vt' [Map, Builder, Fn, Array, Slice, Enum])
             | LLVMPointerType(LLVMInt8Type!, 0)
-            |
-               types::g.is_typed_pipeline && types::is_unboxed_ram_ti(cg, ti)
-                  | match::unboxed_ram_struct_t(cg)
-                  | types::llvm_type_of_vt(vt')
+            | types::llvm_type_of_vt(vt')
    is_ct_sig = t.7(..4) == "@ct0"
    is_sig = t.7(..5) == "@sig0"
    is_fn_ti = ti [Fn]
@@ -1112,7 +1111,10 @@ codegen_forward_registry = cg, t =>
          | <-->
    is_partial = !is_bf_fwd && is_partial_anno(cg, tv.0, t.7, t.8)
    rec_m0_opt = rec_m | m => <+ m.0 +> | <-->
-   cg.vars += types::CgVar(t.0, vt', <->, t.7, rec_m0_opt, rec_fnames, slot_opt,
+   dname0 = types::ct_bind_find_dname(t.7)
+   dname1 = dname0 != "" | dname0 | types::ensure_ti_dtype(cg, ti)
+   eff_dtype = dname1 != "" | dname1 | t.7
+   cg.vars += types::CgVar(t.0, vt', <->, eff_dtype, rec_m0_opt, rec_fnames, slot_opt,
       cg.in_fn, is_partial, types::field_vts(cg, ti), <-->)
    bf_opt_fwd
       | bfi =>
@@ -1129,8 +1131,18 @@ forward_type_info: types::Cg, (String, <>, <>, <>, <>, ast::Expr, ast::Expr, Str
 forward_type_info = cg, t =>
    t.8
       [Prim v]
-         v [Unknown] types::typedef_ti(cg, t.7) | t.8
-      [TypeVar name] types::typedef_ti(cg, name)
+         v
+            [Unknown]
+               ct = types::ct_bind_find(t.7)
+               ct.1
+                  | types::ctfe_canonical_ti(cg, ct.0)
+                  | types::typedef_ti(cg, t.7)
+            | t.8
+      [TypeVar name]
+         ct = types::ct_bind_find(name)
+         ct.1
+            | types::ctfe_canonical_ti(cg, ct.0)
+            | types::typedef_ti(cg, name)
       | t.8
 
 // Scans the top-level statements and registers the forward annotations.
@@ -1480,8 +1492,11 @@ codegen_emit_plain_assign_val_store = cg, t, ev =>
    final_rm0_opt = <>(prior_rt) | prior_rt | rm_rt_opt
    final_rm1 = use_prior | prior_fnames | rm_fnames
    final_dt = use_prior | types::var_dtype(cg, t.0) | dtype
+   final_fvts = (is_rec && ?cg.last_fvts == 0 && final_dt != "")
+      | types::field_vts(cg, types::typedef_ti(cg, final_dt))
+      | cg.last_fvts
    cg.vars += types::CgVar(t.0, ev.1, is_heap, final_dt, final_rm0_opt, final_rm1,
-      <+ slot +>, is_local, <->, cg.last_fvts, <-->)
+      <+ slot +>, is_local, <->, final_fvts, <-->)
    is_rec_expr = t.5 [Record]
    is_part = !fresh_local | main::var_partial(cg, t.0) | <->
    is_whole = is_composite_vt(ev.1) | <+> | (is_rec_expr | <+> | is_part)
@@ -1703,9 +1718,10 @@ member_assign_bitfield = cg, root_name, m, t, bfi =>
          cg.discard_result = <->
          ev = expr::codegen_eval(cg, t.5)
          cg.discard_result = saved_discard
-         !types::is_int_vt(ev.1)
+         val_ok = bf.is_flag | (ev.1 [Flag]) | types::is_int_vt(ev.1)
+         !val_ok
             | types::init_error(cg, "E3152", "Cannot write bitfield member '" +
-               m.field_name + "': expected integer, got " +
+               m.field_name + "': expected " + (bf.is_flag | "flag" | "integer") + ", got " +
                types::value_type_name(ev.1) + ".", 0, 0)
             |
                bty = types::llvm_type_of_vt(bfi.backing_type)
@@ -1760,9 +1776,11 @@ member_assign_record = cg, root_name, m, t =>
          types::var_slot(cg, root_name)
             | slot => LLVMBuildStore(cg.builder, alloc_p, slot)
          types::alloc_rec_add(root_name)
-   main::var_partial(cg, root_name) | types::init_mark_written(cg, root_name + "." + types::member_fpath(m))
+   m.field_name != "" && main::var_partial(cg, root_name)
+      | types::init_mark_written(cg, root_name + "." + types::member_fpath(m))
    target_ev = expr::codegen_eval(cg, m.target)
    is_var = m.target [Var]
+   target_dtype = is_var | types::var_dtype(cg, root_name) | cg.last_type
    target_rt_opt = is_var
       | (types::var_rt(cg, root_name) | cg.last_rt)
       | cg.last_rt
@@ -1770,7 +1788,18 @@ member_assign_record = cg, root_name, m, t =>
       | target_rt =>
          target_fnames = is_var | types::var_fnames(cg, root_name) | cg.last_fnames
          target_fvts = is_var | match::var_fvts(cg, root_name) | cg.last_fvts
-         idx = types::member_index(target_fnames, m.field_name)
+         mi = types::member_static_index(cg, m, target_fnames)
+         idx = mi | _ | -1
+         eff_fname = m.field_name != ""
+            | m.field_name
+            |
+               idx !< 0 && idx < ?target_fnames && target_fnames(idx)!! != ""
+                  | target_fnames(idx)!!
+                  | str::from_int(idx)
+         m.field_name == "" && main::var_partial(cg, root_name) && idx !< 0
+            |
+               types::init_mark_written(cg, root_name + "." + eff_fname)
+               types::init_mark_written(cg, root_name + "." + str::from_int(idx))
          fgep = types::record_field_gep(cg, target_rt, target_fvts, target_ev.0, idx)
          saved_discard = cg.discard_result
          cg.discard_result = <->
@@ -1780,7 +1809,7 @@ member_assign_record = cg, root_name, m, t =>
          is_un
             |
                types::init_error(cg, "E3032", "Cannot assign Void expression to member '" +
-                  m.field_name + "'.", 0, 0)
+                  eff_fname + "'.", 0, 0)
             |
                types::is_view_expr(cg, t.5)
                   | types::init_error(cg, "E3150", diag::E3150_view_escape_frame!, 0, 0)
@@ -1796,7 +1825,7 @@ member_assign_record = cg, root_name, m, t =>
                   !rec_ok && !flag_int_ok && f_vt != ev.1
                field_bad
                   |
-                     types::init_error(cg, "E3152", "Cannot write member '" + m.field_name +
+                     types::init_error(cg, "E3152", "Cannot write member '" + eff_fname +
                         "': the field holds " + types::value_type_name(f_vt) + ", got " +
                         types::value_type_name(ev.1) + ".", 0, 0)
                   |
@@ -1815,7 +1844,22 @@ member_assign_record = cg, root_name, m, t =>
                                     "flag.cast")
                                  LLVMBuildStore(cg.builder, c_val, fgep)
                               |
-                                 LLVMBuildStore(cg.builder, ev.0, fgep)
+                                 f_vt == ast::ValueType(Ram)
+                                    |
+                                       parent_ti = target_dtype != ""
+                                          | types::typedef_ti(cg, target_dtype)
+                                          | types::typedef_ti_of_rt(cg, target_rt)
+                                       fti = types::record_field_ti(cg, parent_ti, idx)
+                                       c_ram = match::coerce_ram_repr(cg, ev.0, fti)
+                                       LLVMBuildStore(cg.builder, c_ram, fgep)
+                                    |
+                                       target_ft = LLVMStructGetTypeAtIndex(target_rt, idx)
+                                       types::is_int_vt(f_vt)
+                                          |
+                                             c_int = stmt::coerce_int_ext(cg, ev.0, target_ft,
+                                                types::is_unsigned_vt(f_vt))
+                                             LLVMBuildStore(cg.builder, c_int, fgep)
+                                          | LLVMBuildStore(cg.builder, ev.0, fgep)
 
 // "@[addr] = expr" — raw stores use the value's natural integer/pointer
 // width. Floats and ramifications have no raw-memory slot representation.
@@ -2139,10 +2183,10 @@ codegen_finish = cg, out_path =>
          v_msg_opt
             | v_msg =>
                v_str = c_str(v_msg)
-               print $ "E5011: LLVM module verification failed: " + v_str
+               log::error $ "E5011: LLVM module verification failed: " + v_str
                LLVMDisposeMessage(v_msg)
             |
-               print $ "E5011: LLVM module verification failed"
+               log::error $ "E5011: LLVM module verification failed"
          cg.error = <+>
       |
          p_res != 0
@@ -2151,17 +2195,17 @@ codegen_finish = cg, out_path =>
                err_msg_opt
                   | err_msg =>
                      err_str = c_str(err_msg)
-                     print $ diag::E5012_write_ir_prefix! + out_path +
+                     log::error $ diag::E5012_write_ir_prefix! + out_path +
                         "': " + err_str
                      LLVMDisposeMessage(err_msg)
                   |
-                     print $ diag::E5012_write_ir_prefix! + out_path + "'"
+                     log::error $ diag::E5012_write_ir_prefix! + out_path + "'"
                cg.error = <+>
             |
                r = rename(tmp_out, out_path)
                r != 0
                   |
-                     print $ "E5012: Failed to publish LLVM IR to '" + out_path + "'"
+                     log::error $ "E5012: Failed to publish LLVM IR to '" + out_path + "'"
                      unlink(tmp_out)
                      cg.error = <+>
    mem::destroy(ar)
@@ -2247,11 +2291,11 @@ codegen_mix_int64 = cg, k =>
    i64t' = LLVMInt64Type!
    s1 = LLVMBuildLShr(cg.builder, k, LLVMConstInt(i64t', 30, 0), "mix.s1")
    x1 = LLVMBuildXor(cg.builder, k, s1, "mix.x1")
-   m1 = LLVMConstInt(i64t', 0 - 4658895280553007687, 0)
+   m1 = LLVMConstInt(i64t', 0xbf58476d1ce4e5b9, 0)
    x2 = LLVMBuildMul(cg.builder, x1, m1, "mix.x2")
    s2 = LLVMBuildLShr(cg.builder, x2, LLVMConstInt(i64t', 27, 0), "mix.s2")
    x3 = LLVMBuildXor(cg.builder, x2, s2, "mix.x3")
-   m2 = LLVMConstInt(i64t', 0 - 7723503512211097109, 0)
+   m2 = LLVMConstInt(i64t', 0x94d049bb133111eb, 0)
    x4 = LLVMBuildMul(cg.builder, x3, m2, "mix.x4")
    s3 = LLVMBuildLShr(cg.builder, x4, LLVMConstInt(i64t', 31, 0), "mix.s3")
    LLVMBuildXor(cg.builder, x4, s3, "mix.res")

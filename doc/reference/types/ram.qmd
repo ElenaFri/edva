@@ -17,9 +17,9 @@ The four static layouts of ramifications are distinguished by whether each slot 
 | Layout | Syntax | Positive (1st) | Negative (2nd) | LLVM Type | Role |
 |:---|:---|:---|:---|:---|:---|
 | **RamNN** | `<>` | `<+>` | `<->` | `i1` | `Flag` |
-| **RamPN** | `< T \| >` | `T` | `<-->` | `ptr` (niche) / `{ i1, T }` | `Option` |
-| **RamNP** | `< \| E >` | `<++>` | `E` | `ptr` (niche) / `{ i1, E }` | `Fallible` |
-| **RamPP** | `< T \| E >` | `T` | `E` | `{ i1, i64 }` unboxed | `Result` |
+| **RamPN** | `< T | >` | `T` | `<-->` | `ptr` (niche) / `{ i1, T }` | `Option` |
+| **RamNP** | `< | E >` | `<++>` | `E` | `ptr` (niche) / `{ i1, E }` | `Fallible` |
+| **RamPP** | `< T | E >` | `T` | `E` | `{ i1, i64 }` unboxed | `Result` |
 
 The `Flag` (`<>`) is a native built-in type and does not require a `#type` declaration. The payload forms are defined via `#type`:
 

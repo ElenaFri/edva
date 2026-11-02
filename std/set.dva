@@ -1,0 +1,233 @@
+// Standard Generic Set Module (std/set.dva)
+// Supports O(1) hash-map-backed sets (`StrSet`, `IntSet`, `AddrSet`, or any `K ^ <>`)
+// as well as structural array-backed sets (`E{}`) for arbitrary record/enum types.
+
+#use test
+
+#public
+
+#type StrSet String ^ <>
+#type IntSet Int ^ <>
+#type AddrSet Addr ^ <>
+
+// Creates a new empty `StrSet`.
+new_str: () => StrSet
+new_str = !=>
+   StrSet.zero
+
+// Creates a new empty `IntSet`.
+new_int: () => IntSet
+new_int = !=>
+   IntSet.zero
+
+// Creates a new empty set of type `S` (`StrSet`, `IntSet`, or any `K ^ <>` / `E{}`).
+new: #! S: Type => S
+new = !=>
+   S.zero
+
+// Returns the number of elements in set `s`.
+len: #! S: Type, S => Int
+len = s =>
+   ?s
+
+// Returns `<+>` if set `s` contains no elements.
+is_empty: #! S: Type, S => <>
+is_empty = s =>
+   ?s == 0
+
+// Returns `<+>` if `elem` is a member of set `s`.
+contains: #! S: Type, #! E: Type, S, E => <>
+contains = s, elem =>
+   S
+      [K ^ V]
+         s ^? elem
+      [Item{}]
+         found' = <->
+         s @ cur =>
+            !found' |
+               test::struct_eq(E, cur, elem) | found' = <+>
+         found'
+      | <->
+
+// Inserts `elem` into set `s`. Returns `<+>` if `elem` was newly added, or `<->` if already present.
+add: #! S: Type, #! E: Type, S, E => <>
+add = s, elem =>
+   S
+      [K ^ V]
+         already = s ^? elem
+         s ^ elem = <+>
+         !already
+      [Item{}]
+         contains(S, E, s, elem)
+            | <->
+            |
+               s += elem
+               <+>
+      | <->
+
+// Removes `elem` from hash-backed set `s` (`K ^ <>`). Returns `<+>` if `elem` was present and removed.
+remove: #! S: Type, #! E: Type, S, E => <>
+remove = s, elem =>
+   S
+      [K ^ V]
+         s ^- elem
+      | <->
+
+// Removes all elements from hash-backed set `s` (`K ^ <>`) in place.
+clear: #! S: Type, S => ()
+clear = s =>
+   S
+      [K ^ V]
+         K
+            [String]
+               skeys = String{}
+               s @ _v, k =>
+                  skeys += k
+               skeys @ k =>
+                  _rem = s ^- k
+            [Addr]
+               akeys = Addr{}
+               s @ _v, k =>
+                  akeys += k
+               akeys @ k =>
+                  _rem = s ^- k
+            |
+               ikeys = Int{}
+               s @ _v, k =>
+                  ikeys += k
+               ikeys @ k =>
+                  _rem = s ^- k
+   --|
+
+// Returns a new set containing all elements present in `a` or `b` (`a ∪ b`).
+union: #! S: Type, S, S => S
+union = a, b =>
+   out' = S.zero
+   S
+      [K ^ V]
+         a @ _av, ak =>
+            out' ^ ak = <+>
+         b @ _bv, bk =>
+            out' ^ bk = <+>
+      [E{}]
+         a @ elem_a =>
+            add(S, E, out', elem_a)
+         b @ elem_b =>
+            add(S, E, out', elem_b)
+   out'
+
+// Returns a new set containing only elements present in both `a` and `b` (`a ∩ b`).
+intersect: #! S: Type, S, S => S
+intersect = a, b =>
+   out' = S.zero
+   S
+      [K ^ V]
+         a @ _av, ak =>
+            (b ^? ak) | out' ^ ak = <+>
+      [E{}]
+         a @ elem_a =>
+            contains(S, E, b, elem_a) |
+               add(S, E, out', elem_a)
+   out'
+
+// Returns a new set containing elements in `a` that are not in `b` (`a \ b`).
+diff: #! S: Type, S, S => S
+diff = a, b =>
+   out' = S.zero
+   S
+      [K ^ V]
+         a @ _av, ak =>
+            !(b ^? ak) | out' ^ ak = <+>
+      [E{}]
+         a @ elem_a =>
+            !contains(S, E, b, elem_a) |
+               add(S, E, out', elem_a)
+   out'
+
+// Returns a new set containing elements in `a` or `b` but not both (`a △ b`).
+symmetric_diff: #! S: Type, S, S => S
+symmetric_diff = a, b =>
+   out' = S.zero
+   S
+      [K ^ V]
+         a @ _av, ak =>
+            !(b ^? ak) | out' ^ ak = <+>
+         b @ _bv, bk =>
+            !(a ^? bk) | out' ^ bk = <+>
+      [E{}]
+         a @ elem_a =>
+            !contains(S, E, b, elem_a) |
+               add(S, E, out', elem_a)
+         b @ elem_b =>
+            !contains(S, E, a, elem_b) |
+               add(S, E, out', elem_b)
+   out'
+
+// Returns `<+>` if every element of `a` is also in `b` (`a ⊆ b`).
+is_subset: #! S: Type, S, S => <>
+is_subset = a, b =>
+   ?a > ?b
+      | <->
+      |
+         ok' = <+>
+         S
+            [K ^ V]
+               a @ _av, ak =>
+                  ok' |
+                     !(b ^? ak) | ok' = <->
+            [E{}]
+               a @ elem_a =>
+                  ok' |
+                     !contains(S, E, b, elem_a) | ok' = <->
+         ok'
+
+// Returns `<+>` if every element of `b` is also in `a` (`a ⊇ b`).
+is_superset: #! S: Type, S, S => <>
+is_superset = a, b =>
+   is_subset(S, b, a)
+
+// Returns `<+>` if `a` and `b` share no common elements (`a ∩ b = ∅`).
+is_disjoint: #! S: Type, S, S => <>
+is_disjoint = a, b =>
+   ok' = <+>
+   S
+      [K ^ V]
+         a @ _av, ak =>
+            ok' |
+               (b ^? ak) | ok' = <->
+      [E{}]
+         a @ elem_a =>
+            ok' |
+               contains(S, E, b, elem_a) | ok' = <->
+   ok'
+
+// Returns `<+>` if `a` and `b` contain the exact same elements.
+equals: #! S: Type, S, S => <>
+equals = a, b =>
+   (?a == ?b) && is_subset(S, a, b)
+
+// Copies all elements of set `s` into a growable array of type `ArrType` (where `#type ArrType Elem{}`).
+to_array: #! ArrType: Type, #! S: Type, S => ArrType
+to_array = s =>
+   out' = ArrType.zero
+   S
+      [K ^ V]
+         s @ _v, k =>
+            out' += k
+      [E{}]
+         s @ elem =>
+            out' += elem
+   out'
+
+// Populates a new set of type `S` from a growable array or slice `arr`.
+from_array: #! S: Type, #! A: Type, A => S
+from_array = arr =>
+   out' = S.zero
+   A
+      [E{}]
+         arr @ elem =>
+            add(S, E, out', elem)
+      [E[]]
+         arr @ elem =>
+            add(S, E, out', elem)
+   out'

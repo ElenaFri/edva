@@ -26,9 +26,9 @@ All ramifications belong to one of four distinct, mutually incompatible static s
 | Shape | Syntax | Positive | Negative | Primary Role | LLVM Low-Level Type |
 |:---|:---|:---|:---|:---|:---|
 | **RamNN** | `<>` | `<+>` | `<->` | Boolean flag | `i1` register |
-| **RamPN** | `< T \| >` | `T` | `<-->` | Optional value | `ptr` (niche) / `{ i1, T }` |
-| **RamNP** | `< \| E >` | `<++>` | `E` | Void write-or-fail | `ptr` (niche) / `{ i1, E }` |
-| **RamPP** | `< T \| E >` | `T` | `E` | Fallible computation | `{ i1, i64 }` unboxed |
+| **RamPN** | `< T | >` | `T` | `<-->` | Optional value | `ptr` (niche) / `{ i1, T }` |
+| **RamNP** | `< | E >` | `<++>` | `E` | Void write-or-fail | `ptr` (niche) / `{ i1, E }` |
+| **RamPP** | `< T | E >` | `T` | `E` | Fallible computation | `{ i1, i64 }` unboxed |
 
 ### Representation and allocation guarantees
 

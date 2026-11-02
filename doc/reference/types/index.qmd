@@ -32,7 +32,7 @@ Native type names in Edva are strictly uppercase (`Int`, `Float`, `String`, `Add
 | **Addresses** | [`Addr`](addr.qmd) | `ptr` | Raw memory pointers, FFI handles, and system allocations |
 | **Functions** | [Functions and closures](functions.qmd) | `{ ptr fn_ptr, ptr env_ptr }` | First-class closures and arrow signatures |
 | **Errors** | [`Error`](error.qmd) | `{ i64 code, String msg, String file, i64 line, i64 col, { i64, i64 } context }` | Structured error diagnostic records with unwrapping semantics |
-| **Metatypes** | [`Type`](type.qmd) | *Compile-time only (erased)* | Compile-time types, `#size`, and type generators |
+| **Metatypes** | [`Type`](type.qmd) | *Compile-time only (erased)* | Compile-time types, `#size`/`#align`, `T.name`/`T.zero`/`?T`, structural type-shape patterns, and `T @ f =>` unrolling |
 | **Unit** | [`Unit`](unit.qmd) | `void` / empty | Zero-sized value `()` denoting expressions evaluated solely for side effects |
 
 ## General type rules

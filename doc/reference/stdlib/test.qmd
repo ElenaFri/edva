@@ -1,0 +1,40 @@
+---
+meta:
+  audience: "Edva developers writing unit and integration tests"
+  status: "current reference"
+  audited: "fb4fbc2"
+  evidence: "`std/test.dva`, `tests/pass/387_str_os_cli_test_bench.dva`"
+---
+
+# `test` standard library
+
+The `test` module provides a lightweight assertion and test-reporting harness with
+pass/fail counters, descriptive failure diagnostics, and exit-code summaries.
+
+```{.dva .run}
+#use test
+
+test::eq(2 + 2, 4, "basic addition")
+test::ne("edva", "rust", "distinct strings")
+test::approx(3.14159, 3.1416, 0.001)
+test::summary!
+```
+
+## Function catalog
+
+| Function | Signature | Description |
+|---|---|---|
+| `test::check(cond[, msg])` | `<>, [String] => <>` | Asserts that boolean condition `cond` is `<+>` |
+| `test::ok(res[, msg])` | `R, [String] => <>` | Asserts that ramification `res` is in its positive state (`<+>`, `<+ v +>`, `<+ v ->`) |
+| `test::err(res[, msg])` | `R, [String] => <>` | Asserts that ramification `res` is in its negative state (`<->`, `<-->`, `<- e +>`) |
+| `test::eq(actual, expected[, msg])` | `#! T: Type, T, T[, String] => <>` | Asserts structural equality `actual == expected` across scalars, records, tuples, enums, options, arrays, slices, and maps |
+| `test::ne(actual, expected[, msg])` / `test::neq` | `#! T: Type, T, T[, String] => <>` | Asserts structural inequality `actual != expected` |
+| `test::struct_eq(a, b)` | `#! T: Type, T, T => <>` | Compile-time specialized deep structural equality check |
+| `test::format_val(v)` | `#! T: Type, T => String` | Compile-time specialized structural value formatter used in failure diagnostics |
+| `test::approx(actual, expected, eps, msg)` | `Float, Float, Float, String => <>` | Asserts `|actual - expected| <= eps` |
+| `test::fail(msg)` | `String => <>` | Unconditionally records a test failure with `msg` |
+| `test::suite(name, body)` | `String, (() => ()) => ()` | Runs `body` under named suite header `=== Suite: <name> ===` |
+| `test::reset!` | `() => ()` | Resets passed and failed counters to `0` |
+| `test::passed!` / `test::failed!` / `test::total!` | `() => Int` | Queries current assertion counters |
+| `test::summary!` | `() => ()` | Prints `PASS: N passed, 0 failed` (or `FAIL: ...` and exits `1`) |
+| `test::finish!` | `() => Int` | Prints summary and returns `0` if all passed or `1` if any failed |

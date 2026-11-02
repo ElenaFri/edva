@@ -10,19 +10,43 @@ meta:
 
 Edva unifies conditional branching, switch statements, and pattern matching into
 a single construct: the **choice expression**. Iteration is driven entirely by
-the `@` cycle operator and symbolic escape controls.
+the `@` cycle operator and symbolic escape controls. For the formal grammar and
+reference tables of all choice guards, range forms, and cycle binders, see
+[Expressions](../reference/language/expressions.qmd#choice-expressions).
 
-## Choices: The four guard kinds
+## Choices: Guard kinds
 
-A choice expression matches a scrutinee value against an ordered series of guards.
-Each branch normalizes to exactly one of four guard kinds:
+A choice expression matches a scrutinee value against an ordered series of guards:
 
 | Guard Kind | Syntax Shape | Matching Rule | Example |
 |---|---|---|---|
-| **Case** | `[val1, val2, ...]` | Equality check: `scrutinee == val` for any element | `x [1, 2, 3] "small"` |
+| **Case / Range** | `[val1, a..b, c...d, ...]` | Equality or interval check (`..` half-open, `...`/`..=` inclusive) | `x [1, 2, 10...20] "hit"` |
 | **Predicate** | `[op val]` or `[pred]` | Operator section or predicate fn: `pred(scrutinee)` | `x [< 0] "negative" [str::is_digit] "digit"` |
-| **Variant** | `[Variant]` or `[Variant(v)]` | Enum tag check, optionally binding payload to `v` | `s [Circle(r)] 3.14 * r * r [Point] 0.0` |
+| **Variant** | `[Variant]` or `[Variant v]` | Enum tag check, optionally binding payload to `v` | `s [Circle r] 3.14 * r * r [Point] 0.0` |
+| **Record** | `[(p1, p2)]` or `[(f = p)]` | Structural record/tuple field destructuring | `pt [(0, y)] y [(x, 0)] x | 0` |
+| **Type-Shape (`#!`)** | `[Int]`, `[E{}]`, `[<P|>]`, ... | Compile-time `Type` shape match and inner type extraction | `T [E{}] ?x | 0` |
 | **Bare** | `|` or `| binding =>` | Position-based ram match or trailing catch-all fallback | `ram | ok => ok + 1 | print("fail")` |
+
+### Range guards and negated guards (`![...]`)
+
+Inside `[...]` case guards, ranges test interval membership:
+- `[a..b]`: half-open interval (`a !> x < b`).
+- `[a...b]` or `[a..=b]`: closed/inclusive interval (`a !> x !> b`).
+- `[a..]`, `[..b]`, `[...b]` / `[..=b]`: open-ended lower or upper bounds.
+- Ranges can be freely combined with exact values in comma-separated OR-lists: `ch ['a'...'z', 'A'...'Z', '0'...'9', '_']`.
+
+A single bodyless `[...]` guard evaluates directly to a boolean flag (`<+>` on match, `<->` otherwise). Prefixing the bracket with `!` (`x ![...]` or headless `![...]`) inverts the flag result (`<->` on match, `<+>` otherwise):
+
+```{.dva .run}
+is_ident_char: Rune => <>
+is_ident_char = ['a'...'z', 'A'...'Z', '0'...'9', '_']
+
+is_non_ws: Rune => <>
+is_non_ws = ![' ', '\t', '\n']
+
+in_bounds = 3 [0..5]       // <+>
+out_of_bounds = 5 ![0..5]  // <+>
+```
 
 ### Guard chaining and adjacency rules
 
@@ -181,6 +205,7 @@ Cycles iterate over counts, ranges, or collections without keywords:
 | Count cycle | `N @` | Repeat body exactly `N` times (no index bound) |
 | Indexed count | `N @ i =>` | Iterate `i` from `0` to `N - 1` |
 | Bounded range | `start..end @ i =>` | Iterate `i` from `start` up to (exclusive) `end` |
+| Inclusive range | `start...end @ i =>` / `start..=end @ i =>` | Iterate `i` from `start` through (inclusive) `end` |
 | Infinite cycle | `0.. @` | Unbounded cycle (must break with `-->`) |
 | Collection cycle | `collection @ item =>` | Iterate elements of an array, string, or map |
 

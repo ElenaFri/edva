@@ -59,7 +59,7 @@ It is available exclusively on Linux targets.
 
 | Function | Signature | Description |
 |---|---|---|
-| `uring::new` | `Int => < Ring \| String >` | Initializes an `io_uring` ring with the requested number of submission queue entries |
+| `uring::new` | `Int => < Ring | String >` | Initializes an `io_uring` ring with the requested number of submission queue entries |
 | `uring::prep_nop` | `Ring, Int => <>` | Prepares a no-operation submission; returns `<->` if the queue is full |
 | `uring::prep_read` | `Ring, Int, Addr, Int, Int => <>` | Prepares an asynchronous read at current file offset (`-1`), advancing position on completion |
 | `uring::prep_read_at` | `Ring, Int, Addr, Int, Int, Int => <>` | Prepares an asynchronous read at an explicit file offset (`off`), preserving file position |
@@ -74,8 +74,8 @@ It is available exclusively on Linux targets.
 | `uring::sq_space` | `Ring => Int` | Returns the number of available slots remaining in the submission queue |
 | `uring::submit` | `Ring => Int` | Enters kernel and submits pending SQEs via `io_uring_enter` |
 | `uring::submit_and_wait` | `Ring, Int => Int` | Submits pending SQEs and blocks until at least `wait_nr` CQEs complete |
-| `uring::peek_cqe` | `Ring => < CQE \| >` | Non-blocking check for a completion event; copies CQE before advancing head pointer |
-| `uring::wait_cqe` | `Ring => < CQE \| String >` | Checks for ready CQE or blocks via `submit_and_wait(ring, 1)` |
+| `uring::peek_cqe` | `Ring => < CQE | >` | Non-blocking check for a completion event; copies CQE before advancing head pointer |
+| `uring::wait_cqe` | `Ring => < CQE | String >` | Checks for ready CQE or blocks via `submit_and_wait(ring, 1)` |
 | `uring::reap` | `Ring => CQEs` | Drains all currently ready CQEs into a growable array |
 | `uring::close` | `Ring => ()` | Unmaps submission/completion ring memory and closes the ring file descriptor |
 

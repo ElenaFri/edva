@@ -1,0 +1,57 @@
+---
+meta:
+  audience: "Edva developers working with binary wire protocols and binary serialization"
+  status: "current reference"
+  audited: "fb4fbc2"
+  evidence: "`std/binary.dva`, `tests/pass/397_std_binary.dva`"
+---
+
+# `binary` standard library
+
+The `binary` module provides endian-aware scalar readers and writers (`u8`/`i8`,
+`u16`/`i16`, `u32`/`i32`, `u64`/`i64`, `f32`, `f64`), unsigned and signed LEB128
+varints, and `#!` compile-time structural binary packing and unpacking
+(`binary::encode_le`, `binary::decode_le`, `binary::encode_be`, `binary::decode_be`).
+
+```{.dva .run}
+#use binary
+#use io
+#use str
+
+#type Header (magic: u32, version: u8, name: String)
+
+raw = binary::encode_le(Header(0xCAFEBABEu32, 1u8, "edva"))
+binary::decode_le(Header, raw) | h =>
+   io::out $ h.name + " v" + str::from_int(Int(h.version))
+```
+
+## Function catalog
+
+| Symbol / Function | Signature | Description |
+|---|---|---|
+| `binary::write_u8(b, v)` / `write_i8(b, v)` | `Builder, u8/i8 => ()` | Appends 1 byte to `b` |
+| `binary::write_u16_le` / `write_u16_be` | `Builder, u16 => ()` | Appends 16-bit unsigned integer in little- or big-endian order |
+| `binary::write_i16_le` / `write_i16_be` | `Builder, i16 => ()` | Appends 16-bit signed integer in little- or big-endian order |
+| `binary::write_u32_le` / `write_u32_be` | `Builder, u32 => ()` | Appends 32-bit unsigned integer in little- or big-endian order |
+| `binary::write_i32_le` / `write_i32_be` | `Builder, i32 => ()` | Appends 32-bit signed integer in little- or big-endian order |
+| `binary::write_u64_le` / `write_u64_be` | `Builder, u64 => ()` | Appends 64-bit unsigned integer in little- or big-endian order |
+| `binary::write_i64_le` / `write_i64_be` | `Builder, Int => ()` | Appends 64-bit signed integer in little- or big-endian order |
+| `binary::write_f32_le` / `write_f32_be` | `Builder, f32 => ()` | Appends IEEE 754 `f32` in little- or big-endian order |
+| `binary::write_f64_le` / `write_f64_be` | `Builder, Float => ()` | Appends IEEE 754 `f64` in little- or big-endian order |
+| `binary::read_u8(buf, off)` / `read_i8(buf, off)` | `String, Int => < u8/i8 | Error >` | Reads 1 byte at `off` |
+| `binary::read_u16_le` / `read_u16_be` | `String, Int => < u16 | Error >` | Reads 16-bit unsigned integer at `off` |
+| `binary::read_i16_le` / `read_i16_be` | `String, Int => < i16 | Error >` | Reads 16-bit signed integer at `off` |
+| `binary::read_u32_le` / `read_u32_be` | `String, Int => < u32 | Error >` | Reads 32-bit unsigned integer at `off` |
+| `binary::read_i32_le` / `read_i32_be` | `String, Int => < i32 | Error >` | Reads 32-bit signed integer at `off` |
+| `binary::read_u64_le` / `read_u64_be` | `String, Int => < u64 | Error >` | Reads 64-bit unsigned integer at `off` |
+| `binary::read_i64_le` / `read_i64_be` | `String, Int => < Int | Error >` | Reads 64-bit signed integer at `off` |
+| `binary::read_f32_le` / `read_f32_be` | `String, Int => < f32 | Error >` | Reads IEEE 754 `f32` at `off` |
+| `binary::read_f64_le` / `read_f64_be` | `String, Int => < Float | Error >` | Reads IEEE 754 `f64` at `off` |
+| `binary::write_uleb128(b, v)` | `Builder, u64 => ()` | Appends unsigned LEB128 varint to `b` |
+| `binary::read_uleb128(buf, off)` | `String, Int => < (u64, Int) | Error >` | Reads unsigned LEB128 varint at `off`, returning `(value, next_offset)` |
+| `binary::write_sleb128(b, v)` | `Builder, Int => ()` | Appends signed LEB128 varint to `b` |
+| `binary::read_sleb128(buf, off)` | `String, Int => < (Int, Int) | Error >` | Reads signed LEB128 varint at `off`, returning `(value, next_offset)` |
+| `binary::encode_le(val)` / `encode(val)` | `#! T: Type, T => String` | Packs any scalar, record, tuple, enum, option, or array into little-endian binary |
+| `binary::decode_le(T, buf)` / `decode(T, buf)` | `#! T: Type, String => < T | Error >` | Unpacks `T` from little-endian binary |
+| `binary::encode_be(val)` | `#! T: Type, T => String` | Packs `val` into big-endian (network byte order) binary |
+| `binary::decode_be(T, buf)` | `#! T: Type, String => < T | Error >` | Unpacks `T` from big-endian binary |

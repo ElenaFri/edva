@@ -1,9 +1,33 @@
 // tests/pass/312_std_ccl.dva
 // Comprehensive tests for std/ccl parser, model, deterministic serializer,
-// manifest validation, and lockfile validation.
+// and structural #! encode / decode.
 
 #use io
+#use str
 #use ccl
+
+#type LogMode <
+   Quiet
+   Custom(String)
+   Level(Int)
+>
+
+#type ServerCfg (
+   host: String = "127.0.0.1"
+   port: Int = 8080
+   tls: <> = <->
+   cert_path: <String|>
+   tags: String{}
+   env: String ^ String
+   mode: LogMode = LogMode(Quiet)
+)
+
+#type StrictCfg (
+   name: String
+   retries: Int = 3
+)
+
+#type Pair (Int, String)
 
 main: () => ()
 main = !=>
@@ -51,171 +75,90 @@ main = !=>
          io::out("parse error:")
          io::out(e.msg)
 
-   // 2. Manifest validation
-   io::out("--- test 2: manifest validation ---")
-   m_src = "name = my_app\n" +
-      "version = 1.2.3\n" +
-      "edva = 0.3.0\n" +
-      "dependencies =\n" +
-      "  zeta =\n" +
-      "    git = https://github.com/pkg/zeta.git\n" +
-      "    rev = v1.0.0\n" +
-      "  alpha =\n" +
-      "    path = ../alpha\n" +
-      "native =\n" +
-      "  libs =\n" +
-      "    = ssl\n" +
-      "    = crypto\n" +
-      "  pkg-config =\n" +
-      "    = libuv\n" +
-      "overrides =\n" +
-      "  zeta =\n" +
-      "    path = vendor/zeta\n"
+   // 2. Structural #! encode and decode on records, options, arrays, maps, enums
+   io::out("--- test 2: structural encode & decode ---")
+   cfg = ServerCfg.zero
+   cfg.host = "0.0.0.0"
+   cfg.port = 9090
+   cfg.tls = <+>
+   cfg.cert_path = <+ "/etc/ssl/cert.pem" +>
+   cfg.tags += "api"
+   cfg.tags += "prod"
+   cfg.env ^ "RUST_LOG" = "info"
+   cfg.mode = LogMode(Custom, "json")
 
-   pm = ccl::parse(m_src, "edva.ccl")
-   pm
-      | mdoc =>
-         vres = ccl::validate_manifest(mdoc, "edva.ccl")
-         vres
-            | m =>
-               io::out(m.name)
-               io::out(m.version)
-               io::out(m.edva)
-               io::out(?m.deps)
-               dummy_dep = ccl::PackageDep("", ccl::DepKind(Path), "", "", "", "", "")
-               d0 = m.deps(0) | _ | dummy_dep
-               d1 = m.deps(1) | _ | dummy_dep
-               io::out(d0.alias)
-               io::out(d1.alias)
-               io::out(?m.native_libs)
-               io::out(m.native_libs(0) | _ | "")
-               io::out(m.native_libs(1) | _ | "")
-               io::out(?m.native_pkg_config)
-               io::out(m.native_pkg_config(0) | _ | "")
-               io::out(?m.overrides)
-               o0 = m.overrides(0) | _ | dummy_dep
-               io::out(o0.path)
+   encoded = ccl::encode(cfg)
+   dec_res = ccl::decode(ServerCfg, encoded)
+   dec_res
+      | c2 =>
+         io::out(c2.host)
+         io::out(c2.port)
+         io::out(c2.tls)
+         io::out(c2.cert_path | p => p | "none")
+         io::out(?c2.tags)
+         io::out(c2.tags(0) | _ | "")
+         io::out(c2.tags(1) | _ | "")
+         io::out(c2.env ^ "RUST_LOG" | v => v | "")
+         c2.mode
+            [Quiet] io::out("mode:quiet")
+            [Custom s] io::out("mode:custom:" + s)
+            [Level n] io::out("mode:level:" + str::from_int(n))
+         io::out(ccl::encode(c2) == encoded)
+      | e =>
+         io::out("decode failed: " + e.msg)
 
-               // Test deterministic serialization
-               s_ccl = ccl::manifest_to_ccl(m)
-               p_round = ccl::parse(s_ccl, "edva.ccl")
-               p_round
-                  | rdoc =>
-                     v_round = ccl::validate_manifest(rdoc, "edva.ccl")
-                     v_round
-                        | m2 =>
-                           s_ccl2 = ccl::manifest_to_ccl(m2)
-                           io::out(s_ccl == s_ccl2)
-                        | e => io::out("roundtrip manifest validate failed")
-                  | e => io::out("roundtrip manifest parse failed")
-            | e =>
-               io::out("manifest validation failed:")
-               io::out(e.msg)
-      | e => io::out("parse failed")
+   // 3. Forward-compatible decoding: defaults, <--> options, empty containers, unknown keys ignored
+   io::out("--- test 3: defaults & forward compatibility ---")
+   minimal_ccl = "port = 3000\nunknown_future_key = ignored\nmode = Quiet\n"
+   d_min = ccl::decode(ServerCfg, minimal_ccl)
+   d_min
+      | c3 =>
+         io::out(c3.host)
+         io::out(c3.port)
+         io::out(c3.tls)
+         io::out(c3.cert_path | p => p | "none")
+         io::out(?c3.tags)
+         c3.mode
+            [Quiet] io::out("mode:quiet")
+            [Custom s] io::out("mode:custom:" + s)
+            [Level n] io::out("mode:level:" + str::from_int(n))
+      | e =>
+         io::out("minimal decode failed: " + e.msg)
 
-   // 3. Manifest error cases
-   io::out("--- test 3: manifest errors ---")
-   test_err: String => ()
-   test_err = src =>
-      p = ccl::parse(src, "edva.ccl")
-      p
-         | doc =>
-            v = ccl::validate_manifest(doc, "edva.ccl")
-            v
-               | io::out("unexpected success")
-               | e => io::out(e.msg)
-         | e => io::out(e.msg)
+   // 4. Error cases: missing required field, invalid int, unknown enum variant
+   io::out("--- test 4: decode errors ---")
+   e1 = ccl::decode(StrictCfg, "retries = 5\n")
+   e1
+      | io::out("unexpected success")
+      | err => io::out(err.msg)
 
-   // Missing name
-   test_err("version = 1.0.0\n")
-   // Missing version
-   test_err("name = foo\n")
-   // Duplicate name
-   test_err("name = foo\nname = bar\nversion = 1.0.0\n")
-   // Invalid name
-   test_err("name = FooBar\nversion = 1.0.0\n")
-   // Invalid version
-   test_err("name = foo\nversion = 1-beta\n")
-   // Dependency specifying both git and path
-   test_err("name = foo\nversion = 1.0.0\ndependencies =\n  bar =\n    git = url\n    path = dir\n")
-   // Git dep missing rev
-   test_err("name = foo\nversion = 1.0.0\ndependencies =\n  bar =\n    git = url\n")
-   // Unknown top-level key
-   test_err("name = foo\nversion = 1.0.0\nfoo = bar\n")
-   // Override missing path
-   test_err("name = foo\nversion = 1.0.0\noverrides =\n  bar =\n    git = url\n")
+   e2 = ccl::decode(StrictCfg, "name = app\nretries = not_an_int\n")
+   e2
+      | io::out("unexpected success")
+      | err => io::out(err.msg)
 
-   // 4. Lockfile validation & serialization
-   io::out("--- test 4: lockfile validation ---")
-   lock_src = "lock = 1\n\n" +
-      "packages =\n" +
-      "  zeta_pkg =\n" +
-      "    path = ../zeta\n" +
-      "  alpha_pkg =\n" +
-      "    git = https://github.com/pkg/alpha.git\n" +
-      "    rev = v1.0\n" +
-      "    commit = c123456\n" +
-      "    deps =\n" +
-      "      zeta = zeta_pkg\n\n" +
-      "root =\n" +
-      "  zeta = zeta_pkg\n" +
-      "  alpha = alpha_pkg\n"
+   e3 = ccl::decode(ServerCfg, "mode = UnknownVariant\n")
+   e3
+      | io::out("unexpected success")
+      | err => io::out(err.msg)
 
-   pl = ccl::parse(lock_src, "edva.lock.ccl")
-   pl
-      | ldoc =>
-         vl = ccl::validate_lockfile(ldoc, "edva.lock.ccl")
-         vl
-            | lock =>
-               io::out(lock.lock_version)
-               io::out(?lock.packages)
-               empty_deps: ccl::LockDeps
-               dummy_pkg = ccl::LockPackage("", ccl::DepKind(Path),
-                  "", "", "", "", "", "", empty_deps, <->)
-               p0 = lock.packages(0) | _ | dummy_pkg
-               p1 = lock.packages(1) | _ | dummy_pkg
-               io::out(p0.id)
-               io::out(p1.id)
-               io::out(?lock.root_deps)
-               r0 = lock.root_deps(0) | _ | ccl::LockDep("", "")
-               r1 = lock.root_deps(1) | _ | ccl::LockDep("", "")
-               io::out(r0.alias)
-               io::out(r1.alias)
+   // 5. Tuple and CclDoc target decoding
+   io::out("--- test 5: tuple & CclDoc ---")
+   tup = (42, "answer")
+   tup_ccl = ccl::encode(tup)
+   d_tup = ccl::decode(Pair, tup_ccl)
+   d_tup
+      | t2 =>
+         io::out(t2.0)
+         io::out(t2.1)
+      | err => io::out("tuple decode err: " + err.msg)
 
-               // Test deterministic serialization
-               s_lock = ccl::lockfile_to_ccl(lock)
-               p_round = ccl::parse(s_lock, "edva.lock.ccl")
-               p_round
-                  | rdoc =>
-                     v_round = ccl::validate_lockfile(rdoc, "edva.lock.ccl")
-                     v_round
-                        | lock2 =>
-                           s_lock2 = ccl::lockfile_to_ccl(lock2)
-                           io::out(s_lock == s_lock2)
-                        | e => io::out("roundtrip lockfile validate failed")
-                  | e => io::out("roundtrip lockfile parse failed")
-            | e =>
-               io::out("lockfile validation failed:")
-               io::out(e.msg)
-      | e => io::out("lockfile parse failed")
-
-   // 5. Lockfile errors
-   io::out("--- test 5: lockfile errors ---")
-   test_lock_err: String => ()
-   test_lock_err = src =>
-      p = ccl::parse(src, "edva.lock.ccl")
-      p
-         | doc =>
-            v = ccl::validate_lockfile(doc, "edva.lock.ccl")
-            v
-               | io::out("unexpected success")
-               | e => io::out(e.msg)
-         | e => io::out(e.msg)
-
-   // Missing lock
-   test_lock_err("packages =\n")
-   // Invalid lock version
-   test_lock_err("lock = one\n")
+   d_doc = ccl::decode(ccl::CclDoc, "a = 1\nb = 2\n")
+   d_doc
+      | doc =>
+         io::out(ccl::get(doc, "a") | s => s | "")
+         io::out(ccl::get(doc, "b") | s => s | "")
+      | err => io::out("doc decode err: " + err.msg)
 
    io::out("--- done ---")
 

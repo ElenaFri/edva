@@ -781,7 +781,7 @@
 #public
    category_id: Rune => Int
    category_id = cp =>
-      cp < 0 || cp > 0x10FFFF
+      cp ![0...0x10FFFF]
          | 29
          |
             page = Int(cat_s1(cp .>. 8))
@@ -865,7 +865,7 @@
    to_upper: Rune => Rune
    to_upper = cp =>
       c = Int(cp)
-      c < 0x80 | --| Rune((c !< 'a' && c !> 'z') | c - 32 | c)
+      c < 0x80 | --| Rune(c ['a'...'z'] | c - 32 | c)
       lo' = 0
       hi' = 198
       res' = c
@@ -883,7 +883,7 @@
                   |
                      step2 = (w .>. 28) .&. 1
                      (step2 == 0 || ((c - start) .&. 1) == 0)
-                        | res' = c + ((w .>. 29) - 65536)
+                        | res' = c + ((w .>. 29) - 0x10000)
                      -->
       Rune(res')
 
@@ -891,7 +891,7 @@
    to_lower: Rune => Rune
    to_lower = cp =>
       c = Int(cp)
-      c < 0x80 | --| Rune((c !< 'A' && c !> 'Z') | c + 32 | c)
+      c < 0x80 | --| Rune(c ['A'...'Z'] | c + 32 | c)
       c == 0x0130 | --| Rune(0x0069)
       lo' = 0
       hi' = 185
@@ -910,7 +910,7 @@
                   |
                      step2 = (w .>. 28) .&. 1
                      (step2 == 0 || ((c - start) .&. 1) == 0)
-                        | res' = c + ((w .>. 29) - 65536)
+                        | res' = c + ((w .>. 29) - 0x10000)
                      -->
       Rune(res')
 
@@ -919,31 +919,31 @@
    is_space: Rune => <>
    is_space = cp =>
       cat = category_id(cp)
-      (cat !< 22 && cat !> 24) || (cp == 0x20 || (cp !< 0x09 && cp !> 0x0D))
+      cat [22...24] || cp [0x09...0x0D, 0x20]
 
    // Punctuation (Pc, Pd, Ps, Pe, Pi, Pf, Po)
    is_punctuation: Rune => <>
    is_punctuation = cp =>
       cat = category_id(cp)
-      cat !< 11 && cat !> 17
+      cat [11...17]
 
    // Symbols: math, currency, modifiers, others (Sm, Sc, Sk, So)
    is_symbol: Rune => <>
    is_symbol = cp =>
       cat = category_id(cp)
-      cat !< 18 && cat !> 21
+      cat [18...21]
 
    // Combining marks: nonspacing, spacing, enclosing (Mn, Mc, Me)
    is_mark: Rune => <>
    is_mark = cp =>
       cat = category_id(cp)
-      cat !< 5 && cat !> 7
+      cat [5...7]
 
    // Numbers: decimal digits, letter numbers, other numbers (Nd, Nl, No)
    is_number: Rune => <>
    is_number = cp =>
       cat = category_id(cp)
-      cat !< 8 && cat !> 10
+      cat [8...10]
 
    // Control characters (Cc)
    is_control: Rune => <>
@@ -960,7 +960,7 @@
    decode_rune: String, Int => Rune
    decode_rune = src, i =>
       n = ?src
-      i < 0 || i !< n | --| Rune(0xFFFD)
+      i ![0..n] | --| Rune(0xFFFD)
       b0 = src(i)
       Rune(b0
          [< 0x80] b0
@@ -976,7 +976,7 @@
                |
                   cp3 = (b0 - 0xE0) * 0x1000 + (src(i + 1) - 0x80) * 0x40 +
                      (src(i + 2) - 0x80)
-                  cp3 !< 0x800 && (cp3 < 0xD800 || cp3 > 0xDFFF)
+                  cp3 !< 0x800 && cp3 ![0xD800...0xDFFF]
                      | cp3
                      | 0xFFFD
                | 0xFFFD
@@ -987,7 +987,7 @@
                |
                   cp4 = (b0 - 0xF0) * 0x40000 + (src(i + 1) - 0x80) * 0x1000 +
                      (src(i + 2) - 0x80) * 0x40 + (src(i + 3) - 0x80)
-                  cp4 !< 0x10000 && cp4 !> 0x10FFFF
+                  cp4 [0x10000...0x10FFFF]
                      | cp4
                      | 0xFFFD
                | 0xFFFD
@@ -1041,7 +1041,7 @@
                   (b2 .&. 0xC0) == 0x80
                      |
                         cp3 = (b0 - 0xE0) * 0x1000 + (b1 - 0x80) * 0x40 + (b2 - 0x80)
-                        cp3 !< 0x800 && (cp3 < 0xD800 || cp3 > 0xDFFF)
+                        cp3 !< 0x800 && cp3 ![0xD800...0xDFFF]
                            | cp3
                            | 0xFFFD
                      | 0xFFFD
@@ -1058,7 +1058,7 @@
                            |
                               cp4 = (b0 - 0xF0) * 0x40000 + (b1 - 0x80) * 0x1000 +
                                  (b2 - 0x80) * 0x40 + (b3 - 0x80)
-                              cp4 !< 0x10000 && cp4 !> 0x10FFFF
+                              cp4 [0x10000...0x10FFFF]
                                  | cp4
                                  | 0xFFFD
                            | 0xFFFD
@@ -1071,7 +1071,7 @@
    decode_rune_builder: Builder, Int => Rune
    decode_rune_builder = b, i =>
       n = ?b
-      i < 0 || i !< n | --| Rune(0xFFFD)
+      i ![0..n] | --| Rune(0xFFFD)
       p = &b
       b0 = Int(@[p + i u8])
       need = b0 [< 0x80] 1 [< 0xE0] 2 [< 0xF0] 3 | 4

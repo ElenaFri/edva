@@ -185,7 +185,7 @@ bind_global = env, name, ut, ti =>
 
 name_is_qualified: String, Int => <>
 name_is_qualified = name, i =>
-   i + 1 < ?name
+   i + 1 < ?name && name(i) != '$'
       |
          (name(i) == ':') && (name(i + 1) == ':')
             | <+>
@@ -194,7 +194,7 @@ name_is_qualified = name, i =>
 
 decl_module_find: String, Int, Int => Int
 decl_module_find = name, i, last =>
-   i + 1 < ?name
+   i + 1 < ?name && name(i) != '$'
       |
          (name(i) == ':') && (name(i + 1) == ':')
             | decl_module_find(name, i + 2, i)

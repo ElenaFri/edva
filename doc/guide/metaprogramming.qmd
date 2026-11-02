@@ -2,11 +2,12 @@
 meta:
   audience: "experienced Edva users"
   status: "current guide"
-  audited: "8b8cb19"
+  audited: "fb4fbc2"
   evidence: >-
-    `src/annotate.dva`, `src/edva.dva`,
+    `src/annotate.dva`, `src/edva.dva`, `src/codegen/expr.dva`,
+    `src/codegen/match.dva`, `src/codegen/stmt.dva`,
     `tests/pass/145_compile_time_eval.dva`, `tests/pass/148_generic_fn_params.dva`,
-    `tests/pass/147_type_generators.dva`
+    `tests/pass/147_type_generators.dva`, `tests/pass/393_structural_introspection.dva`
 ---
 
 # Metaprogramming
@@ -19,23 +20,27 @@ reflection tables.
 
 Prefix `#!` evaluates a supported pure expression during compilation:
 
-```{.dva .partial}
+```{.dva .run}
+#use io
+
 answer = #! 2 * 3 + 1
-print_int $ answer
+io::out $ answer
 ```
 
-Use `#size Type` (or `#size Type`) to obtain the byte size of a type and `#align Type` (or `#align Type`) to obtain its byte alignment at compile time.
+Use `#size T` to obtain the byte size of a type and `#align T` to obtain its byte alignment at compile time.
 
 ## Generic functions
 
 A `#! T: Type` parameter is a compile-time type parameter. It is inferred at
 the call site and does not become a runtime parameter.
 
-```{.dva .partial}
+```{.dva .run}
+#use io
+
 identity: #! T: Type, T => T
 identity = value => value
 
-print_int $ identity(42)
+io::out $ identity(42)
 ```
 
 Compile-time value parameters use the same form with an ordinary type, such as
@@ -46,9 +51,57 @@ Pair: #! T: Type => (first: T, count: Int)
 #type IntPair Pair(Int)
 ```
 
-Use type predicates and compile-time choices to specialize code by shape. Keep
-compile-time work pure and statically resolvable; the compiler reports an error
-when a compile-time value would escape to runtime. See the
-[Types reference](../reference/types/index.qmd) for type representations,
-reflection, and supported compile-time forms.
+## Structural type introspection
 
+Inside a `#!` generic function, a `Type` parameter `T` supports:
+
+- **Type properties**: `T.name` (`String`), `T.zero` (`T`), `?T` (`Int` field/element/variant count), `#size T`, and `#align T`.
+- **Structural type-shape patterns** in `T [...]` choices: `[()]`, `[<>]`, `[<P|>]`, `[<|N>]`, `[<P | N>]`, `[E{}]`, `[E[]]`, `[(E * ..)]`, `[(E * 4)]`, `[K ^ V]`, `[String ^ V]`, `[(..)]` (records), and `[<..>]` (enums).
+- **Compile-time unrolling** with `T @ f =>` (record fields) and `T @ v =>` (enum variants), using `rec.(f)` / `rec.(f) = val` for typed field access/mutation and `val.(v)` / `T(v, payload)` for enum inspection and construction.
+
+```{.dva .run}
+#use io
+#use str
+#use type
+
+show_any: #! T: Type, T => String
+show_any = #! T, v =>
+   T
+      [()]             "()"
+      [<>]             (v | "<+>" | "<->")
+      [type::is_int]   str::from_int(Int(v))
+      [String]         "\"" + v + "\""
+      [<P|>]           (v | x => "<+ " + show_any(x) + " +>" | "<-->")
+      [E{}]
+         b = {32}
+         b += "["
+         v @ elem, i =>
+            i > 0 | b += ", "
+            b += show_any(elem)
+         b += "]"
+         +b
+      [(..)]
+         b = {64}
+         b += T.name + "("
+         T @ f =>
+            f.idx > 0 | b += ", "
+            b += f.name + "=" + show_any(v.(f))
+         b += ")"
+         +b
+      | "<val>"
+
+#type User (name: String = "anon", score: Int = 100)
+
+u = User.zero
+xs = Int{}
+xs += 1
+xs += 2
+xs += 3
+io::out $ show_any(u)
+io::out $ show_any(xs)
+```
+
+Keep compile-time work pure and statically resolvable; the compiler reports an error
+when a compile-time value would escape to runtime. See the
+[`Type` reference](../reference/types/type.qmd) for the complete table of structural
+patterns and cursor properties.

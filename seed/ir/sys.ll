@@ -255,22 +255,22 @@ entry:
   store i64 %0, ptr %var.n, align 8
   %var.load = load i64, ptr %var.n, align 8
   %cmptmp = icmp sge i64 %var.load, 0
-  br i1 %cmptmp, label %and.0.then, label %and.0.else
+  br i1 %cmptmp, label %and.9.then, label %and.9.else
 
-and.0.then:                                       ; preds = %entry
+and.9.then:                                       ; preds = %entry
   %var.load1 = load i64, ptr %var.n, align 8
   %var.load2 = load i64, ptr @sys_argc_global, align 8
   %cmptmp3 = icmp slt i64 %var.load1, %var.load2
-  br label %and.0.exit
+  br label %and.9.exit
 
-and.0.else:                                       ; preds = %entry
-  br label %and.0.exit
+and.9.else:                                       ; preds = %entry
+  br label %and.9.exit
 
-and.0.exit:                                       ; preds = %and.0.else, %and.0.then
-  %and.0.phi = phi i1 [ %cmptmp3, %and.0.then ], [ %cmptmp, %and.0.else ]
-  br i1 %and.0.phi, label %choice.then, label %choice.else
+and.9.exit:                                       ; preds = %and.9.else, %and.9.then
+  %and.9.phi = phi i1 [ %cmptmp3, %and.9.then ], [ %cmptmp, %and.9.else ]
+  br i1 %and.9.phi, label %choice.then, label %choice.else
 
-choice.then:                                      ; preds = %and.0.exit
+choice.then:                                      ; preds = %and.9.exit
   %var.load4 = load ptr, ptr @sys_argv_global, align 8
   %var.load5 = load i64, ptr %var.n, align 8
   %multmp = mul i64 %var.load5, 8
@@ -284,7 +284,7 @@ choice.then:                                      ; preds = %and.0.exit
   %addr.immortal = icmp eq i64 %addr.tag, 0
   br i1 %addr.immortal, label %addr_ok, label %addr_gen_check
 
-choice.else:                                      ; preds = %and.0.exit
+choice.else:                                      ; preds = %and.9.exit
   %var.load6 = load ptr, ptr @"var.sys::addr_null", align 8
   br label %choice.exit
 
@@ -322,9 +322,9 @@ entry:
   %ptr.int.l = ptrtoint ptr %var.load1 to i64
   %ptr.int.r = ptrtoint ptr %var.load2 to i64
   %cmptmp = icmp ne i64 %ptr.int.l, %ptr.int.r
-  br i1 %cmptmp, label %and.1.then, label %and.1.else
+  br i1 %cmptmp, label %and.10.then, label %and.10.else
 
-and.1.then:                                       ; preds = %entry
+and.10.then:                                      ; preds = %entry
   %var.load3 = load ptr, ptr %var.raw, align 8
   %addr.ffi.int = ptrtoint ptr %var.load3 to i64
   %addr.ffi.masked = and i64 %addr.ffi.int, 281474976710655
@@ -339,19 +339,19 @@ and.1.then:                                       ; preds = %entry
   %str.immortal = icmp eq i64 %str.tag, 0
   br i1 %str.immortal, label %str_ok, label %str_gen_check
 
-and.1.else:                                       ; preds = %entry
-  br label %and.1.exit
+and.10.else:                                      ; preds = %entry
+  br label %and.10.exit
 
-and.1.exit:                                       ; preds = %and.1.else, %nulmerge
-  %and.1.phi = phi i1 [ %cmptmp14, %nulmerge ], [ %cmptmp, %and.1.else ]
-  ret i1 %and.1.phi
+and.10.exit:                                      ; preds = %and.10.else, %nulmerge
+  %and.10.phi = phi i1 [ %cmptmp14, %nulmerge ], [ %cmptmp, %and.10.else ]
+  ret i1 %and.10.phi
 
-str_gen_check:                                    ; preds = %and.1.then
+str_gen_check:                                    ; preds = %and.10.then
   %arena.cur = call ptr @dva_arena_current()
   %tag.valid = call i1 @dva_arena_validate_tag(ptr %arena.cur, i64 %str.tag)
   br i1 %tag.valid, label %str_ok, label %str_stale
 
-str_ok:                                           ; preds = %str_stale, %str_gen_check, %and.1.then
+str_ok:                                           ; preds = %str_stale, %str_gen_check, %and.10.then
   %nulcheck.gep = getelementptr i8, ptr %arg.str.ptr5, i64 %arg.str.ptr8
   %nulcheck.byte = load i8, ptr %nulcheck.gep, align 1
   %nulcheck = icmp eq i8 %nulcheck.byte, 0
@@ -375,7 +375,7 @@ nulmerge:                                         ; preds = %nulcopy.len10, %arg
   %arg.str.ptr12 = phi ptr [ %arg.str.ptr5, %arg.str.ptr9 ], [ %nulcopy.buf, %nulcopy.len10 ]
   %call.res13 = call i64 @strcmp(ptr %addr.ffi.clean, ptr %arg.str.ptr12)
   %cmptmp14 = icmp eq i64 %call.res13, 0
-  br label %and.1.exit
+  br label %and.10.exit
 
 nulcopy.len10:                                    ; preds = %str_overflow_abort, %nulcopy
   %arena.cur11 = call ptr @dva_arena_current()
@@ -671,23 +671,23 @@ entry:
   store i64 %call.res, ptr %var.res, align 8
   %var.load5 = load i64, ptr %var.res, align 8
   %cmptmp = icmp sgt i64 %var.load5, 0
-  br i1 %cmptmp, label %and.2.then, label %and.2.else
+  br i1 %cmptmp, label %and.11.then, label %and.11.else
 
-and.2.then:                                       ; preds = %entry
+and.11.then:                                      ; preds = %entry
   %var.load6 = load ptr, ptr %"var.pfd'", align 8
   %fld.gep = getelementptr inbounds <{ i32, i16, i16 }>, ptr %var.load6, i32 0, i32 2
   %fld.load = load i16, ptr %fld.gep, align 2
   %coerce.sext = sext i16 %fld.load to i64
   %bandtmp = and i64 %coerce.sext, 1
   %cmptmp7 = icmp ne i64 %bandtmp, 0
-  br label %and.2.exit
+  br label %and.11.exit
 
-and.2.else:                                       ; preds = %entry
-  br label %and.2.exit
+and.11.else:                                      ; preds = %entry
+  br label %and.11.exit
 
-and.2.exit:                                       ; preds = %and.2.else, %and.2.then
-  %and.2.phi = phi i1 [ %cmptmp7, %and.2.then ], [ %cmptmp, %and.2.else ]
-  ret i1 %and.2.phi
+and.11.exit:                                      ; preds = %and.11.else, %and.11.then
+  %and.11.phi = phi i1 [ %cmptmp7, %and.11.then ], [ %cmptmp, %and.11.else ]
+  ret i1 %and.11.phi
 }
 
 define i1 @"sys::poll_out"(i64 %0, i64 %1) #1 {
@@ -718,23 +718,23 @@ entry:
   store i64 %call.res, ptr %var.res, align 8
   %var.load5 = load i64, ptr %var.res, align 8
   %cmptmp = icmp sgt i64 %var.load5, 0
-  br i1 %cmptmp, label %and.3.then, label %and.3.else
+  br i1 %cmptmp, label %and.12.then, label %and.12.else
 
-and.3.then:                                       ; preds = %entry
+and.12.then:                                      ; preds = %entry
   %var.load6 = load ptr, ptr %"var.pfd'", align 8
   %fld.gep = getelementptr inbounds <{ i32, i16, i16 }>, ptr %var.load6, i32 0, i32 2
   %fld.load = load i16, ptr %fld.gep, align 2
   %coerce.sext = sext i16 %fld.load to i64
   %bandtmp = and i64 %coerce.sext, 4
   %cmptmp7 = icmp ne i64 %bandtmp, 0
-  br label %and.3.exit
+  br label %and.12.exit
 
-and.3.else:                                       ; preds = %entry
-  br label %and.3.exit
+and.12.else:                                      ; preds = %entry
+  br label %and.12.exit
 
-and.3.exit:                                       ; preds = %and.3.else, %and.3.then
-  %and.3.phi = phi i1 [ %cmptmp7, %and.3.then ], [ %cmptmp, %and.3.else ]
-  ret i1 %and.3.phi
+and.12.exit:                                      ; preds = %and.12.else, %and.12.then
+  %and.12.phi = phi i1 [ %cmptmp7, %and.12.then ], [ %cmptmp, %and.12.else ]
+  ret i1 %and.12.phi
 }
 
 attributes #0 = { nocallback nofree nosync nounwind speculatable willreturn memory(none) }

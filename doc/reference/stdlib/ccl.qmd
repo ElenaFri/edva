@@ -2,15 +2,14 @@
 meta:
   audience: "Edva developers and package authors"
   status: "current reference"
-  audited: "c17e2aa"
+  audited: "2026-11-02"
   evidence: "`std/ccl.dva`, `tests/pass/312_std_ccl.dva`"
 ---
 
 # `ccl` standard library
 
 The `ccl` module implements the [Categorical Configuration Language (CCL)](https://github.com/chshersh/ccl)
-parser, data model, deterministic serializer, and package manifest/lockfile validator
-used by Edva's package manager.
+parser, data model, deterministic serializer, and `#!` compile-time structural encoder/decoder.
 
 ```{.dva .run}
 #use ccl
@@ -40,7 +39,40 @@ The core document model represents nested, indentation-delimited key-value entri
 #type CclDoc CclEntry{}
 ```
 
-## Parsing and serialization
+## Structural encoding and decoding (`#!`)
+
+`ccl` provides compile-time structural codecs for records, tuples, enums, options, arrays, maps, primitives, and `CclDoc`:
+
+| Function | Signature | Description |
+|---|---|---|
+| `ccl::encode` | `val => String` | Serialize any record, map, or `CclDoc` into a canonical CCL string |
+| `ccl::decode` | `#! T, String => < T | Error >` | Parse CCL text and decode into target type `T` |
+| `ccl::decode_file` | `#! T, String => < T | Error >` | Read a file from disk and decode its CCL contents into `T` |
+| `ccl::to_doc` | `val => CclDoc` | Convert any record, map, or `CclDoc` into a `CclDoc` |
+| `ccl::to_ccl_val` | `val => CclVal` | Convert any value into a `CclVal` |
+| `ccl::decode_doc` | `#! T, CclDoc => < T | Error >` | Decode a parsed `CclDoc` into target type `T` |
+| `ccl::decode_val` | `#! T, CclVal => < T | Error >` | Decode a `CclVal` into target type `T` |
+
+### Codec conventions
+
+- **Forward-compatible records (`[(..)]`)**: Unknown keys in input are ignored. Missing keys use declared field defaults (`f.default`), `<-->` for option fields (`<P|>`), or `f.type.zero` for emptyable containers (`E{}`, `K ^ V`); an `Error` is returned only when a required non-option field with no default is missing.
+- **External enum tagging (`[<..>]`)**: Unit variants encode and decode as plain strings (`"VariantName"`), while payload variants encode and decode as single-entry blocks (`VariantName = payload`).
+- **Boolean flags (`[<>]`)**: `ccl::to_ccl_val` / `ccl::encode` serializes `<+>` as `"true"` and `<->` as `"false"`. In `ccl::decode_val`, a string entry (`Str s`) decodes to `<+>` (true) when `s` is `"true"`, `"1"`, or `"yes"`, and decodes to `<->` (false) when `s` is `"false"`, `"0"`, or `"no"`; any other string or a block entry returns an `Error`.
+
+```{.dva .partial}
+#type ServerCfg (
+   host: String = "127.0.0.1",
+   port: Int = 8080,
+   tls: <> = <->,
+   cert_path: < String | >,
+   tags: String{}
+)
+
+text = ccl::encode(ServerCfg("0.0.0.0", 9090, <+>, <+ "/etc/ssl/cert.pem" +>, String{}("api", "prod")))
+cfg = ccl::decode(ServerCfg, text)!!
+```
+
+## Document parsing and query helpers
 
 | Function | Signature | Description |
 |---|---|---|
@@ -57,12 +89,3 @@ The core document model represents nested, indentation-delimited key-value entri
 doc = ccl::parse("name = demo\nversion = 0.1.0", "edva.ccl")!!
 name = ccl::get(doc, "name") | n => n | "unknown"
 ```
-
-## Package manifest and lockfile validation
-
-The module provides schema models and validators for `edva.ccl` manifests and `edva.lock.ccl` lockfiles:
-
-- `ccl::validate_manifest`: validates a `CclDoc` against Edva package manifest requirements (`name`, `version`, `edva`, `dependencies`, `overrides`, `native`, `targets`).
-- `ccl::manifest_to_ccl`: serializes a `PackageManifest` record back into deterministic CCL.
-- `ccl::validate_lockfile`: validates resolved package lockfile data.
-- `ccl::lockfile_to_ccl`: renders a resolved `Lockfile` structure into deterministic lockfile format.

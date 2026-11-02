@@ -13,6 +13,7 @@
 #use "str"
 #use "show"
 #use "diag"
+#use "log"
 
 #foreign "c"
    write: (fd: Int, buf: Addr, count: Int) => Int
@@ -408,9 +409,9 @@ instantiate_ti_step = ctx, env, fn_mod, tvm, ti =>
       [Bitfield b]
          flds = unify::UFields()
          ?b.fields @ i =>
-            bf = b.fields(i) | _ | ast::BitfieldField("", 0, 0)
-            flds += unify::UField(bf.name, unify::UType(Prim,
-               unify::vt_to_uprim(b.backing_type)))
+            bf = b.fields(i) | _ | ast::BitfieldField("", 0, 0, <->)
+            f_up = bf.is_flag | unify::UPrim(Flag) | unify::vt_to_uprim(b.backing_type)
+            flds += unify::UField(bf.name, unify::UType(Prim, f_up))
          TiInstRes(tvm, unify::UType(Rec, flds))
       [Array a]
          res_a = instantiate_ti_step(ctx, env, fn_mod, tvm, a.1)
@@ -477,6 +478,91 @@ instantiate_generic_ti: unify::Ctx, type_env::TypeEnv, String, ast::TypeInfo => 
 instantiate_generic_ti = ctx, env, fn_mod, ti =>
    res = instantiate_ti_step(ctx, env, fn_mod, TypeVarMap(), ti)
    res.ut
+
+resolve_type_expr_ut_ti: unify::Ctx, type_env::TypeEnv, String,
+   ast::Expr => (unify::UType, ast::TypeInfo, <>)
+resolve_type_expr_ut_ti = ctx, env, fn_mod, e =>
+   e
+      [Var tv]
+         has_bnd = <>(type_env::lookup_binding(env, tv))
+         has_bnd
+            | (unify::UType(None), ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+            |
+               cast_opt = type_name_to_uprim(tv)
+               cast_opt
+                  | up =>
+                     ut = unify::UType(Prim, up)
+                     (ut, unify::type_info_from_utype(ctx, ut), <+>)
+                  |
+                     ut_opt0 = type_env::lookup_user_type(env, tv)
+                     ut_opt = <>(ut_opt0)
+                        | ut_opt0
+                        |
+                           (fn_mod != "" && !type_env::name_is_qualified(tv, 0))
+                              | type_env::lookup_user_type_exact(env, fn_mod + "::" + tv)
+                              | <-->
+                     ut_opt
+                        | udef => (udef.ut, ast::TypeInfo(TypeVar, tv), <+>)
+                        | (unify::UType(None), ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+      [Record r]
+         ?r.fields == 0
+            | (unify::prim_unit(), ast::TypeInfo(Prim, ast::ValueType(Unit)), <+>)
+            | (unify::UType(None), ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+      [Member m]
+         m.is_module_access
+            |
+               qn = module_qualified_name(m.target, m.field_name)
+               ut_opt = type_env::lookup_user_type(env, qn)
+               ut_opt
+                  | udef => (udef.ut, ast::TypeInfo(TypeVar, qn), <+>)
+                  | (unify::UType(None), ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+            | (unify::UType(None), ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+      | (unify::UType(None), ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+
+instantiate_generic_ti_call: unify::Ctx, type_env::TypeEnv, String, ast::TypeInfo,
+   ast::Exprs => unify::UType
+instantiate_generic_ti_call = ctx, env, fn_mod, ti, call_args =>
+   ti
+      [Fn f]
+         cur_tvm' = TypeVarMap()
+         vinfos = f.1
+         params = unify::UTypes()
+         arg_idx' = 0
+         n_call = ?call_args
+         f.4 @ cp =>
+            cp.1 == ast::ValueType(Type)
+               |
+                  arg_idx' < n_call
+                     |
+                        arg_e = call_args(arg_idx')!!
+                        is_unit_lit = arg_e [Record r_u] (?r_u.fields == 0) | <->
+                        has_extra = (n_call - arg_idx') > ?vinfos
+                        rt = (!is_unit_lit || has_extra)
+                           | resolve_type_expr_ut_ti(ctx, env, fn_mod, arg_e)
+                           | (unify::UType(None), ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+                        rt.2
+                           |
+                              cur_tvm' += TypeVarMapEntry(cp.0, rt.0)
+                              params += unify::prim_type()
+                              arg_idx' = arg_idx' + 1
+                           |
+                              tv_res = tv_get_or_create(ctx, cur_tvm', cp.0)
+                              cur_tvm' = tv_res.0
+                     |
+                        tv_res = tv_get_or_create(ctx, cur_tvm', cp.0)
+                        cur_tvm' = tv_res.0
+               |
+                  cp_res = instantiate_ti_step(ctx, env, fn_mod, cur_tvm', cp.2)
+                  cur_tvm' = cp_res.tvm
+                  params += cp_res.ut
+                  arg_idx' = arg_idx' + 1
+         vinfos @ pi =>
+            p_res = instantiate_ti_step(ctx, env, fn_mod, cur_tvm', pi)
+            cur_tvm' = p_res.tvm
+            params += p_res.ut
+         ret_res = instantiate_ti_step(ctx, env, fn_mod, cur_tvm', f.3)
+         unify::UType(Fn, unify::UFn(params, ret_res.ut))
+      | instantiate_generic_ti(ctx, env, fn_mod, ti)
 
 utype_from_ti_env: type_env::TypeEnv, ast::TypeInfo => unify::UType
 utype_from_ti_env = env, ti =>
@@ -545,9 +631,9 @@ utype_from_ti_env = env, ti =>
       [Bitfield b]
          flds = unify::UFields()
          ?b.fields @ i =>
-            bf = b.fields(i) | _ | ast::BitfieldField("", 0, 0)
-            flds += unify::UField(bf.name,
-               unify::UType(Prim, unify::vt_to_uprim(b.backing_type)))
+            bf = b.fields(i) | _ | ast::BitfieldField("", 0, 0, <->)
+            f_up = bf.is_flag | unify::UPrim(Flag) | unify::vt_to_uprim(b.backing_type)
+            flds += unify::UField(bf.name, unify::UType(Prim, f_up))
          unify::UType(Rec, flds)
       [Array a]
          unify::UType(Array, unify::UArray(utype_from_ti_env(env, a.1), a.2))
@@ -714,8 +800,8 @@ annotate_type_size = env, vt, ti =>
       [Ram r]
          s0 = r.0
          s1 = r.1
-         has0 = s0.has_payload && !(s0.payload_type [Unit])
-         has1 = s1.has_payload && !(s1.payload_type [Unit])
+         has0 = s0.has_payload && s0.payload_type ![Unit]
+         has1 = s1.has_payload && s1.payload_type ![Unit]
          !has0 && !has1
             | 1
             |
@@ -1263,10 +1349,11 @@ member_field_ti = env, ti, name =>
       [Bitfield b]
          res' = <-->
          ?b.fields @ i =>
-            bf = b.fields(i) | _ | ast::BitfieldField("", 0, 0)
+            bf = b.fields(i) | _ | ast::BitfieldField("", 0, 0, <->)
             bf.name == name
                |
-                  res' = <+ ast::TypeInfo(Prim, b.backing_type) +>
+                  f_vt = bf.is_flag | ast::ValueType(Flag) | b.backing_type
+                  res' = <+ ast::TypeInfo(Prim, f_vt) +>
                   -->
          res'
       [Prim p]
@@ -1922,7 +2009,19 @@ annotate_expr = ctx, env, expr =>
                   [Rec r_chk]
                      fname' != ""
                         | exact_idx' = unify::find_field_idx(r_chk, fname')
-               swz_status' = 0
+               is_type_tgt = c_tgt [Prim p_t] (p_t [Type]) | <->
+               type_prop_ti' = <-->
+               is_type_tgt && (fname' == "name" || fname' == "zero")
+                  |
+                     fname' == "name"
+                        | unify::unify(ctx, fld_ut, unify::prim_str())
+                        |
+                           rt_z = resolve_type_expr_ut_ti(ctx, env, "", m.target)
+                           rt_z.2
+                              |
+                                 unify::unify(ctx, fld_ut, rt_z.0)
+                                 type_prop_ti' = <+ rt_z.1 +>
+               swz_status' = is_type_tgt && (fname' == "name" || fname' == "zero") | 2 | 0
                c_tgt
                   [Rec r_swz]
                      exact_idx' < 0 && fname' != "" && env.swizzle_mode != "none"
@@ -1949,9 +2048,12 @@ annotate_expr = ctx, env, expr =>
                   |
                      unify::add_error(ctx, 3170,
                         diag::member_index_constant!)
-               fld_ti_opt = fname' != "" && swz_status' != 1
-                  | member_field_ti(env, target_te.ti, fname')
-                  | <-->
+               fld_ti_opt = <>(type_prop_ti')
+                  | type_prop_ti'
+                  |
+                     fname' != "" && swz_status' != 1
+                        | member_field_ti(env, target_te.ti, fname')
+                        | <-->
                ti = fld_ti_opt
                   | _
                   | unify::type_info_from_utype(ctx, fld_ut)
@@ -2115,8 +2217,12 @@ annotate_expr = ctx, env, expr =>
       [Range r]
          lhs_te = r.has_lhs | annotate_expr(ctx, env, r.lhs) |
             tast::mk_lit_int(0, 0, 0)
-         rhs_te = r.has_rhs | annotate_expr(ctx, env, r.rhs) |
+         rhs_raw = r.has_rhs | annotate_expr(ctx, env, r.rhs) |
             tast::mk_lit_unit(0, 0)
+         inc_te = tast::mk_typed_bin(ast::BinaryOp(Add), rhs_raw,
+            tast::mk_lit_int(1, 0, 0), rhs_raw.ut, rhs_raw.ti, rhs_raw.layout,
+            0, 0)
+         rhs_te = r.has_rhs && r.is_inclusive | inc_te | rhs_raw
          is_rune = is_rune_ut(ctx, lhs_te.ut) || is_rune_ut(ctx, rhs_te.ut)
          ut = is_rune | unify::prim_rune() | unify::prim_int()
          ti = is_rune | ast::TypeInfo(Prim, ast::ValueType(Rune)) |
@@ -3728,7 +3834,7 @@ annotate_record_ctor_fields = ctx, env, ce, udef, flds, fields, nf, is_bitfield,
                               as_kind = tast::TypedExprKind(Assign, (tmp_name, <->, <->, <->, <->, rhs_te))
                               as_te = tast::mk_typed_expr(as_kind, rhs_te.ut, rhs_te.ti, rhs_te.layout, 0, 0)
                               pre_stmts += as_te
-                              new_r = ast::RangeExpr(r.has_lhs, r.has_rhs, r.lhs, ast::Expr(Var, tmp_name))
+                              new_r = ast::RangeExpr(r.has_lhs, r.has_rhs, r.lhs, ast::Expr(Var, tmp_name), r.is_inclusive)
                               new_args += ast::Expr(Range, new_r)
                      | new_args += arg
                |
@@ -3762,7 +3868,11 @@ annotate_record_ctor_fields = ctx, env, ce, udef, flds, fields, nf, is_bitfield,
       !has_val'
          |
             is_bitfield
-               | val_expr_opt = <+ ast::Expr(Int, 0) +>
+               |
+                  def_bf = (fld.val_type [Flag])
+                     | ast::Expr(Variant, ast::VariantExpr(ast::Tag(Negative), ast::Exprs()))
+                     | ast::Expr(Int, 0)
+                  val_expr_opt = <+ def_bf +>
                |
                   unify::add_error(ctx, 3130,
                      diag::record_default_missing(fld.name, ce.fn_name))
@@ -3808,7 +3918,8 @@ annotate_record_ctor = ctx, env, ce, udef, flds =>
       | bfi =>
          bfs = ast::FieldTypes()
          bfi.fields @ bf =>
-            bfs += ast::mk_rfield_type(bf.name, bfi.backing_type, ast::TypeInfo(Prim, bfi.backing_type))
+            f_vt = bf.is_flag | ast::ValueType(Flag) | bfi.backing_type
+            bfs += ast::mk_rfield_type(bf.name, f_vt, ast::TypeInfo(Prim, f_vt))
          bfs
       | ast::FieldTypes()
    fields = <>(bf_opt) | bf_fields | (resolved_ti' [Rec rr] rr.0 | ast::FieldTypes())
@@ -4113,7 +4224,8 @@ annotate_call_normal = ctx, env, ce =>
                      gen_opt = type_env::lookup_generic(env, ce.fn_name)
                      gen_opt
                         | gen_ti =>
-                           fn_ut' = instantiate_generic_ti(ctx, env, type_env::decl_module(ce.fn_name, 0), gen_ti)
+                           fn_ut' = instantiate_generic_ti_call(ctx, env,
+                              type_env::decl_module(ce.fn_name, 0), gen_ti, ce.args)
                         |
                            unify::add_error(ctx, 3004,
                               "Undefined function: " + ce.fn_name)
@@ -4174,11 +4286,26 @@ annotate_call_normal = ctx, env, ce =>
          arg_uts = unify::UTypes()
          c_callee = unify::canon(ctx, fn_ut')
          ce.args @ a, i =>
-            exp_arg = c_callee
+            exp_arg' = c_callee
                [Fn f_sig] (i < ?f_sig.params | <+ f_sig.params(i)!! +> | <-->)
                | <-->
+            is_opt_val = i == 3 && (a [Fn]) && ?typed_args > 1 && (ce.fn_name == "cli::opt" || ce.fn_name == "opt")
+            is_opt_val
+               |
+                  a1_e = ce.args(1)!!
+                  a1_vname = a1_e [Var vn] vn | ""
+                  a1_uprim = a1_vname != "" | type_name_to_uprim(a1_vname) | <-->
+                  a1_ut = unify::canon(ctx, (typed_args(1)!!).ut)
+                  a1_base_ut = a1_ut [Array ua] ua.elem | a1_ut
+                  opt_v_ut = a1_uprim
+                     | up => unify::UType(Prim, up)
+                     | a1_base_ut
+                  v_params = unify::UTypes()
+                  v_params += opt_v_ut
+                  v_fn_ut = unify::mk_fn(v_params, unify::ram_np(unify::prim_str()))
+                  exp_arg' = <+ v_fn_ut +>
             saved_exp = cur_expected_ut
-            cur_expected_ut ::= exp_arg
+            cur_expected_ut ::= exp_arg'
             ta = annotate_call_arg(ctx, env, a)
             cur_expected_ut ::= saved_exp
             a
@@ -4214,14 +4341,18 @@ annotate_call_normal = ctx, env, ce =>
                   |
                      c_fn
                         [Fn f_sig]
-                           ?arg_uts + 1 == ?f_sig.params
+                           is_gen_fn = ce.fn_name != "" && <>(type_env::lookup_generic(env, ce.fn_name))
+                           is_gen_fn && ?arg_uts < ?f_sig.params
                               |
-                                 p_last = unify::canon(ctx, f_sig.params(?arg_uts)!!)
-                                 is_gen_fn = ce.fn_name != "" && <>(type_env::lookup_generic(env, ce.fn_name))
-                                 (p_last [Var]) && is_gen_fn
+                                 all_tail_vars' = <+>
+                                 (?arg_uts..?f_sig.params) @ ti_k =>
+                                    p_k = unify::canon(ctx, f_sig.params(ti_k)!!)
+                                    !(p_k [Var]) | (all_tail_vars' = <->)
+                                 all_tail_vars'
                                     |
-                                       typed_args += tast::mk_lit_unit(ce.line, ce.col)
-                                       arg_uts += unify::prim_unit()
+                                       (?arg_uts..?f_sig.params) @ ti_m =>
+                                          typed_args += tast::mk_lit_unit(ce.line, ce.col)
+                                          arg_uts += unify::prim_unit()
                            ?arg_uts @ ai =>
                               ai < ?f_sig.params
                                  |
@@ -4451,6 +4582,23 @@ enum_branches_missing = variants, branches =>
                   missing' = missing' == "" | ++v.label | missing' + ", " + v.label
          missing'
 
+range_to_cmp_ast: ast::RangeExpr => ast::Expr
+range_to_cmp_ast = r =>
+   u = ast::Expr(Var, "_")
+   rhs_op = r.is_inclusive | ast::BinaryOp(NotGt) | ast::BinaryOp(Lt)
+   r.has_lhs && r.has_rhs
+      |
+         c1 = ast::Expr(Bin, (ast::BinaryOp(NotLt), u, r.lhs))
+         c2 = ast::Expr(Bin, (rhs_op, u, r.rhs))
+         ast::Expr(Bin, (ast::BinaryOp(And), c1, c2))
+      |
+         r.has_lhs
+            | ast::Expr(Bin, (ast::BinaryOp(NotLt), u, r.lhs))
+            |
+               r.has_rhs
+                  | ast::Expr(Bin, (rhs_op, u, r.rhs))
+                  | ast::Expr(Variant, (ast::Tag(Positive), ast::Exprs()))
+
 all_tb_unit: unify::Ctx, tast::TypedBranches => <>
 all_tb_unit = ctx, tb_list =>
    all_u' = <+>
@@ -4615,17 +4763,32 @@ annotate_choice = ctx, env, ch, is_disc =>
                            | (br_kind' = ast::GuardKind(Case))
       typed_cvs = tast::TypedExprs()
       br.case_values @ cv =>
-         cv_te = annotate_expr(ctx, env, cv)
-         typed_cvs += cv_te
-         c_cv = unify::canon(ctx, cv_te.ut)
-         c_cv
-            [Fn f_cv]
-               ?f_cv.params > 0
-                  |
-                     p0_cv = f_cv.params(0) | _ | unify::UType(None)
-                     unify::unify(ctx, cond_te.ut, p0_cv)
+         cv
+            [Range r]
+               type_env::enter_scope(env)
+               type_env::bind_local(env, "_", cond_te.ut, cond_te.ti, <->)
+               type_env::init_mark_whole(env, "_")
+               cmp_te = annotate_expr(ctx, env, range_to_cmp_ast(r))
+               type_env::leave_scope(env)
+               pnames = ast::Names()
+               pnames += "_"
+               put_list = unify::UTypes()
+               put_list += cond_te.ut
+               fn_ut = unify::UType(Fn, (put_list, unify::prim_flag()))
+               fn_ti = unify::type_info_from_utype(ctx, fn_ut)
+               typed_cvs += mk_lambda_te(pnames, cmp_te, fn_ut, fn_ti)
+            |
+               cv_te = annotate_expr(ctx, env, cv)
+               typed_cvs += cv_te
+               c_cv = unify::canon(ctx, cv_te.ut)
+               c_cv
+                  [Fn f_cv]
+                     ?f_cv.params > 0
+                        |
+                           p0_cv = f_cv.params(0) | _ | unify::UType(None)
+                           unify::unify(ctx, cond_te.ut, p0_cv)
+                        | unify::unify(ctx, cond_te.ut, cv_te.ut)
                   | unify::unify(ctx, cond_te.ut, cv_te.ut)
-            | unify::unify(ctx, cond_te.ut, cv_te.ut)
       (?br.case_values == 0 && (br_kind' [Case]) && ?br.variant_names > 0)
          |
             br.variant_names @ vn_str =>
@@ -5079,7 +5242,7 @@ annotate_key_write = ctx, env, ka, val_expr =>
 annotate_raw_write: unify::Ctx, type_env::TypeEnv,
    ast::RawMemoryExpr, ast::Expr => tast::TypedExpr
 annotate_raw_write = ctx, env, rm, val_expr =>
-   !(rm.load_type [Unknown])
+   rm.load_type ![Unknown]
       |
          unify::add_error(ctx, 2093, diag::E2093_assign_typed_load!)
    addr_te = annotate_expr(ctx, env, rm.addr)
@@ -5507,7 +5670,7 @@ print_program_errors = errs =>
    ?errs @ i =>
       err_res = errs(i)
       err_res | err =>
-         print $ unify::format_error(err)
+         log::error $ unify::format_error(err)
 
 #type ElabProgCtx (prog: tast::TypedProgram, ctx: unify::Ctx)
 #type ElabSuccess (

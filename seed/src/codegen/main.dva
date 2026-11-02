@@ -1089,12 +1089,12 @@ codegen_eval_array_index = cg, t =>
 range_arg_of: ast::CallExpr => ast::RangeExpr
 range_arg_of = t =>
    ?t.args == 0
-      | ast::RangeExpr(<->, <->, ast::Expr(Var, "?"), ast::Expr(Var, "?"))
+      | ast::RangeExpr(<->, <->, ast::Expr(Var, "?"), ast::Expr(Var, "?"), <->)
       |
          t.args(0)!!
             [Range r] r
             | ast::RangeExpr(<->, <->, ast::Expr(Var, "?"),
-               ast::Expr(Var, "?"))
+               ast::Expr(Var, "?"), <->)
 
 // "xs(a..b)" — a Slice view over the array's buffer: a fresh { data, len }
 // slice pointing at element a, with len = b - a. The slice reuses the array's
@@ -1134,7 +1134,7 @@ codegen_eval_array_view_base = cg, t, aval =>
       LLVMBuildStructGEP2(cg.builder, cg.slice_t, slice, 0,
          "a.view.data.gep"))
    tagged_len = LLVMBuildOr(cg.builder, view_len,
-      LLVMConstInt(i64t, 4611686018427387904, 0), "a.view.len.tagged")
+      LLVMConstInt(i64t, 0x4000000000000000, 0), "a.view.len.tagged")
    LLVMBuildStore(cg.builder, tagged_len,
       LLVMBuildStructGEP2(cg.builder, cg.slice_t, slice, 1,
          "a.view.len.gep"))
@@ -1222,7 +1222,7 @@ slice_len = cg, s, name =>
       LLVMBuildStructGEP2(cg.builder, cg.slice_t, s, 1, name + ".gep"),
       name + ".raw")
    LLVMBuildAnd(cg.builder, raw_len,
-      LLVMConstInt(i64t, 4611686018427387903, 0), name)
+      LLVMConstInt(i64t, 0x3FFFFFFFFFFFFFFF, 0), name)
 
 slice_packed_bit: types::Cg, Addr, String => Addr
 slice_packed_bit = cg, s, name =>
@@ -1231,7 +1231,7 @@ slice_packed_bit = cg, s, name =>
       LLVMBuildStructGEP2(cg.builder, cg.slice_t, s, 1, name + ".gep"),
       name + ".raw")
    LLVMBuildAnd(cg.builder, raw_len,
-      LLVMConstInt(i64t, 4611686018427387904, 0), name)
+      LLVMConstInt(i64t, 0x4000000000000000, 0), name)
 
 slice_is_packed: types::Cg, Addr, String => Addr
 slice_is_packed = cg, s, name =>
@@ -2690,28 +2690,34 @@ codegen_typed_eval = cg, te =>
                               (u_val', ast::ValueType(Enum))
                            | (LLVMConstInt(LLVMInt64Type!, 0, 0), types::var_type(cg, rv))
                         |
-                           el_owners = types::enum_label_owner_count(cg, bname, 0)
-                           v_opt = el_owners > 0
-                              | types::codegen_eval_enum_label_val(cg, bname, el_owners)
+                           is_prim_t = te.ti [Prim pvt] (pvt == ast::ValueType(Type)) | <->
+                           tn_p = is_prim_t | types::type_name_to_vt(bname) | (ast::ValueType(Unknown), <->)
+                           tn_p.1
                               |
-                                 rf = types::resolve_fn_name(cg, v.0)
-                                 fn_is_val = types::is_fn_name(cg, rf) ||
-                                    (expr::fn_alias(cg, rv) != "") || types::has_fn_name(cg, rf) ||
-                                    stmt::fn_has_signature(types::g.pstmts, rf, 0) ||
-                                    stmt::fn_has_signature(types::g.pstmts, v.0, 0)
-                                 fn_is_val
-                                    | expr::codegen_named_fn_value(cg, rf)
+                                 (LLVMConstInt(LLVMInt64Type!, types::prim_type_tag(tn_p.0), 0), ast::ValueType(Type))
+                              |
+                                 el_owners = types::enum_label_owner_count(cg, bname, 0)
+                                 v_opt = el_owners > 0
+                                    | types::codegen_eval_enum_label_val(cg, bname, el_owners)
                                     |
-                                       ct = types::ct_bind_find(v.0)
-                                       ct.1
-                                          | expr::codegen_materialize_cttr(cg, ct.0)
+                                       rf = types::resolve_fn_name(cg, v.0)
+                                       fn_is_val = types::is_fn_name(cg, rf) ||
+                                          (expr::fn_alias(cg, rv) != "") || types::has_fn_name(cg, rf) ||
+                                          stmt::fn_has_signature(types::g.pstmts, rf, 0) ||
+                                          stmt::fn_has_signature(types::g.pstmts, v.0, 0)
+                                       fn_is_val
+                                          | expr::codegen_named_fn_value(cg, rf)
                                           |
-                                             rt_name = types::resolve_type_name(cg, v.0)
-                                             types::is_user_type(cg, rt_name)
-                                                | types::codegen_eval_type_value(cg, rt_name)
-                                                | <-->
-                           v_opt | _ |
-                              (LLVMConstInt(LLVMInt64Type!, 0, 0), types::var_type(cg, rv))
+                                             ct = types::ct_bind_find(v.0)
+                                             ct.1
+                                                | expr::codegen_materialize_cttr(cg, ct.0)
+                                                |
+                                                   rt_name = types::resolve_type_name(cg, v.0)
+                                                   types::is_user_type(cg, rt_name)
+                                                      | types::codegen_eval_type_value(cg, rt_name)
+                                                      | <-->
+                                 v_opt | _ |
+                                    (LLVMConstInt(LLVMInt64Type!, 0, 0), types::var_type(cg, rv))
       [Bin b]
          expr::codegen_typed_eval_bin(cg, b.0, b.1, b.2, te.ut, te.ti)
       [Unary u]
@@ -2866,7 +2872,7 @@ codegen_typed_eval = cg, te =>
                nf @ j =>
                   tf = r(j) | _ | tast::TypedField("", tast::mk_lit_unit(0, 0), 0, unify::prim_unit())
                   bf_fld = types::find_bitfield_field(bfi.fields, tf.name)
-                  bf = bf_fld | _ | (bfi.fields(j) | _ | ast::BitfieldField("", 0, 0))
+                  bf = bf_fld | _ | (bfi.fields(j) | _ | ast::BitfieldField("", 0, 0, <->))
                   fev = codegen_typed_eval(cg, tf.val)
                   fmask = bf.bit_width !< 64 | -1 | ((1 .<. bf.bit_width) - 1)
                   v_cast = stmt::coerce_int(cg, fev.0, bty)
@@ -3133,6 +3139,10 @@ codegen_typed_program_opts = prog, raw, out_path, exports, src_file, opts =>
    types::g.expected_fn_ti = ast::TypeInfo(Prim, ast::ValueType(Unknown))
    types::g.ct_bind_names = ast::Names()
    types::g.ct_bind_tis = ast::VInfos()
+   types::g.ct_bind_dnames = ast::Names()
+   types::g.ct_cursor_names = ast::Names()
+   types::g.ct_cursor_tis = ast::VInfos()
+   types::g.ct_cursor_idxs = types::IntArr()
    types::g.ct_val_names = ast::Names()
    types::g.ct_val_vals = types::CtVals()
    types::g.lambda_env_infos = types::LambdaEnvInfos()

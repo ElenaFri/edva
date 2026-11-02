@@ -14,9 +14,10 @@
 
 #use ascii
 #use const
+#use utf
 
 #private case_up_runs = (
-   0x1ffc01900061, 0x205ce00000b5, 0x1ffc016000e0, 0x1ffc006000f8,
+   0x205ce00000b5, 0x1ffc016000e0, 0x1ffc006000f8,
    0x200f200000ff, 0x1ffff2e00101, 0x1fe300000131, 0x1ffff0400133,
    0x1ffff0e0013a, 0x1ffff2c0014b, 0x1ffff040017a, 0x1fda8000017f,
    0x201860000180, 0x1ffff0200183, 0x1fffe0000188, 0x1fffe000018c,
@@ -69,7 +70,7 @@
 )
 
 #private case_lo_runs = (
-   0x200401900041, 0x2004016000c0, 0x2004006000d8, 0x200032e00100,
+   0x2004016000c0, 0x2004006000d8, 0x200032e00100,
    0x200030400132, 0x200030e00139, 0x200032c0014a, 0x1ff0e0000178,
    0x200030400179, 0x201a40000181, 0x200030200182, 0x2019c0000186,
    0x200020000187, 0x2019a0100189, 0x20002000018b, 0x2009e000018e,
@@ -123,7 +124,7 @@
    unicode_case_up = cp =>
       cp < 0x80 | --| ascii::to_upper(cp)
       lo' = 0
-      hi' = 198
+      hi' = 197
       res' = cp
       0.. @
          lo' > hi' | -->
@@ -133,14 +134,13 @@
          span = (w .>. 20) .&. 0xFF
          cp < start
             | hi' = mid - 1
-            |
-               cp > start + span
-                  | lo' = mid + 1
-                  |
-                     step2 = (w .>. 28) .&. 1
-                     (step2 == 0 || ((cp - start) .&. 1) == 0)
-                        | res' = cp + ((w .>. 29) - 65536)
-                     -->
+            | cp > start + span
+               | lo' = mid + 1
+               |
+                  step2 = (w .>. 28) .&. 1
+                  (step2 == 0 || ((cp - start) .&. 1) == 0)
+                     | res' = cp + ((w .>. 29) - 0x10000)
+                  -->
       res'
 
    unicode_case_lo: Int => Int
@@ -148,7 +148,7 @@
       cp < 0x80 | --| ascii::to_lower(cp)
       cp == 0x0130 | --| 0x0069
       lo' = 0
-      hi' = 185
+      hi' = 184
       res' = cp
       0.. @
          lo' > hi' | -->
@@ -158,66 +158,14 @@
          span = (w .>. 20) .&. 0xFF
          cp < start
             | hi' = mid - 1
-            |
-               cp > start + span
-                  | lo' = mid + 1
-                  |
-                     step2 = (w .>. 28) .&. 1
-                     (step2 == 0 || ((cp - start) .&. 1) == 0)
-                        | res' = cp + ((w .>. 29) - 65536)
-                     -->
+            | cp > start + span
+               | lo' = mid + 1
+               |
+                  step2 = (w .>. 28) .&. 1
+                  (step2 == 0 || ((cp - start) .&. 1) == 0)
+                     | res' = cp + ((w .>. 29) - 0x10000)
+                  -->
       res'
-
-   append_utf8_cp: Builder, Int => ()
-   append_utf8_cp = b, cp =>
-      cp
-         [< 0x80]
-            b += cp
-         [< 0x800]
-            b += 0xC0 .|. (cp .>. 6)
-            b += 0x80 .|. (cp .&. 0x3F)
-         [< 0x10000]
-            b += 0xE0 .|. (cp .>. 12)
-            b += 0x80 .|. ((cp .>. 6) .&. 0x3F)
-            b += 0x80 .|. (cp .&. 0x3F)
-         |
-            b += 0xF0 .|. (cp .>. 18)
-            b += 0x80 .|. ((cp .>. 12) .&. 0x3F)
-            b += 0x80 .|. ((cp .>. 6) .&. 0x3F)
-            b += 0x80 .|. (cp .&. 0x3F)
-
-   decode_utf8_at: String, Int, Int => (Int, Int)
-   decode_utf8_at = s, i, len =>
-      b0 = s(i)
-      b0
-         [< 0xC2] (-1, 1)
-         [< 0xE0]
-            i + 1 < len && (s(i + 1) .&. 0xC0) == 0x80
-               | (((b0 .&. 0x1F) .<. 6) .|. (s(i + 1) .&. 0x3F), 2)
-               | (-1, 1)
-         [< 0xF0]
-            ok3 = i + 2 < len && (s(i + 1) .&. 0xC0) == 0x80 &&
-               (s(i + 2) .&. 0xC0) == 0x80
-            ok3
-               |
-                  cp3 = ((b0 .&. 0x0F) .<. 12) .|. ((s(i + 1) .&. 0x3F) .<. 6) .|.
-                     (s(i + 2) .&. 0x3F)
-                  cp3 !< 0x800 && (cp3 < 0xD800 || cp3 > 0xDFFF)
-                     | (cp3, 3)
-                     | (-1, 1)
-               | (-1, 1)
-         [< 0xF5]
-            ok4 = i + 3 < len && (s(i + 1) .&. 0xC0) == 0x80 &&
-               (s(i + 2) .&. 0xC0) == 0x80 && (s(i + 3) .&. 0xC0) == 0x80
-            ok4
-               |
-                  cp4 = ((b0 .&. 0x07) .<. 18) .|. ((s(i + 1) .&. 0x3F) .<. 12) .|.
-                     ((s(i + 2) .&. 0x3F) .<. 6) .|. (s(i + 3) .&. 0x3F)
-                  cp4 !< 0x10000 && cp4 !> 0x10FFFF
-                     | (cp4, 4)
-                     | (-1, 1)
-               | (-1, 1)
-         | (-1, 1)
 
 #public
    is_digit: Int => <>
@@ -230,7 +178,7 @@
    is_alnum = c => ascii::is_alnum(c)
 
    is_ws: Int => <>
-   is_ws    = c => c == ' ' || c == '\t' || c == '\n' || c == '\r'
+   is_ws    = [' ', '\t', '\n', '\r']
 
    is_hex: Int => <>
    is_hex   = c => ascii::is_hex(c)
@@ -251,7 +199,7 @@
    from_int: Int => String
    from_int = v =>
       v [0] --| "0"
-      v == -9223372036854775807 - 1 | --| "-9223372036854775808"
+      v == const::min_i64 | --| "-9223372036854775808"
       b = {32}
       n' = v [< 0] 0 - v | v
       32 @
@@ -683,13 +631,13 @@
                b += ascii::to_lower(b0)
                i' = i' + 1
             |
-               dec = decode_utf8_at(s, i', len)
+               dec = utf::decode_str_at(s, i')
                dec.0 < 0
                   |
                      b += b0
                      i' = i' + 1
                   |
-                     append_utf8_cp(b, unicode_case_lo(dec.0))
+                     utf::append_codepoint(b, unicode_case_lo(dec.0))
                      i' = i' + dec.1
       +b
 
@@ -707,7 +655,7 @@
                b += ascii::to_upper(b0)
                i' = i' + 1
             |
-               dec = decode_utf8_at(s, i', len)
+               dec = utf::decode_str_at(s, i')
                dec.0 < 0
                   |
                      b += b0
@@ -715,7 +663,7 @@
                   |
                      dec.0 == 0x00DF
                         | b += "SS"
-                        | append_utf8_cp(b, unicode_case_up(dec.0))
+                        | utf::append_codepoint(b, unicode_case_up(dec.0))
                      i' = i' + dec.1
       +b
 

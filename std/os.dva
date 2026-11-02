@@ -3,22 +3,33 @@
 
 #use libc
 #use mem
+#use path
+#use str
 #use sys
 
 #foreign
    environ: Addr
 
 #foreign "c"
-   c_getenv   = getenv:   (name: String) => Addr
-   c_setenv   = setenv:   (name: String, val: String, overwrite: i32) => i32
-   c_unsetenv = unsetenv: (name: String) => i32
-   c_getcwd   = getcwd:   (buf: Addr, size: Int) => Addr
-   c_chdir    = chdir:    (path: String) => i32
-   c_getpid   = getpid:   () => i32
-   c_getppid  = getppid:  () => i32
-   c_popen    = popen:    (command: String, mode: String) => Addr
-   c_pclose   = pclose:   (stream: Addr) => i32
-   c_fread    = fread:    (ptr: Addr, size: Int, nmemb: Int, stream: Addr) => Int
+   c_getenv      = getenv:      (name: String) => Addr
+   c_setenv      = setenv:      (name: String, val: String, overwrite: i32) => i32
+   c_unsetenv    = unsetenv:    (name: String) => i32
+   c_getcwd      = getcwd:      (buf: Addr, size: Int) => Addr
+   c_chdir       = chdir:       (path: String) => i32
+   c_getpid      = getpid:      () => i32
+   c_getppid     = getppid:     () => i32
+   c_popen       = popen:       (command: String, mode: String) => Addr
+   c_pclose      = pclose:      (stream: Addr) => i32
+   c_fread       = fread:       (ptr: Addr, size: Int, nmemb: Int, stream: Addr) => Int
+   c_fork        = fork:        () => i32
+   c_execvp      = execvp:      (file: Addr, argv: Addr) => i32
+   c_dup2        = dup2:        (oldfd: i32, newfd: i32) => i32
+   c_exit        = _exit:       (status: i32) => ()
+   c_kill        = kill:        (pid: i32, sig: i32) => i32
+   c_access      = access:      (path: String, mode: i32) => i32
+   c_gethostname = gethostname: (name: Addr, len: Int) => i32
+
+O_NONBLOCK_FLAG = #! (os ["darwin"] 4 | 2048)
 
 // Extracts the exit code from a POSIX wait status word.
 decode_wait_status: Int => Int
@@ -31,8 +42,54 @@ decode_wait_status = raw =>
             | (raw .>. 8) .&. 255
             | 128 + sig
 
+cstr_in_arena: mem::Arena, String => Addr
+cstr_in_arena = ar, s =>
+   n = ?s
+   buf = mem::alloc(ar, n + 1)
+   n > 0 | %memcpy(buf, &s, n)
+   @[buf + n] = 0u8
+   buf
+
+set_nonblock: Int => ()
+set_nonblock = fd =>
+   flags = libc::fcntl(fd, 3, 0)
+   flags !< 0 | libc::fcntl(fd, 4, flags .|. O_NONBLOCK_FLAG)
+
+append_bytes: Builder, Addr, Int => Builder
+append_bytes = b, src, n =>
+   n !> 0 | --| b
+   len = ?b
+   b2 = {len + n + 64}
+   len > 0 | %memcpy(&b2, &b, len)
+   %memcpy(&b2 + len, src, n)
+   ?b2 = len + n
+   b2
+
 #public
+   SIGINT  = 2
+   SIGKILL = 9
+   SIGTERM = 15
+
+   #type Args String{}
    #type ExecResult (status: Int, output: String)
+   #type ProcResult (status: Int, stdout: String, stderr: String)
+   #type Child (pid: Int, stdin_fd: Int, stdout_fd: Int, stderr_fd: Int)
+
+#private
+   build_argv_args: mem::Arena, String, Args => (Addr, Addr)
+   build_argv_args = ar, prog, args =>
+      n = ?args
+      prog_c = cstr_in_arena(ar, prog)
+      argv_ptr = mem::alloc(ar, (n + 2) * 8)
+      @[argv_ptr] = prog_c
+      n @ i =>
+         off = (i + 1) * 8
+         @[argv_ptr + off] = cstr_in_arena(ar, args(i)!!)
+      end_off = (n + 1) * 8
+      @[argv_ptr + end_off] = sys::addr_null
+      (prog_c, argv_ptr)
+
+#public
 
    open: String, Int => Int
    open  = path, flags => libc::open(path, flags)
@@ -56,6 +113,39 @@ decode_wait_status = raw =>
                   ?b = n
                   +b
                | ""
+
+   // Returns `<+>` if file descriptor `fd` refers to a terminal device.
+   isatty: Int => <>
+   isatty = fd => libc::isatty(fd) == 1
+
+   // Returns the system hostname, or `""` on failure.
+   hostname: () => String
+   hostname = !=>
+      buf = {256}
+      c_gethostname(&buf, 255) == 0i32
+         |
+            @[&buf + 255] = 0u8
+            sys::c_str(&buf)
+         | ""
+
+   // Searches `PATH` for an executable named `prog`.
+   which: String => < String | >
+   which = prog =>
+      ?prog == 0 | --| <-->
+      str::contains(prog, "/")
+         | (c_access(prog, 1i32) == 0i32 | <+ prog +> | <-->)
+         |
+            path_env = env_or("PATH", "/usr/local/bin:/usr/bin:/bin")
+            dirs = str::split(path_env, path::LIST_SEP_STR)
+            found' = ++""
+            dirs @ d =>
+               base = ?d == 0 | "." | d
+               cand = path::join(base, prog)
+               c_access(cand, 1i32) == 0i32
+                  |
+                     found' = cand
+                     -->
+            ?found' > 0 | <+ found' +> | <-->
 
    // Spawns a process. Accepts an argv array (Addr) and waits for exit.
    spawn: String, Addr => Int
@@ -128,6 +218,285 @@ decode_wait_status = raw =>
    // Returns the parent process ID of the current process.
    ppid: () => Int
    ppid = !=> Int(c_getppid!)
+
+   // --- Child Process Management (Argument-Array, Shell-Free) -----------------
+
+   // Waits for child process `child_pid` to terminate and returns its decoded exit status.
+   wait_pid: Int => < Int | >
+   wait_pid = child_pid =>
+      child_pid !> 0 | --| <-->
+      st_buf = {8}
+      @[&st_buf] = 0
+      r = libc::waitpid(child_pid, &st_buf, 0)
+      r < 0
+         | <-->
+         | <+ decode_wait_status(Int(@[&st_buf i32])) +>
+
+   // Non-blocking check for child `child_pid` completion (`WNOHANG = 1`).
+   // Returns `<+ exit_status +>` if exited, or `<-->` if still running or invalid.
+   try_wait_pid: Int => < Int | >
+   try_wait_pid = child_pid =>
+      child_pid !> 0 | --| <-->
+      st_buf = {8}
+      @[&st_buf] = 0
+      r = libc::waitpid(child_pid, &st_buf, 1)
+      r > 0
+         | <+ decode_wait_status(Int(@[&st_buf i32])) +>
+         | <-->
+
+   // Sends signal `sig` to `target_pid`. Returns `<+>` on success.
+   kill_pid: Int, Int => <>
+   kill_pid = target_pid, sig =>
+      c_kill(i32(target_pid), i32(sig)) == 0i32
+
+   // Spawns `prog` with `args` in the background (inheriting stdio).
+   // Returns `<+ child_pid +>` or `<-->` if `fork`/`execvp` fails.
+   spawn_bg: String, Args => < Int | >
+   spawn_bg = prog, args =>
+      ?prog == 0 | --| <-->
+      exec_p = {8}
+      libc::pipe(&exec_p) != 0 | --| <-->
+      exec_r = Int(@[&exec_p i32])
+      exec_w = Int(@[&exec_p + 4 i32])
+      libc::fcntl(exec_w, 2, 1)
+      ar = mem::arena(512)
+      built = build_argv_args(ar, prog, args)
+      child_pid = Int(c_fork!)
+      child_pid < 0
+         |
+            libc::close(exec_r)
+            libc::close(exec_w)
+            mem::destroy(ar)
+            <-->
+         | child_pid == 0
+            |
+               libc::close(exec_r)
+               c_execvp(built.0, built.1)
+               err_b = {4}
+               @[&err_b] = 1i32
+               libc::write_ptr(exec_w, &err_b, 4)
+               libc::close(exec_w)
+               c_exit(127i32)
+               <-->
+            |
+               libc::close(exec_w)
+               mem::destroy(ar)
+               chk = {4}
+               n = libc::read(exec_r, &chk, 4)
+               libc::close(exec_r)
+               n > 0
+                  |
+                     wait_pid(child_pid)
+                     <-->
+                  | <+ child_pid +>
+
+   // Spawns `prog` with `args` (inheriting stdio), waits for completion,
+   // and returns the decoded exit status (`-1` if spawning fails).
+   spawn_args: String, Args => Int
+   spawn_args = prog, args =>
+      spawn_bg(prog, args)
+         | cpid =>
+            wait_pid(cpid) | code => code | -1
+         | -1
+
+   // Spawns `prog` with `args` and pipes connected to child stdin, stdout, and stderr.
+   // Returns `<+ Child(pid, stdin_fd, stdout_fd, stderr_fd) +>` or `<-->` on error.
+   spawn_piped: String, Args => < Child | >
+   spawn_piped = prog, args =>
+      ?prog == 0 | --| <-->
+      pipes = {32}
+      libc::pipe(&pipes) != 0 | --| <-->
+      in_r = Int(@[&pipes i32])
+      in_w = Int(@[&pipes + 4 i32])
+      libc::pipe(&pipes + 8) != 0
+         |
+            libc::close(in_r)
+            libc::close(in_w)
+            --| <-->
+      out_r = Int(@[&pipes + 8 i32])
+      out_w = Int(@[&pipes + 12 i32])
+      libc::pipe(&pipes + 16) != 0
+         |
+            libc::close(in_r)
+            libc::close(in_w)
+            libc::close(out_r)
+            libc::close(out_w)
+            --| <-->
+      err_r = Int(@[&pipes + 16 i32])
+      err_w = Int(@[&pipes + 20 i32])
+      libc::pipe(&pipes + 24) != 0
+         |
+            libc::close(in_r)
+            libc::close(in_w)
+            libc::close(out_r)
+            libc::close(out_w)
+            libc::close(err_r)
+            libc::close(err_w)
+            --| <-->
+      exec_r = Int(@[&pipes + 24 i32])
+      exec_w = Int(@[&pipes + 28 i32])
+      libc::fcntl(exec_w, 2, 1)
+      ar = mem::arena(512)
+      built = build_argv_args(ar, prog, args)
+      child_pid = Int(c_fork!)
+      child_pid < 0
+         |
+            libc::close(in_r)
+            libc::close(in_w)
+            libc::close(out_r)
+            libc::close(out_w)
+            libc::close(err_r)
+            libc::close(err_w)
+            libc::close(exec_r)
+            libc::close(exec_w)
+            mem::destroy(ar)
+            <-->
+         | child_pid == 0
+            |
+               libc::close(in_w)
+               libc::close(out_r)
+               libc::close(err_r)
+               libc::close(exec_r)
+               c_dup2(i32(in_r), 0i32)
+               c_dup2(i32(out_w), 1i32)
+               c_dup2(i32(err_w), 2i32)
+               libc::close(in_r)
+               libc::close(out_w)
+               libc::close(err_w)
+               c_execvp(built.0, built.1)
+               err_b = {4}
+               @[&err_b] = 1i32
+               libc::write_ptr(exec_w, &err_b, 4)
+               libc::close(exec_w)
+               c_exit(127i32)
+               <-->
+            |
+               libc::close(in_r)
+               libc::close(out_w)
+               libc::close(err_w)
+               libc::close(exec_w)
+               mem::destroy(ar)
+               chk = {4}
+               n = libc::read(exec_r, &chk, 4)
+               libc::close(exec_r)
+               n > 0
+                  |
+                     libc::close(in_w)
+                     libc::close(out_r)
+                     libc::close(err_r)
+                     wait_pid(child_pid)
+                     <-->
+                  | <+ Child(child_pid, in_w, out_r, err_r) +>
+
+   // Feeds `input` to `child.stdin_fd`, drains `stdout_fd` and `stderr_fd` concurrently
+   // using `poll`, closes all pipe descriptors, and waits for `child.pid`.
+   communicate_child: Child, String => < ProcResult | >
+   communicate_child = child, input =>
+      in_fd' = child.stdin_fd
+      out_fd' = child.stdout_fd
+      err_fd' = child.stderr_fd
+      in_len = ?input
+      in_pos' = 0
+      in_len == 0 && in_fd' !< 0
+         |
+            libc::close(in_fd')
+            in_fd' = -1
+         |
+            in_fd' !< 0 | set_nonblock(in_fd')
+      out_fd' !< 0 | set_nonblock(out_fd')
+      err_fd' !< 0 | set_nonblock(err_fd')
+      out_buf' = {256}
+      err_buf' = {256}
+      chunk = {4096}
+      pfds = {24}
+      0.. @
+         in_fd' < 0 && out_fd' < 0 && err_fd' < 0 | -->
+         ev0 = in_fd' !< 0 | 4i16 | 0i16
+         ev1 = out_fd' !< 0 | 1i16 | 0i16
+         ev2 = err_fd' !< 0 | 1i16 | 0i16
+         @[&pfds] = i32(in_fd')
+         @[&pfds + 4] = ev0
+         @[&pfds + 6] = 0i16
+         @[&pfds + 8] = i32(out_fd')
+         @[&pfds + 12] = ev1
+         @[&pfds + 14] = 0i16
+         @[&pfds + 16] = i32(err_fd')
+         @[&pfds + 20] = ev2
+         @[&pfds + 22] = 0i16
+         pr = libc::poll(&pfds, 3, -1)
+         pr < 0 | -->
+         rev0 = Int(@[&pfds + 6 i16])
+         rev1 = Int(@[&pfds + 14 i16])
+         rev2 = Int(@[&pfds + 22 i16])
+         in_fd' !< 0 && (rev0 .&. 28) != 0
+            |
+               rem = in_len - in_pos'
+               w = rem > 0 | libc::write_ptr(in_fd', &input + in_pos', rem) | 0
+               w > 0
+                  |
+                     in_pos' = in_pos' + w
+                     in_pos' !< in_len
+                        |
+                           libc::close(in_fd')
+                           in_fd' = -1
+                  | (rev0 .&. 24) != 0
+                     |
+                        libc::close(in_fd')
+                        in_fd' = -1
+         out_fd' !< 0 && (rev1 .&. 25) != 0
+            |
+               r = libc::read(out_fd', &chunk, 4096)
+               r > 0
+                  | out_buf' = append_bytes(out_buf', &chunk, r)
+                  | r == 0 || (rev1 .&. 24) != 0
+                     |
+                        libc::close(out_fd')
+                        out_fd' = -1
+         err_fd' !< 0 && (rev2 .&. 25) != 0
+            |
+               r2 = libc::read(err_fd', &chunk, 4096)
+               r2 > 0
+                  | err_buf' = append_bytes(err_buf', &chunk, r2)
+                  | r2 == 0 || (rev2 .&. 24) != 0
+                     |
+                        libc::close(err_fd')
+                        err_fd' = -1
+      in_fd' !< 0 | libc::close(in_fd')
+      out_fd' !< 0 | libc::close(out_fd')
+      err_fd' !< 0 | libc::close(err_fd')
+      wait_pid(child.pid)
+         | code => <+ ProcResult(code, +out_buf', +err_buf') +>
+         | <-->
+
+   // Waits for a `Child` started by `spawn_piped`, draining remaining stdout and stderr.
+   wait_child: Child => < ProcResult | >
+   wait_child = child =>
+      communicate_child(child, "")
+
+   // Spawns `prog` with `args`, feeds `input` to its stdin, captures `stdout` and `stderr`,
+   // and returns `<+ ProcResult(status, stdout, stderr) +>` or `<-->` if spawning fails.
+   exec_input: String, Args, String => < ProcResult | >
+   exec_input = prog, args, input =>
+      spawn_piped(prog, args)
+         | child => communicate_child(child, input)
+         | <-->
+
+   // Spawns `prog` with `args` directly (no shell), captures `stdout` and `stderr`,
+   // and returns `<+ ProcResult(status, stdout, stderr) +>` or `<-->` if spawning fails.
+   exec_args: String, Args => < ProcResult | >
+   exec_args = prog, args =>
+      exec_input(prog, args, "")
+
+   // Spawns `prog` with `args` and returns `<+ stdout +>` when exit status is 0,
+   // or `<-->` on non-zero exit or spawn failure.
+   run_args: String, Args => < String | >
+   run_args = prog, args =>
+      exec_args(prog, args)
+         | res =>
+            res.status == 0
+               | <+ res.stdout +>
+               | <-->
+         | <-->
 
    // --- Shell Command Execution -----------------------------------------------
 

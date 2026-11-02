@@ -31,8 +31,8 @@ The `event` module provides portable file descriptor readiness notification back
 
 | Function | Signature | Description |
 |---|---|---|
-| `event::new!` | `() => <Poller \| String>` | Creates a poller with default capacity (`64` descriptors) |
-| `event::new_with_cap` | `Int => <Poller \| String>` | Creates a poller with the specified maximum capacity |
+| `event::new!` | `() => <Poller | String>` | Creates a poller with default capacity (`64` descriptors) |
+| `event::new_with_cap` | `Int => <Poller | String>` | Creates a poller with the specified maximum capacity |
 | `event::add` | `Poller, Int, Int, Int => <>` | Registers `fd` with interest `mask` and `user_data` token |
 | `event::add_fd` | `Poller, Int, Int => <>` | Registers `fd` with interest `mask`, using `fd` as `user_data` |
 | `event::mod` | `Poller, Int, Int, Int => <>` | Modifies interest `mask` and `user_data` for registered `fd` |

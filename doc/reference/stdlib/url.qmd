@@ -1,0 +1,49 @@
+---
+meta:
+  audience: "Edva developers parsing URLs, resolving relative URIs, and encoding query strings"
+  status: "current reference"
+  audited: "fb4fbc2"
+  evidence: "`std/url.dva`, `tests/pass/398_std_url_csv.dva`"
+---
+
+# `url` standard library
+
+The `url` module implements RFC 3986 URI/URL parsing, formatting, dot-segment path
+normalization, relative reference resolution, percent-encoding, and `#!` compile-time
+structural query string encoding and decoding (`url::encode_query`, `url::decode_query`).
+
+```{.dva .run}
+#use url
+#use io
+
+#type Filter (q: String, page: Int = 1)
+
+qs = url::encode_query(Filter("edva lang", 2))
+io::out $ qs
+url::decode_query(Filter, qs) | f => io::out $ f.q
+```
+
+## Types and Function catalog
+
+| Symbol / Function | Signature | Description |
+|---|---|---|
+| `url::Url` | Record `(scheme: String, userinfo: String, host: String, port: Int = 0, path: String, query: String, fragment: String)` | Parsed RFC 3986 URL |
+| `url::QueryEntry` | Record `(key: String, val: String)` | Single query parameter key-value pair |
+| `url::QueryParams` | `QueryEntry{}` | Growable list of query parameters |
+| `url::parse(raw)` | `String => < Url | Error >` | Parses an RFC 3986 URI/URL reference (including IPv6 `[::1]:8080` authorities) |
+| `url::format(u)` | `Url => String` | Formats a `Url` record into its canonical string representation |
+| `url::resolve(base, ref_str)` | `Url, String => < Url | Error >` | Resolves a relative URI reference against `base` per RFC 3986 Section 5.2 |
+| `url::normalize_path(path)` | `String => String` | Resolves `.` and `..` path segments per RFC 3986 Section 5.2.4 |
+| `url::encode_component(s)` | `String => String` | Percent-encodes `s` leaving only RFC 3986 unreserved characters unescaped |
+| `url::decode_component(s)` | `String => < String | Error >` | Decodes `%XX` percent-escapes |
+| `url::encode_form(s)` | `String => String` | Encodes `s` for `application/x-www-form-urlencoded` (spaces become `+`) |
+| `url::decode_form(s)` | `String => < String | Error >` | Decodes `application/x-www-form-urlencoded` (`+` to space and `%XX`) |
+| `url::encode_path(s)` | `String => String` | Percent-encodes a URL path while preserving `/` and path-safe sub-delimiters |
+| `url::parse_query(qs)` | `String => < QueryParams | Error >` | Parses a query string (with or without leading `?`) into `QueryParams` |
+| `url::format_query(params)` | `QueryParams => String` | Formats `QueryParams` into a `k1=v1&k2=v2` query string |
+| `url::get_query(params, key)` | `QueryParams, String => < String | >` | Returns the first value for `key` in `params` |
+| `url::get_query_all(params, key)` | `QueryParams, String => String{}` | Returns all values for `key` in `params` |
+| `url::encode_query(val)` | `#! T: Type, T => String` | Encodes a record `[(..)]`, map `K ^ V`, or `QueryParams` into a query string |
+| `url::decode_query(T, qs)` | `#! T: Type, String => < T | Error >` | Decodes a query string into record `T` (honoring field defaults, `<P|>` options, and `E{}` repeated keys), map `K ^ V`, or `QueryParams` |
+| `url::encode(val)` | `#! T: Type, T => String` | Canonical encoder: formats `Url` or encodes a query record/map |
+| `url::decode(T, s)` | `#! T: Type, String => < T | Error >` | Canonical decoder: parses `Url` when `T` is `Url`, or decodes query string into `T` |

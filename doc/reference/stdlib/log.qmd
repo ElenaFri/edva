@@ -1,0 +1,59 @@
+---
+meta:
+  audience: "Edva developers adding leveled and structured logging to applications"
+  status: "current reference"
+  audited: "fb4fbc2"
+  evidence: "`std/log.dva`, `tests/pass/392_os_proc_and_log.dva`"
+---
+
+# `log` standard library
+
+The `log` module provides a lightweight leveled logger (`Debug`, `Info`, `Warn`, `Error`,
+`Silent`) with ISO-8601 UTC timestamps, automatic ANSI color detection via `isatty`,
+optional component prefixes, file output routing, and structured `key=value` fields.
+
+```{.dva .run}
+#use io
+#use log
+
+log::set_timestamps(<->)
+log::set_color(<->)
+log::set_prefix("api")
+
+line = log::format_kv(log::Level(Info), "request handled", log::Fields(
+   log::field("method", "GET"),
+   log::field("status", 200),
+   log::field("cached", <+>)
+))
+io::out $ line
+```
+
+## Types
+
+| Type | Kind | Definition | Description |
+|---|---|---|---|
+| `log::Level` | Enum | `< Debug, Info, Warn, Error, Silent >` | Log severity level (default minimum is `Info`) |
+| `log::Fields` | Growable Array | `String{}` | Collection of formatted `key=value` fields for `*_kv` functions |
+
+## Function catalog
+
+| Category | Function | Signature | Description |
+|---|---|---|---|
+| **Level Control** | `log::set_level(lvl)` / `log::get_level!` | `Level => ()` / `() => Level` | Sets or queries the minimum active log level |
+| | `log::enabled(lvl)` | `Level => <>` | True if `lvl` is enabled at the current minimum level |
+| | `log::parse_level(s)` | `String => < Level | >` | Parses `"debug"`, `"info"`, `"warn"`, `"error"`, `"silent"`/`"off"` |
+| | `log::level_name(lvl)` / `log::level_rank(lvl)` | `Level => String` / `Int` | Uppercase name or numeric rank (`0..4`) of `lvl` |
+| **Output & Formatting Config** | `log::set_timestamps(on)` | `<> => ()` | Enables (`<+>`) or disables (`<->`) ISO-8601 timestamps |
+| | `log::set_utc(on)` | `<> => ()` | Selects UTC/Zulu (`<+>`) or local zoned (`<->`, default) timestamps |
+| | `log::set_basic_iso(on)` | `<> => ()` | Selects basic/compact (`<+>`) or extended (`<->`, default) ISO-8601 timestamps |
+| | `log::set_color(on)` / `log::use_auto_color!` | `<> => ()` / `() => ()` | Forces ANSI color on/off or restores auto-detection (`NO_COLOR`, `FORCE_COLOR`, `TERM=dumb`, `isatty`) |
+| | `log::set_prefix(pfx)` / `log::get_prefix!` | `String => ()` / `() => String` | Sets or queries optional `[prefix]` component tag |
+| | `log::set_fd(fd)` / `log::get_fd!` | `Int => ()` / `() => Int` | Sets or queries output file descriptor (default `2` for stderr) |
+| | `log::set_file(path)` / `log::close_file!` | `String => <>` / `() => ()` | Routes log output to `path` (append mode) or closes it |
+| **Structured Fields** | `log::field(key, val)` | `#! V: Type, String, V => String` | Formats `key=val` for scalars, records, tuples, enums, options, arrays, slices, or maps |
+| | `log::format_val(val)` | `#! V: Type, V => String` | Formats any value `val` into its structured log representation |
+| | `log::fields_of(rec)` | `#! R: Type, R => Fields` | Expands all fields of a record or entries of a map into `Fields` (`key=value` list) |
+| **Logging** | `log::debug(msg)` / `info(msg)` / `warn(msg)` / `error(msg)` | `String => ()` | Emits a log line at the corresponding level |
+| | `log::debug_kv` / `info_kv` / `warn_kv` / `error_kv` | `String, Fields => ()` | Emits a log line with structured `key=value` fields |
+| | `log::log(lvl, msg)` / `log::log_kv(lvl, msg, fields)` | `Level, String[, Fields] => ()` | Emits a log line at explicit `lvl` |
+| | `log::format_entry(lvl, msg)` / `format_kv(lvl, msg, fields)` | `Level, String[, Fields] => String` | Formats a log line into a `String` without writing to `fd` |

@@ -21,53 +21,53 @@
 
 // Linux x86_64 struct stat layout (144 bytes)
 #type StatRawLinux #packed (
-   st_dev:     u64,
-   st_ino:     u64,
-   st_nlink:   u64,
-   st_mode:    u32,
-   st_uid:     u32,
-   st_gid:     u32,
-   pad0:       u32,
-   st_rdev:    u64,
-   st_size:    i64,
-   st_blksize: i64,
-   st_blocks:  i64,
-   atime_sec:  i64,
-   atime_nsec: i64,
-   mtime_sec:  i64,
-   mtime_nsec: i64,
-   ctime_sec:  i64,
-   ctime_nsec: i64,
-   resv1:      i64,
-   resv2:      i64,
+   st_dev:     u64
+   st_ino:     u64
+   st_nlink:   u64
+   st_mode:    u32
+   st_uid:     u32
+   st_gid:     u32
+   pad0:       u32
+   st_rdev:    u64
+   st_size:    i64
+   st_blksize: i64
+   st_blocks:  i64
+   atime_sec:  i64
+   atime_nsec: i64
+   mtime_sec:  i64
+   mtime_nsec: i64
+   ctime_sec:  i64
+   ctime_nsec: i64
+   resv1:      i64
+   resv2:      i64
    resv3:      i64
 )
 
 // Darwin (macOS arm64 / 64-bit inode) struct stat layout (144 bytes)
 #type StatRawDarwin #packed (
-   st_dev:         i32,
-   st_mode:        u16,
-   st_nlink:       u16,
-   st_ino:         u64,
-   st_uid:         u32,
-   st_gid:         u32,
-   st_rdev:        i32,
-   pad0:           i32,
-   atime_sec:      i64,
-   atime_nsec:     i64,
-   mtime_sec:      i64,
-   mtime_nsec:     i64,
-   ctime_sec:      i64,
-   ctime_nsec:     i64,
-   birthtime_sec:  i64,
-   birthtime_nsec: i64,
-   st_size:        i64,
-   st_blocks:      i64,
-   st_blksize:     i32,
-   st_flags:       u32,
-   st_gen:         u32,
-   st_lspare:      i32,
-   st_qspare0:     i64,
+   st_dev:         i32
+   st_mode:        u16
+   st_nlink:       u16
+   st_ino:         u64
+   st_uid:         u32
+   st_gid:         u32
+   st_rdev:        i32
+   pad0:           i32
+   atime_sec:      i64
+   atime_nsec:     i64
+   mtime_sec:      i64
+   mtime_nsec:     i64
+   ctime_sec:      i64
+   ctime_nsec:     i64
+   birthtime_sec:  i64
+   birthtime_nsec: i64
+   st_size:        i64
+   st_blocks:      i64
+   st_blksize:     i32
+   st_flags:       u32
+   st_gen:         u32
+   st_lspare:      i32
+   st_qspare0:     i64
    st_qspare1:     i64
 )
 
@@ -78,18 +78,18 @@ empty_stat = !=> StatRaw(..default)
 
 // Linux x86_64 struct dirent prefix (19 bytes up to d_name)
 #type DirentPrefixLinux #packed (
-   d_ino:    u64,
-   d_off:    u64,
-   d_reclen: u16,
+   d_ino:    u64
+   d_off:    u64
+   d_reclen: u16
    d_type:   u8
 )
 
 // Darwin (macOS 64-bit inode) struct dirent prefix (21 bytes up to d_name)
 #type DirentPrefixDarwin #packed (
-   d_ino:     u64,
-   d_seekoff: u64,
-   d_reclen:  u16,
-   d_namlen:  u16,
+   d_ino:     u64
+   d_seekoff: u64
+   d_reclen:  u16
+   d_namlen:  u16
    d_type:    u8
 )
 
@@ -97,37 +97,37 @@ empty_stat = !=> StatRaw(..default)
 
 // Linux x86_64 struct statvfs layout (112 bytes)
 #type StatvfsLinux #packed (
-   f_bsize:   u64,
-   f_frsize:  u64,
-   f_blocks:  u64,
-   f_bfree:   u64,
-   f_bavail:  u64,
-   f_files:   u64,
-   f_ffree:   u64,
-   f_favail:  u64,
-   f_fsid:    u64,
-   f_flag:    u64,
-   f_namemax: u64,
-   f_spare0:  i32,
-   f_spare1:  i32,
-   f_spare2:  i32,
-   f_spare3:  i32,
-   f_spare4:  i32,
+   f_bsize:   u64
+   f_frsize:  u64
+   f_blocks:  u64
+   f_bfree:   u64
+   f_bavail:  u64
+   f_files:   u64
+   f_ffree:   u64
+   f_favail:  u64
+   f_fsid:    u64
+   f_flag:    u64
+   f_namemax: u64
+   f_spare0:  i32
+   f_spare1:  i32
+   f_spare2:  i32
+   f_spare3:  i32
+   f_spare4:  i32
    f_spare5:  i32
 )
 
 // Darwin struct statvfs layout (64 bytes)
 #type StatvfsDarwin #packed (
-   f_bsize:   u64,
-   f_frsize:  u64,
-   f_blocks:  u32,
-   f_bfree:   u32,
-   f_bavail:  u32,
-   f_files:   u32,
-   f_ffree:   u32,
-   f_favail:  u32,
-   f_fsid:    u64,
-   f_flag:    u64,
+   f_bsize:   u64
+   f_frsize:  u64
+   f_blocks:  u32
+   f_bfree:   u32
+   f_bavail:  u32
+   f_files:   u32
+   f_ffree:   u32
+   f_favail:  u32
+   f_fsid:    u64
+   f_flag:    u64
    f_namemax: u64
 )
 
@@ -138,52 +138,52 @@ empty_statvfs = !=> Statvfs(..default)
 
 // POSIX file mode bitfield layout (16 bits)
 #type FileMode #packed u16 (
-   other:   3,
-   group:   3,
-   user:    3,
-   special: 3,
+   other:   3
+   group:   3
+   user:    3
+   special: 3
    fmt:     4
 )
 
 #type PermsBits #packed u16 (
-   other_x: 1,
-   other_w: 1,
-   other_r: 1,
-   group_x: 1,
-   group_w: 1,
-   group_r: 1,
-   user_x:  1,
-   user_w:  1,
-   user_r:  1,
-   sticky:  1,
-   setgid:  1,
-   setuid:  1,
+   other_x: <>
+   other_w: <>
+   other_r: <>
+   group_x: <>
+   group_w: <>
+   group_r: <>
+   user_x:  <>
+   user_w:  <>
+   user_r:  <>
+   sticky:  <>
+   setgid:  <>
+   setuid:  <>
    fmt:     4
 )
 
 #type Metadata (
-   size: Int,
-   mode: Int,
-   mtime: Int,
-   mtime_nsec: Int,
-   atime: Int,
-   is_dir: <>,
-   is_file: <>,
-   is_symlink: <>,
+   size: Int
+   mode: Int
+   mtime: Int
+   mtime_nsec: Int
+   atime: Int
+   is_dir: <>
+   is_file: <>
+   is_symlink: <>
    is_exec: <>
 )
 
 #type DirEntry (
-   name: String,
-   is_dir: <>,
-   is_file: <>,
+   name: String
+   is_dir: <>
+   is_file: <>
    is_symlink: <>
 )
 
 
 #type FsSpace (
-   total_bytes: Int,
-   free_bytes: Int,
+   total_bytes: Int
+   free_bytes: Int
    available_bytes: Int
 )
 
@@ -270,7 +270,7 @@ make_metadata = s, is_link =>
    is_reg = fmt == 8
    is_l = is_link || fmt == 10
    pb = PermsBits(m)
-   is_x = (pb.user_x != 0 || pb.group_x != 0 || pb.other_x != 0) && !is_d
+   is_x = (pb.user_x || pb.group_x || pb.other_x) && !is_d
    Metadata(
       stat_size(s),
       m,
@@ -563,15 +563,15 @@ format_perms = mode, is_d =>
    pb = PermsBits(mode)
    b = {16}
    b += is_d | 'd' | '-'
-   b += pb.user_r != 0 | 'r' | '-'
-   b += pb.user_w != 0 | 'w' | '-'
-   b += pb.user_x != 0 | 'x' | '-'
-   b += pb.group_r != 0 | 'r' | '-'
-   b += pb.group_w != 0 | 'w' | '-'
-   b += pb.group_x != 0 | 'x' | '-'
-   b += pb.other_r != 0 | 'r' | '-'
-   b += pb.other_w != 0 | 'w' | '-'
-   b += pb.other_x != 0 | 'x' | '-'
+   b += pb.user_r | 'r' | '-'
+   b += pb.user_w | 'w' | '-'
+   b += pb.user_x | 'x' | '-'
+   b += pb.group_r | 'r' | '-'
+   b += pb.group_w | 'w' | '-'
+   b += pb.group_x | 'x' | '-'
+   b += pb.other_r | 'r' | '-'
+   b += pb.other_w | 'w' | '-'
+   b += pb.other_x | 'x' | '-'
    +b
 
 format_time: Int => String
@@ -628,13 +628,13 @@ auto_rename_path = full_p =>
    cand_path'
 
 #type Entry (
-   name: String,
-   is_dir: <>,
-   is_exec: <>,
-   size: Int,
-   fmt_size: String,
-   perms: String,
-   mtime: Int,
+   name: String
+   is_dir: <>
+   is_exec: <>
+   size: Int
+   fmt_size: String
+   perms: String
+   mtime: Int
    mode: Int
 )
 

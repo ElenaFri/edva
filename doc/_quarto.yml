@@ -59,27 +59,43 @@ book:
     - part: reference/stdlib/index.qmd
       chapters:
         - reference/stdlib/ascii.qmd
+        - reference/stdlib/base64.qmd
+        - reference/stdlib/bench.qmd
+        - reference/stdlib/binary.qmd
         - reference/stdlib/ccl.qmd
+        - reference/stdlib/cli.qmd
         - reference/stdlib/color.qmd
         - reference/stdlib/const.qmd
+        - reference/stdlib/csv.qmd
+        - reference/stdlib/deque.qmd
         - reference/stdlib/event.qmd
         - reference/stdlib/fmt.qmd
         - reference/stdlib/fp.qmd
         - reference/stdlib/fs.qmd
+        - reference/stdlib/hash.qmd
+        - reference/stdlib/heap.qmd
+        - reference/stdlib/hex.qmd
         - reference/stdlib/in.qmd
         - reference/stdlib/io.qmd
         - reference/stdlib/json.qmd
         - reference/stdlib/libc.qmd
+        - reference/stdlib/log.qmd
         - reference/stdlib/math.qmd
         - reference/stdlib/mem.qmd
         - reference/stdlib/net.qmd
         - reference/stdlib/os.qmd
+        - reference/stdlib/path.qmd
+        - reference/stdlib/rand.qmd
+        - reference/stdlib/set.qmd
         - reference/stdlib/sort.qmd
         - reference/stdlib/str.qmd
         - reference/stdlib/sys.qmd
+        - reference/stdlib/test.qmd
+        - reference/stdlib/time.qmd
         - reference/stdlib/type.qmd
         - reference/stdlib/unicode.qmd
         - reference/stdlib/uring.qmd
+        - reference/stdlib/url.qmd
         - reference/stdlib/utf.qmd
     - part: "Tooling & Diagnostics"
       chapters:

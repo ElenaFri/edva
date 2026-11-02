@@ -1,0 +1,176 @@
+// Standard Non-Cryptographic Hashing & Checksums Module (std/hash.dva)
+// FNV-1a (64/32-bit), Wyhash-style 64-bit mixer, IEEE CRC-32, Adler-32,
+// and `#!` compile-time structural generic hashing (`hash::of`, `hash::seeded`).
+
+#use str
+
+#private
+
+FNV64_OFFSET: u64
+FNV64_OFFSET = 0xcbf29ce484222325u64
+
+FNV64_PRIME: u64
+FNV64_PRIME = 0x100000001b3u64
+
+WY0: u64
+WY0 = 0xa0761d6478bd642fu64
+
+WY1: u64
+WY1 = 0xe7037ed1a0b428dbu64
+
+WY2: u64
+WY2 = 0x8d6af09c88c6e3bbu64
+
+wymix: u64, u64 => u64
+wymix = a, b =>
+   x = (a .^. WY0) * (b .^. WY1)
+   x .^. (x .>. 32)
+
+read_u64_le_at: String, Int => u64
+read_u64_le_at = s, idx =>
+   b0 = u64(s(idx) .&. 0xFF)
+   b1 = u64(s(idx + 1) .&. 0xFF) .<. 8
+   b2 = u64(s(idx + 2) .&. 0xFF) .<. 16
+   b3 = u64(s(idx + 3) .&. 0xFF) .<. 24
+   b4 = u64(s(idx + 4) .&. 0xFF) .<. 32
+   b5 = u64(s(idx + 5) .&. 0xFF) .<. 40
+   b6 = u64(s(idx + 6) .&. 0xFF) .<. 48
+   b7 = u64(s(idx + 7) .&. 0xFF) .<. 56
+   b0 .|. b1 .|. b2 .|. b3 .|. b4 .|. b5 .|. b6 .|. b7
+
+#public
+
+// Combines two 64-bit hash values deterministically.
+combine: u64, u64 => u64
+combine = h1, h2 =>
+   wymix(h1, h2 + WY2)
+
+// Computes 64-bit FNV-1a hash of `s`.
+fnv1a: String => u64
+fnv1a = s =>
+   h' = FNV64_OFFSET
+   ?s @ i =>
+      b = u64(s(i) .&. 0xFF)
+      h' = (h' .^. b) * FNV64_PRIME
+   h'
+
+// Computes 32-bit FNV-1a hash of `s`.
+fnv1a32: String => u32
+fnv1a32 = s =>
+   h' = 0x811c9dc5u64
+   ?s @ i =>
+      b = u64(s(i) .&. 0xFF)
+      h' = ((h' .^. b) * 0x01000193u64) .&. 0xFFFFFFFFu64
+   u32(h')
+
+// Computes a fast seeded 64-bit hash of `s`.
+wyhash: String, u64 => u64
+wyhash = s, seed =>
+   n = ?s
+   h' = seed .^. wymix(seed, u64(n))
+   blocks = n / 8
+   blocks @ b =>
+      w = read_u64_le_at(s, b * 8)
+      h' = wymix(h', w)
+   rem_start = blocks * 8
+   rem = n - rem_start
+   rem > 0
+      |
+         tail' = 0u64
+         rem @ r =>
+            byte_val = u64(s(rem_start + r) .&. 0xFF)
+            tail' = tail' .|. (byte_val .<. u64(r * 8))
+         h' = wymix(h', tail')
+   wymix(h' .^. u64(n), WY2)
+
+// Computes IEEE 802.3 CRC-32 checksum of `s` (polynomial `0xEDB88320`).
+crc32: String => u32
+crc32 = s =>
+   crc' = 0xFFFFFFFFu64
+   ?s @ i =>
+      b = u64(s(i) .&. 0xFF)
+      crc' = crc' .^. b
+      8 @
+         (crc' .&. 1u64) != 0u64
+            |
+               crc' = (crc' .>. 1) .^. 0xEDB88320u64
+            |
+               crc' = crc' .>. 1
+   u32((crc' .^. 0xFFFFFFFFu64) .&. 0xFFFFFFFFu64)
+
+// Computes RFC 1950 Adler-32 checksum of `s`.
+adler32: String => u32
+adler32 = s =>
+   a' = 1u64
+   b' = 0u64
+   ?s @ i =>
+      byte_val = u64(s(i) .&. 0xFF)
+      a' = (a' + byte_val) % 65521u64
+      b' = (b' + a') % 65521u64
+   u32(((b' .<. 16) .|. a') .&. 0xFFFFFFFFu64)
+
+// Computes a seeded 64-bit structural hash of any value `val` of type `T`.
+seeded: #! T: Type, u64, T => u64
+seeded = seed, val =>
+   T
+      [String] wyhash(val, seed)
+      [Int, i8, i16, i32, i64, u8, u16, u32, u64]
+         wymix(seed, u64(Int(val)))
+      [Float, f32, f64]
+         wyhash(str::from_float(Float(val)), seed)
+      [<>]
+         wymix(seed, (val | 1u64 | 0u64))
+      [Rune]
+         wymix(seed, u64(Int(val)))
+      [()]
+         wymix(seed, 0x9E3779B97F4A7C15u64)
+      [<P|>]
+         (val | inner => seeded(P, wymix(seed, 1u64), inner) | wymix(seed, 0u64))
+      [E{}]
+         h' = wymix(seed, u64(?val))
+         val @ elem =>
+            h' = seeded(E, h', elem)
+         h'
+      [E[]]
+         h' = wymix(seed, u64(?val))
+         val @ elem =>
+            h' = seeded(E, h', elem)
+         h'
+      [K ^ V]
+         // Order-independent XOR/sum combination across map entries
+         acc_xor' = 0u64
+         acc_sum' = 0u64
+         cnt' = 0u64
+         val @ mv, mk =>
+            kh = seeded(K, seed, mk)
+            vh = seeded(V, kh, mv)
+            acc_xor' = acc_xor' .^. vh
+            acc_sum' = acc_sum' + vh
+            cnt' = cnt' + 1u64
+         combine(combine(wymix(seed, cnt'), acc_xor'), acc_sum')
+      [(..)]
+         h' = wyhash(T.name, seed)
+         T @ f =>
+            f.type
+               [<P|>]
+                  vf = val.(f)
+                  h' = (vf | inner => seeded(P, wymix(h', 1u64), inner) | wymix(h', 0u64))
+               |
+                  h' = seeded(f.type, h', val.(f))
+         h'
+      [<..>]
+         h' = wyhash(T.name, seed)
+         T @ v =>
+            val.(v)
+               | pay =>
+                  tag_h = wymix(h', u64(v.idx + 1))
+                  v.type
+                     [()] h' = tag_h
+                     | h' = seeded(v.type, tag_h, pay)
+         h'
+      | wyhash(T.name, seed)
+
+// Computes a 64-bit structural hash of any value `val` of type `T`.
+of: #! T: Type, T => u64
+of = val =>
+   seeded(T, 0u64, val)

@@ -18,8 +18,10 @@
 // `parse` returns <Value | Error>, and unwrapping the Error branch
 // aborts with the diagnostic.
 
+#use const
 #use ascii
 #use str
+#use utf
 
 #public
    #type Value <
@@ -58,23 +60,6 @@ hexval = h =>
 is_hex_at: Int => <>
 is_hex_at = p => p < ?src && ascii::is_hex(src(p))
 
-// Append the UTF-8 encoding of a rune to a Builder.
-append_utf8: Builder, Rune => ()
-append_utf8 = b, cp =>
-   cp [< 0x80] b += cp
-      [< 0x800]
-         b += 0xC0 + (cp .>. 6)
-         b += 0x80 + (cp .&. 0x3F)
-      [< 0x10000]
-         b += 0xE0 + (cp .>. 12)
-         b += 0x80 + ((cp .>. 6) .&. 0x3F)
-         b += 0x80 + (cp .&. 0x3F)
-      |
-         b += 0xF0 + (cp .>. 18)
-         b += 0x80 + ((cp .>. 12) .&. 0x3F)
-         b += 0x80 + ((cp .>. 6) .&. 0x3F)
-         b += 0x80 + (cp .&. 0x3F)
-
 // The String spelling of a Flag boolean.
 bool_str: i1 => String
 bool_str = b => b | "true" | "false"
@@ -83,55 +68,13 @@ bool_str = b => b | "true" | "false"
 
 // Validate and append a raw UTF-8 sequence starting at index k with lead byte c0.
 scan_utf8_char: Builder, Int, Int => <Int | Error>
-scan_utf8_char = b, k, c0 =>
-   c0_val = c0 .&. 0xFF
-   c0_val !< 0xC2 && c0_val !> 0xDF
+scan_utf8_char = b, k, _c0 =>
+   dec = utf::decode_str_at(src, k)
+   dec.0 < 0
+      | <- Error(400, "json: invalid UTF-8 in string", "std/json.dva", 0, 0, (k, 0)) +>
       |
-         k + 1 !< ?src | <- Error(400, "json: invalid UTF-8 in string", "std/json.dva", 0, 0, (k, 0)) +>
-         c1 = src(k + 1) .&. 0xFF
-         c1 < 0x80 || c1 > 0xBF
-            | <- Error(400, "json: invalid UTF-8 in string", "std/json.dva", 0, 0, (k, 0)) +>
-            |
-               b += c0
-               b += c1
-               scan_string(b, k + 2)
-      |
-         c0_val !< 0xE0 && c0_val !> 0xEF
-            |
-               k + 2 !< ?src | <- Error(400, "json: invalid UTF-8 in string", "std/json.dva", 0, 0, (k, 0)) +>
-               c1 = src(k + 1) .&. 0xFF
-               c2 = src(k + 2) .&. 0xFF
-               c2 < 0x80 || c2 > 0xBF
-                  | <- Error(400, "json: invalid UTF-8 in string", "std/json.dva", 0, 0, (k, 0)) +>
-                  |
-                     c1_ok = c0_val == 0xE0 | (c1 !< 0xA0 && c1 !> 0xBF) | (c0_val == 0xED | (c1 !< 0x80 && c1 !> 0x9F) | (c1 !< 0x80 && c1 !> 0xBF))
-                     c1_ok
-                        |
-                           b += c0
-                           b += c1
-                           b += c2
-                           scan_string(b, k + 3)
-                        | <- Error(400, "json: invalid UTF-8 in string", "std/json.dva", 0, 0, (k, 0)) +>
-            |
-               c0_val !< 0xF0 && c0_val !> 0xF4
-                  |
-                     k + 3 !< ?src | <- Error(400, "json: invalid UTF-8 in string", "std/json.dva", 0, 0, (k, 0)) +>
-                     c1 = src(k + 1) .&. 0xFF
-                     c2 = src(k + 2) .&. 0xFF
-                     c3 = src(k + 3) .&. 0xFF
-                     c2 < 0x80 || c2 > 0xBF || c3 < 0x80 || c3 > 0xBF
-                        | <- Error(400, "json: invalid UTF-8 in string", "std/json.dva", 0, 0, (k, 0)) +>
-                        |
-                           c1_ok = c0_val == 0xF0 | (c1 !< 0x90 && c1 !> 0xBF) | (c0_val == 0xF4 | (c1 !< 0x80 && c1 !> 0x8F) | (c1 !< 0x80 && c1 !> 0xBF))
-                           c1_ok
-                              |
-                                 b += c0
-                                 b += c1
-                                 b += c2
-                                 b += c3
-                                 scan_string(b, k + 4)
-                              | <- Error(400, "json: invalid UTF-8 in string", "std/json.dva", 0, 0, (k, 0)) +>
-                  | <- Error(400, "json: invalid UTF-8 in string", "std/json.dva", 0, 0, (k, 0)) +>
+         b += src(k..k + dec.1)
+         scan_string(b, k + dec.1)
 
 // Scan the body of a string literal starting at index k (after the
 // opening quote), appending decoded bytes to b. Returns <Int | Error>:
@@ -188,15 +131,11 @@ parse_unicode = b, k =>
 
 parse_unicode_cp: Builder, Int, Int => <Int | Error>
 parse_unicode_cp = b, k, cp =>
-   is_hi = cp !< 0xD800 && cp !> 0xDBFF
-   is_lo = cp !< 0xDC00 && cp !> 0xDFFF
-   is_hi |
-      parse_surrogate_pair(b, k, cp)
-   |
-      is_lo |
-         <- Error(400, "json: unpaired low surrogate", "std/json.dva", 0, 0, (k, 0)) +>
+   cp
+      [0xD800...0xDBFF] parse_surrogate_pair(b, k, cp)
+      [0xDC00...0xDFFF] <- Error(400, "json: unpaired low surrogate", "std/json.dva", 0, 0, (k, 0)) +>
       |
-         append_utf8(b, Rune(cp))
+         utf::append_rune(b, Rune(cp))
          scan_string(b, k + 6)
 
 parse_surrogate_pair: Builder, Int, Int => <Int | Error>
@@ -208,10 +147,9 @@ parse_surrogate_pair = b, k, cp =>
       l4 = hexval(src(k + 10))
       l5 = hexval(src(k + 11))
       locp = l2 * 0x1000 + l3 * 0x100 + l4 * 0x10 + l5
-      locp_valid = locp !< 0xDC00 && locp !> 0xDFFF
-      locp_valid |
-         full_cp = 0x10000 + (cp - 0xD800) * 1024 + (locp - 0xDC00)
-         append_utf8(b, Rune(full_cp))
+      locp [0xDC00...0xDFFF]
+         full_cp = 0x10000 + (cp - 0xD800) * 0x400 + (locp - 0xDC00)
+         utf::append_rune(b, Rune(full_cp))
          scan_string(b, k + 12)
       | <- Error(400, "json: bad low surrogate", "std/json.dva", 0, 0, (k, 0)) +>
    | <- Error(400, "json: missing low surrogate", "std/json.dva", 0, 0, (k, 0)) +>
@@ -438,18 +376,18 @@ parse_number = !=>
             0.. @
                p3' !< ?src | -->
                ec = src(p3')
-               ec !< '0' && ec !> '9'
+               ec ['0'...'9']
                   |
                      had_exp_digits' = <+>
                      ed = ec - '0'
-                     ev' > 1000000
+                     ev' > 0xF4240
                         | (over_exp' = <+>)
                         | (ev' = ev' * 10 + ed)
                      p3' = p3' + 1
                   | -->
             had_exp' = had_exp_digits'
             p2' = p3'
-            exp_val = over_exp' | 1000000 | ev'
+            exp_val = over_exp' | 0xF4240 | ev'
             exp10' = eneg' | exp10' - exp_val | exp10' + exp_val
          fv' != 0.0 |
             eclamp = exp10' < -400 | -400 | (exp10' > 400 | 400 | exp10')
@@ -507,3 +445,507 @@ parse_value = !=>
    ['f'] parse_lit(<->, 5)
    ['n'] parse_null!
    | parse_number!
+
+// --- Value query and serialization helpers ----------------------------------
+
+json_type_err: String => Error
+json_type_err = msg =>
+   Error(422, "json: " + msg, "std/json.dva", 0, 0, (0, 0))
+
+hex_digit: Int => Int
+hex_digit = n =>
+   d = n .&. 0x0F
+   d < 10 | '0' + d | 'a' + (d - 10)
+
+#public
+   escape_string_into: Builder, String => ()
+   escape_string_into = b, s =>
+      b += '"'
+      ?s @ i =>
+         c = s(i) .&. 0xFF
+         c
+            ['"'] b += "\\\""
+            ['\\'] b += "\\\\"
+            [8] b += "\\b"
+            [12] b += "\\f"
+            [10] b += "\\n"
+            [13] b += "\\r"
+            [9] b += "\\t"
+            [< 0x20]
+               b += "\\u00"
+               b += hex_digit(c .>. 4)
+               b += hex_digit(c)
+            | b += c
+      b += '"'
+      --|
+
+   escape_string: String => String
+   escape_string = s =>
+      b = {?s + 8}
+      escape_string_into(b, s)
+      +b
+
+   format_number: Float => String
+   format_number = f =>
+      f != f | --| "null"
+      f > const::max_f64 || f < -const::max_f64 | --| "null"
+      iv = Int(f)
+      Float(iv) == f && iv [-const::max_safe_int...const::max_safe_int]
+         | str::from_int(iv)
+         |
+            s = str::from_float(f)
+            s ["nan", "inf", "-inf"] "null" | s
+
+stringify_into: Builder, Value => ()
+stringify_into = b, val =>
+   val
+      [String s] escape_string_into(b, s)
+      [Number n] b += format_number(n)
+      [Boolean flag] b += (flag | "true" | "false")
+      [Null] b += "null"
+      [Array items]
+         b += '['
+         items @ item, i =>
+            i > 0 | b += ','
+            stringify_into(b, item)
+         b += ']'
+      [Object pairs]
+         b += '{'
+         pairs @ p, i =>
+            i > 0 | b += ','
+            escape_string_into(b, p.key)
+            b += ':'
+            stringify_into(b, p.value)
+         b += '}'
+   --|
+
+append_indent: Builder, Int => ()
+append_indent = b, spaces =>
+   spaces @
+      b += ' '
+   --|
+
+stringify_pretty_into: Builder, Value, Int, Int => ()
+stringify_pretty_into = b, val, indent, depth =>
+   val
+      [String s] escape_string_into(b, s)
+      [Number n] b += format_number(n)
+      [Boolean flag] b += (flag | "true" | "false")
+      [Null] b += "null"
+      [Array items]
+         ?items == 0
+            | b += "[]"
+            |
+               b += "[\n"
+               items @ item, i =>
+                  i > 0 | b += ",\n"
+                  append_indent(b, (depth + 1) * indent)
+                  stringify_pretty_into(b, item, indent, depth + 1)
+               b += '\n'
+               append_indent(b, depth * indent)
+               b += ']'
+      [Object pairs]
+         ?pairs == 0
+            | b += "{}"
+            |
+               b += "{\n"
+               pairs @ p, i =>
+                  i > 0 | b += ",\n"
+                  append_indent(b, (depth + 1) * indent)
+                  escape_string_into(b, p.key)
+                  b += ": "
+                  stringify_pretty_into(b, p.value, indent, depth + 1)
+               b += '\n'
+               append_indent(b, depth * indent)
+               b += '}'
+   --|
+
+#public
+   stringify: Value => String
+   stringify = val =>
+      b = {128}
+      stringify_into(b, val)
+      +b
+
+   stringify_pretty: Value, Int => String
+   stringify_pretty = val, indent =>
+      b = {256}
+      stringify_pretty_into(b, val, indent, 0)
+      +b
+
+   get: Value, String => < Value | >
+   get = val, key =>
+      val
+         [Object pairs]
+            hit' = <-->
+            pairs @ p =>
+               p.key == key
+                  |
+                     hit' = <+ p.value +>
+                     -->
+            hit'
+         | <-->
+
+   has: Value, String => <>
+   has = val, key =>
+      <>(get(val, key))
+
+   get_str: Value, String => < String | >
+   get_str = val, key =>
+      get(val, key)
+         | fval =>
+            fval [String s] <+ s +> | <-->
+         | <-->
+
+   get_int: Value, String => < Int | >
+   get_int = val, key =>
+      get(val, key)
+         | fval =>
+            fval
+               [Number n]
+                  iv = Int(n)
+                  Float(iv) == n | <+ iv +> | <-->
+               | <-->
+         | <-->
+
+   get_float: Value, String => < Float | >
+   get_float = val, key =>
+      get(val, key)
+         | fval =>
+            fval [Number n] <+ n +> | <-->
+         | <-->
+
+   get_bool: Value, String => < <> | >
+   get_bool = val, key =>
+      get(val, key)
+         | fval =>
+            fval [Boolean flag] <+ flag +> | <-->
+         | <-->
+
+   is_array: Value => <>
+   is_array = val =>
+      val [Array]
+
+   array_len: Value => Int
+   array_len = val =>
+      val [Array items] ?items | 0
+
+   array_at: Value, Int => Value
+   array_at = val, idx =>
+      val [Array items] items(idx) | Value(Null)
+
+   is_object: Value => <>
+   is_object = val =>
+      val [Object]
+
+   object_len: Value => Int
+   object_len = val =>
+      val [Object pairs] ?pairs | 0
+
+   object_key_at: Value, Int => String
+   object_key_at = val, idx =>
+      val
+         [Object pairs]
+            p = pairs(idx)
+            p.key
+         | ""
+
+   object_val_at: Value, Int => Value
+   object_val_at = val, idx =>
+      val
+         [Object pairs]
+            p = pairs(idx)
+            p.value
+         | Value(Null)
+
+// --- Compile-time structural JSON codec (#!) --------------------------------
+
+#public
+   json_key_to_str: #! K: Type, K => String
+   json_key_to_str = k =>
+      K
+         [String] k
+         [Int, i8, i16, i32, i64, u8, u16, u32, u64] str::from_int(Int(k))
+         [<>] (k | "true" | "false")
+         [Rune] utf::encode_rune(k)
+         | K.name
+
+   to_value: #! T: Type, T => Value
+   to_value = val =>
+      T
+         [Value] val
+         [String] Value(String, val)
+         [Int, i8, i16, i32, i64, u8, u16, u32, u64]
+            Value(Number, Float(val))
+         [Float, f32, f64]
+            Value(Number, Float(val))
+         [<>]
+            Value(Boolean, val)
+         [Rune]
+            Value(String, utf::encode_rune(val))
+         [()]
+            Value(Null)
+         [<P|>]
+            (val | inner => to_value(inner) | Value(Null))
+         [E{}]
+            elems = Values()
+            val @ item =>
+               elems += to_value(item)
+            n = ?elems
+            Value(Array, elems(0..n))
+         [E[]]
+            elems = Values()
+            val @ item =>
+               elems += to_value(item)
+            n = ?elems
+            Value(Array, elems(0..n))
+         [K ^ V]
+            entries = Pairs()
+            val @ v, k =>
+               entries += (json_key_to_str(k), to_value(v))
+            m = ?entries
+            Value(Object, entries(0..m))
+         [(..)]
+            is_tuple' = <->
+            T @ f =>
+               f.idx == 0 && f.name == "" | is_tuple' = <+>
+            is_tuple'
+               |
+                  elems = Values()
+                  T @ f =>
+                     f.type
+                        [<P|>]
+                           vf = val.(f)
+                           ev = vf | inner => to_value(inner) | Value(Null)
+                           elems += ev
+                        |
+                           elems += to_value(val.(f))
+                  n = ?elems
+                  Value(Array, elems(0..n))
+               |
+                  entries = Pairs()
+                  T @ f =>
+                     f.type
+                        [<P|>]
+                           vf = val.(f)
+                           ev = vf | inner => to_value(inner) | Value(Null)
+                           entries += (f.name, ev)
+                        |
+                           entries += (f.name, to_value(val.(f)))
+                  m = ?entries
+                  Value(Object, entries(0..m))
+         [<..>]
+            res' = Value(Null)
+            T @ v =>
+               val.(v)
+                  | pay =>
+                     v.type
+                        [()]
+                           res' = Value(String, v.name)
+                        |
+                           entries = Pairs()
+                           entries += (v.name, to_value(pay))
+                           res' = Value(Object, entries(0..1))
+            res'
+         | Value(Null)
+
+   encode: #! T: Type, T => String
+   encode = val =>
+      stringify(to_value(val))
+
+   encode_pretty: #! T: Type, T, Int => String
+   encode_pretty = val, indent =>
+      stringify_pretty(to_value(val), indent)
+
+   from_value: #! T: Type, Value => < T | Error >
+   from_value = val =>
+      T
+         [Value]
+            <+ val ->
+         [String]
+            val
+               [String s] <+ s ->
+               | <- json_type_err("expected string") +>
+         [Int]
+            val
+               [Number n]
+                  iv = Int(n)
+                  Float(iv) == n
+                     | <+ iv ->
+                     | <- json_type_err("expected integer") +>
+               | <- json_type_err("expected integer") +>
+         [Float]
+            val
+               [Number n] <+ n ->
+               | <- json_type_err("expected number") +>
+         [<>]
+            val
+               [Boolean flag] <+ flag ->
+               | <- json_type_err("expected boolean") +>
+         [<P|>]
+            val
+               [Null] <+ <--> ->
+               |
+                  dec_p = from_value(P, val)
+                  dec_p
+                     | inner => <+ <+ inner +> ->
+                     | err => <- err +>
+         [E{}]
+            !is_array(val)
+               | <- json_type_err("expected array") +>
+               |
+                  arr' = T.zero
+                  has_err' = <->
+                  err_val' = json_type_err(++"")
+                  n_items = array_len(val)
+                  0..n_items @ i =>
+                     !has_err' |
+                        dec_e = from_value(E, array_at(val, i))
+                        dec_e
+                           | elem => arr' += elem
+                           | e =>
+                              has_err' = <+>
+                              err_val' = e
+                  has_err'
+                     | <- err_val' +>
+                     | <+ arr' ->
+         [K ^ V]
+            !is_object(val)
+               | <- json_type_err("expected object") +>
+               |
+                  mp' = T.zero
+                  has_err' = <->
+                  err_val' = json_type_err(++"")
+                  n_pairs = object_len(val)
+                  0..n_pairs @ i =>
+                     !has_err' |
+                        pk = object_key_at(val, i)
+                        pv = object_val_at(val, i)
+                        dec_k = from_value(K, Value(String, pk))
+                        dec_k
+                           | k =>
+                              dec_v = from_value(V, pv)
+                              dec_v
+                                 | mv => mp' ^ k = mv
+                                 | e =>
+                                    has_err' = <+>
+                                    err_val' = e
+                           | e =>
+                              has_err' = <+>
+                              err_val' = e
+                  has_err'
+                     | <- err_val' +>
+                     | <+ mp' ->
+         [(..)]
+            rec' = T.zero
+            has_err' = <->
+            err_val' = json_type_err(++"")
+            T @ f =>
+               !has_err' |
+                  f.name == ""
+                     |
+                        !is_array(val)
+                           |
+                              has_err' = <+>
+                              err_val' = json_type_err("expected array for tuple")
+                           |
+                              f.idx !< array_len(val)
+                                 |
+                                    has_err' = <+>
+                                    err_val' = json_type_err("tuple length mismatch")
+                                 |
+                                    pos_item = array_at(val, f.idx)
+                                    dec_fv = from_value(f.type, pos_item)
+                                    dec_fv
+                                       | fv => rec'.(f) = fv
+                                       | e =>
+                                          has_err' = <+>
+                                          err_val' = e
+                     |
+                        !is_object(val)
+                           |
+                              has_err' = <+>
+                              err_val' = json_type_err("expected object for " + T.name)
+                           |
+                              fval_opt = get(val, f.name)
+                              fval_opt
+                                 | fval =>
+                                    dec_fv = from_value(f.type, fval)
+                                    dec_fv
+                                       | fv => rec'.(f) = fv
+                                       | e =>
+                                          has_err' = <+>
+                                          err_val' = e
+                                 |
+                                    f_def = f.default
+                                    f_def
+                                       | def => rec'.(f) = def
+                                       |
+                                          f.type
+                                             [<P|>] rec'.(f) = <-->
+                                             [E{}] rec'.(f) = f.type.zero
+                                             [K ^ V] rec'.(f) = f.type.zero
+                                             |
+                                                has_err' = <+>
+                                                err_val' = json_type_err("missing required key '" + f.name + "'")
+            has_err'
+               | <- err_val' +>
+               | <+ rec' ->
+         [<..>]
+            out' = T.zero
+            matched' = <->
+            has_err' = <->
+            err_val' = json_type_err(++"")
+            val
+               [String s]
+                  bad_payload' = <->
+                  T @ v =>
+                     v.name == s |
+                        v.type
+                           [()]
+                              out' = T(v)
+                              matched' = <+>
+                           |
+                              bad_payload' = <+>
+                  matched'
+                     | <+ out' ->
+                     |
+                        bad_payload'
+                           | <- json_type_err("variant '" + s + "' of " + T.name + " requires a payload") +>
+                           | <- json_type_err("unknown variant '" + s + "' for " + T.name) +>
+               |
+                  !is_object(val)
+                     | <- json_type_err("expected string or single-key object for " + T.name) +>
+                     |
+                        object_len(val) != 1
+                           | <- json_type_err("expected single-key object for " + T.name) +>
+                           |
+                              p0_key = object_key_at(val, 0)
+                              p0_val = object_val_at(val, 0)
+                              T @ v =>
+                                 v.name == p0_key |
+                                    matched' = <+>
+                                    v.type
+                                       [()]
+                                          out' = T(v)
+                                       |
+                                          dec_pv = from_value(v.type, p0_val)
+                                          dec_pv
+                                             | pv => out' = T(v, pv)
+                                             | e =>
+                                                has_err' = <+>
+                                                err_val' = e
+                              has_err'
+                                 | <- err_val' +>
+                                 |
+                                    matched'
+                                       | <+ out' ->
+                                       | <- json_type_err("unknown variant '" + p0_key + "' for " + T.name) +>
+         | <- json_type_err("unsupported target type " + T.name + " in json::decode") +>
+
+   decode: #! T: Type, String => < T | Error >
+   decode = s =>
+      parse(s)
+         | val => from_value(T, val)
+         | err => <- err +>
+

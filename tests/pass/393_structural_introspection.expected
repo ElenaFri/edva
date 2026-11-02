@@ -1,0 +1,26 @@
+0:Point:unit_type:();1:Circle:non_unit:Int;2:Label:non_unit:String
+flag:<>
+int:Int
+str:String
+float:Float
+pos_ram<Int>
+neg_ram<String>
+both_ram<Int|String>
+array<Int>#2
+slice<Int>#2
+vec3<Int>
+tupleN<Float>#4
+strmap<Int>
+map<Int^String>
+record:User#5
+enum:Shape#3
+User:5
+Shape:3
+Int:0
+u_def=100,anon,true,0,none
+u_def2=100,anon
+{"id":7,"name":"Alice","active":true,"tags":["admin","dev"],"score":99}
+"Point" {"Circle":42} {"Label":"box"}
+0:id:Int=100;1:name:String="anon";2:active:<>=true;3:tags:String{}=<none>;4:score:<Int|>=<none>
+{"id":8,"name":"Alice","active":true,"tags":["admin","dev"],"score":99}
+"Point" {"Circle":77} {"Label":"hello"}

@@ -1,0 +1,164 @@
+#use io
+#use str
+#use test
+
+::eval_calls = 0
+
+bump: Int => Int
+bump = v =>
+   eval_calls ::= eval_calls + 1
+   v
+
+#type TokKind < Eof, Newline, Ident, Num >
+
+is_ident_char: Rune => <>
+is_ident_char = ['a'...'z', 'A'...'Z', '0'...'9', '_']
+
+is_non_ws: Rune => <>
+is_non_ws = ![' ', '\t', '\n']
+
+classify_char: Rune => String
+classify_char =
+   ['a'...'z', 'A'...'Z'] "alpha"
+   ['0'...'9']            "digit"
+   ['_']                  "under"
+   |                      "other"
+
+ct_classify: #! N: Int => String
+ct_classify = #! N =>
+   N
+      [0..10]   "single"
+      [10...99] "double"
+      |         "large"
+
+ct_chained: #! X: Int => <>
+ct_chained = #! X => 1 !> X !> 10
+
+// 1. Chained comparisons: open, half-open, closed, descending, negated
+x = 5
+test::ok(0 < x < 10, "open interval hit")
+test::ok(!(5 < x < 10), "open interval miss low")
+test::ok(!(0 < x < 5), "open interval miss high")
+
+test::ok(5 !> x < 10, "half-open [a, b) lower boundary")
+test::ok(!(5 !> 10 < 10), "half-open [a, b) upper boundary")
+test::ok(0 < 10 !> 10, "half-open (a, b] upper boundary")
+test::ok(5 !> 5 !> 5, "closed [a, b] exact")
+test::ok(10 > x > 0, "descending open")
+test::ok(5 !< x !< 5, "descending closed")
+
+// 3-way comparison chain
+a = 2
+b = 6
+c = 9
+test::ok(0 < a < b < c !> 9, "4-link comparison chain")
+test::ok(!(0 < a < c < b), "4-link comparison chain false")
+
+// Float and Rune chained comparisons
+f = 0.5
+test::ok(0.0 !> f !> 1.0, "float closed interval")
+test::ok(!(0.6 < f < 1.0), "float open miss")
+ch = 'm'
+test::ok('a' !> ch !> 'z', "rune closed interval")
+
+// 2. Single-evaluation of middle operands & short-circuiting
+eval_calls ::= 0
+test::ok(0 < bump(5) < 10, "middle call in bounds")
+test::eq(eval_calls, 1, "middle call evaluated exactly once")
+
+eval_calls ::= 0
+test::ok(!(10 < bump(5) < bump(20)), "first link fails short-circuit")
+test::eq(eval_calls, 1, "second call skipped on short-circuit")
+
+eval_calls ::= 0
+test::ok(0 < bump(3) < bump(7) < 10, "two middle calls in bounds")
+test::eq(eval_calls, 2, "two middle calls each evaluated once")
+
+// 3. Range guards in [...] (headless & multi-branch)
+count = 5
+test::ok(0 [0..count], "half-open range guard 0")
+test::ok(4 [0..count], "half-open range guard 4")
+test::ok(!(5 [0..count]), "half-open range guard 5")
+test::ok(!(-1 [0..count]), "half-open range guard -1")
+
+port = 65535
+test::ok(port [1...65535], "inclusive ... range guard upper")
+test::ok(1 [1...65535], "inclusive ... range guard lower")
+test::ok(!(0 [1...65535]), "inclusive ... range guard 0")
+test::ok(port [1..=65535], "inclusive ..= range guard upper")
+
+// Open-ended range guards
+test::ok(10 [10..], "open-ended [a..] boundary")
+test::ok(!(9 [10..]), "open-ended [a..] miss")
+test::ok(9 [..10], "open-ended [..b] hit")
+test::ok(!(10 [..10]), "open-ended [..b] boundary")
+test::ok(10 [...10], "open-ended [...b] inclusive boundary")
+test::ok(10 [..=10], "open-ended [..=b] inclusive boundary")
+test::ok(!(11 [...10]), "open-ended [...b] miss")
+
+// Comma-separated ranges and headless functions
+test::ok(is_ident_char('a'), "is_ident_char 'a'")
+test::ok(is_ident_char('Z'), "is_ident_char 'Z'")
+test::ok(is_ident_char('7'), "is_ident_char '7'")
+test::ok(is_ident_char('_'), "is_ident_char '_'")
+test::ok(!is_ident_char('-'), "is_ident_char '-'")
+
+test::eq(classify_char('Q'), "alpha", "classify_char alpha")
+test::eq(classify_char('8'), "digit", "classify_char digit")
+test::eq(classify_char('_'), "under", "classify_char under")
+test::eq(classify_char('!'), "other", "classify_char other")
+
+// Float range guard
+test::ok(0.25 [0.0...1.0], "float range guard hit")
+test::ok(!(1.5 [0.0...1.0]), "float range guard miss")
+
+// CTFE range guards and chained comparisons
+test::eq(ct_classify(7), "single", "CTFE range guard 0..10")
+test::eq(ct_classify(99), "double", "CTFE range guard 10...99")
+test::eq(ct_classify(100), "large", "CTFE range guard fallback")
+test::ok(ct_chained(10), "CTFE chained comparison hit")
+test::ok(!ct_chained(11), "CTFE chained comparison miss")
+
+// 4. Inclusive cycles (... and ..=)
+sum1' = 0
+1...5 @ i =>
+   sum1' = sum1' + i
+test::eq(sum1', 15, "inclusive cycle 1...5 sum")
+
+sum2' = 0
+1..=4 @ i =>
+   sum2' = sum2' + i
+test::eq(sum2', 10, "inclusive cycle 1..=4 sum")
+
+// 5. Negated headless choice shorthand (x ![...] and ![...])
+test::ok(5 ![0..count], "negated range guard out of bounds")
+test::ok(-1 ![0..count], "negated range guard negative")
+test::ok(!(3 ![0..count]), "negated range guard in bounds")
+test::ok(70000 ![1...65535], "negated inclusive range guard")
+
+res_str = 9 ![0..count] | "oob" | "ok"
+test::eq(res_str, "oob", "negated guard driving bare-pipe choice")
+
+tk1 = TokKind(Ident)
+tk2 = TokKind(Newline)
+test::ok(tk1 ![Eof, Newline], "negated enum variant guard true")
+test::ok(!(tk2 ![Eof, Newline]), "negated enum variant guard false")
+
+test::ok(is_non_ws('x'), "headless ![...] true")
+test::ok(!is_non_ws(' '), "headless ![...] false")
+test::ok(!is_non_ws('\n'), "headless ![...] newline false")
+
+// 9. Bodyless [...] at comparison precedence (&&, ||, |) and uppercase constant ranges
+PAD_R = 10
+PAD_H = 5
+PAD_C = 20
+PAD_W = 8
+my = 12
+mx = 25
+test::ok(my [PAD_R..PAD_R + PAD_H] && mx [PAD_C..PAD_C + PAD_W], "unparenthesized [...] with && and uppercase constants")
+test::ok(!(15 [PAD_R..PAD_R + PAD_H] && mx [PAD_C..PAD_C + PAD_W]), "unparenthesized [...] upper bound miss")
+b_ch = 'G'
+lower_ch = b_ch ['A'...'Z'] | b_ch + 32 | b_ch
+test::eq(lower_ch, 'g', "bodyless [...] driving bare-pipe choice")
+
+test::summary!

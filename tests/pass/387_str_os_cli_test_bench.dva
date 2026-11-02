@@ -97,10 +97,61 @@ test::eq(out_str, "edva_exec_ok", "os::run stdout")
 test::suite("cli")
 test::check(cli::count! !< 1, "cli count")
 test::check(?cli::program! > 0, "cli program")
-test::check(!cli::has_flag("--nonexistent-flag", "-Z"), "cli has_flag false")
-test::eq(cli::opt_or("--port", "-p", "8080"), "8080", "cli opt_or fallback")
-test::eq(cli::opt_int("--count", "-n", 42), 42, "cli opt_int fallback")
-test::approx(cli::opt_float("--scale", "-s", 2.5), 2.5, "cli opt_float fallback")
+
+opts = cli::Opts(
+   cli::opt("p:port", 8080, "TCP port to listen on",
+      p => (p < 1 || p > 65535) | <- "port must be 1..65535" ->),
+   cli::opt("r:root", ".", "Document root directory"),
+   cli::opt("s:scale", 1.5, "Scale factor",
+      s => s < 0.0 | <- "scale must be non-negative" ->),
+   cli::opt("v:verbose", <->, "Enable verbose logging"),
+   cli::opt("color", <+>, "Enable colored output"),
+   cli::opt("c:config", String, "Mandatory config path",
+      c => ?c == 0 | <- "config path cannot be empty" ->)
+)
+
+argv_ok = cli::Args(
+   "-p", "9090",
+   "--scale=2.25",
+   "-v",
+   "--no-color",
+   "-c", "app.ccl",
+   "pos1", "pos2"
+)
+res_ok = cli::parse_args(opts, argv_ok)
+test::ok(res_ok, "cli parse_args valid")
+res_ok
+   | p =>
+      test::eq(cli::int(p, "port"), 9090, "cli::int override")
+      test::eq(cli::str(p, "root"), ".", "cli::str default")
+      test::approx(cli::float(p, "scale"), 2.25, 0.001)
+      test::check(cli::flag(p, "verbose"), "cli::flag -v true")
+      test::check(!cli::flag(p, "color"), "cli::flag --no-color false")
+      test::eq(cli::str(p, "config"), "app.ccl", "cli::str mandatory")
+      test::check(cli::has(p, "port"), "cli::has port true")
+      test::check(!cli::has(p, "root"), "cli::has root false")
+      test::eq(?p.args, 2, "cli positional count")
+      test::eq(p.args(0)!!, "pos1", "cli positional 0")
+      test::eq(p.args(1)!!, "pos2", "cli positional 1")
+
+// Missing mandatory option (-c / --config)
+argv_missing = cli::Args("-p", "8000")
+test::err(cli::parse_args(opts, argv_missing), "cli parse_args missing required")
+
+// Validator failure checks
+argv_bad_port = cli::Args("-p", "70000", "-c", "app.ccl")
+test::err(cli::parse_args(opts, argv_bad_port), "cli parse_args validator port out of range")
+
+argv_bad_cfg = cli::Args("-c", "")
+test::err(cli::parse_args(opts, argv_bad_cfg), "cli parse_args validator empty config")
+
+// Help formatting check
+help_txt = cli::format_help(opts, "mytool", "Test CLI tool", "1.0.0")
+test::check(str::contains(help_txt, "mytool 1.0.0 - Test CLI tool"), "help contains version in header")
+test::check(str::contains(help_txt, "-p, --port <int>"), "help contains port")
+test::check(str::contains(help_txt, "--color"), "help contains long-only color")
+test::check(str::contains(help_txt, "(required)"), "help contains required")
+test::check(str::contains(help_txt, "-h, --help"), "help contains auto -h/--help")
 
 // Bench module
 test::suite("bench")

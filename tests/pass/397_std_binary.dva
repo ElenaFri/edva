@@ -1,0 +1,119 @@
+#use io
+#use str
+#use binary
+#use hex
+#use test
+
+#type PacketKind <
+   Ping,
+   Data(String),
+   Code(u16)
+>
+
+#type NetHeader (
+   magic: u32,
+   version: u8,
+   flags: <>,
+   seq: i32,
+   ratio: Float,
+   label: String,
+   note: < String | >,
+   scores: Int{},
+   kind: PacketKind
+)
+
+test::reset!
+test::suite("binary-scalars")
+
+// --- 1. Endian scalar readers & writers ---
+b = {64}
+binary::write_u8(b, 0xABu8)
+binary::write_i8(b, -42i8)
+binary::write_u16_le(b, 0x1234u16)
+binary::write_u16_be(b, 0x1234u16)
+binary::write_i16_le(b, -1000i16)
+binary::write_u32_le(b, 0xDEADBEEFu32)
+binary::write_u32_be(b, 0xDEADBEEFu32)
+binary::write_i32_be(b, -123456i32)
+binary::write_u64_le(b, 0x0102030405060708u64)
+binary::write_u64_be(b, 0x0102030405060708u64)
+binary::write_f64_le(b, 3.141592653589793)
+binary::write_f32_be(b, 1.5f32)
+raw = +b
+
+test::eq(Int(binary::read_u8(raw, 0) | v => v | 0u8), 0xAB, "read_u8")
+test::eq(Int(binary::read_i8(raw, 1) | v => v | 0i8), -42, "read_i8")
+test::eq(Int(binary::read_u16_le(raw, 2) | v => v | 0u16), 0x1234, "read_u16_le")
+test::eq(Int(binary::read_u16_be(raw, 4) | v => v | 0u16), 0x1234, "read_u16_be")
+test::eq(Int(binary::read_i16_le(raw, 6) | v => v | 0i16), -1000, "read_i16_le")
+test::eq(Int(binary::read_u32_le(raw, 8) | v => v | 0u32), 0xDEADBEEF, "read_u32_le")
+test::eq(Int(binary::read_u32_be(raw, 12) | v => v | 0u32), 0xDEADBEEF, "read_u32_be")
+test::eq(Int(binary::read_i32_be(raw, 16) | v => v | 0i32), -123456, "read_i32_be")
+test::eq(Int(binary::read_u64_le(raw, 20) | v => v | 0u64), 0x0102030405060708, "read_u64_le")
+test::eq(Int(binary::read_u64_be(raw, 28) | v => v | 0u64), 0x0102030405060708, "read_u64_be")
+test::approx(binary::read_f64_le(raw, 36) | v => v | 0.0, 3.141592653589793, 1e-12)
+test::approx(Float(binary::read_f32_be(raw, 44) | v => v | 0.0f32), 1.5, 1e-6)
+test::err(binary::read_u64_le(raw, ?raw - 3), "read_u64_le out of bounds")
+
+// --- 2. LEB128 / Varint ---
+test::suite("binary-leb128")
+vb = {32}
+binary::write_uleb128(vb, 0u64)
+binary::write_uleb128(vb, 127u64)
+binary::write_uleb128(vb, 128u64)
+binary::write_uleb128(vb, 624485u64)
+binary::write_sleb128(vb, 0)
+binary::write_sleb128(vb, -1)
+binary::write_sleb128(vb, -123456)
+binary::write_sleb128(vb, 987654321)
+vraw = +vb
+
+r0 = binary::read_uleb128(vraw, 0)!!
+test::eq(Int(r0.0), 0, "uleb 0")
+r1 = binary::read_uleb128(vraw, r0.1)!!
+test::eq(Int(r1.0), 127, "uleb 127")
+r2 = binary::read_uleb128(vraw, r1.1)!!
+test::eq(Int(r2.0), 128, "uleb 128")
+r3 = binary::read_uleb128(vraw, r2.1)!!
+test::eq(Int(r3.0), 624485, "uleb 624485")
+s0 = binary::read_sleb128(vraw, r3.1)!!
+test::eq(s0.0, 0, "sleb 0")
+s1 = binary::read_sleb128(vraw, s0.1)!!
+test::eq(s1.0, -1, "sleb -1")
+s2 = binary::read_sleb128(vraw, s1.1)!!
+test::eq(s2.0, -123456, "sleb -123456")
+s3 = binary::read_sleb128(vraw, s2.1)!!
+test::eq(s3.0, 987654321, "sleb 987654321")
+test::eq(s3.1, ?vraw, "varint offset consumed")
+
+// --- 3. Structural encode_le / decode_le & encode_be / decode_be ---
+test::suite("binary-structural")
+scores = Int{}(10, 200, 3000)
+pkt = NetHeader(0xCAFEBABEu32, 2u8, <+>, -99i32, 2.75, "edva-net", <+ "opt-val" +>, scores, PacketKind(Data, "payload-bytes"))
+
+le_bytes = binary::encode_le(pkt)
+be_bytes = binary::encode_be(pkt)
+test::check(le_bytes != be_bytes, "le and be encodings differ")
+
+binary::decode_le(NetHeader, le_bytes)
+   | d_le =>
+      test::eq(d_le, pkt, "decode_le structural round-trip")
+   | err =>
+      test::check(<->, "decode_le failed: " + err.msg)
+
+binary::decode_be(NetHeader, be_bytes)
+   | d_be =>
+      test::eq(d_be, pkt, "decode_be structural round-trip")
+   | err =>
+      test::check(<->, "decode_be failed: " + err.msg)
+
+pkt2 = NetHeader(1u32, 1u8, <->, 0i32, 0.0, "", <--> , Int{}(), PacketKind(Code, 512u16))
+binary::decode(NetHeader, binary::encode(pkt2))
+   | d2 =>
+      test::eq(d2, pkt2, "decode canonical empty/none round-trip")
+   | err =>
+      test::check(<->, "decode pkt2 failed: " + err.msg)
+
+test::err(binary::decode_le(NetHeader, le_bytes(0..6)), "decode truncated buffer fails")
+
+test::summary!

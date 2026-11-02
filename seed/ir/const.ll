@@ -22,6 +22,7 @@ target triple = "x86_64-unknown-linux-gnu"
 @"var.const::ln10" = global double 0x40026BB1BBB55516
 @"var.const::max_i64" = global i64 9223372036854775807
 @"var.const::min_i64" = global i64 -9223372036854775808
+@"var.const::max_safe_int" = global i64 9007199254740991
 @"var.const::max_i32" = global i32 2147483647
 @"var.const::min_i32" = global i32 -2147483648
 @"var.const::max_i16" = global i16 32767
@@ -86,6 +87,7 @@ entry:
   store double 0x40026BB1BBB55516, ptr @"var.const::ln10", align 8
   store i64 9223372036854775807, ptr @"var.const::max_i64", align 8
   store i64 -9223372036854775808, ptr @"var.const::min_i64", align 8
+  store i64 9007199254740991, ptr @"var.const::max_safe_int", align 8
   store i32 2147483647, ptr @"var.const::max_i32", align 4
   store i32 -2147483648, ptr @"var.const::min_i32", align 4
   store i16 32767, ptr @"var.const::max_i16", align 2

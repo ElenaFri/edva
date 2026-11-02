@@ -964,18 +964,54 @@ compiled for each binding, so type-directed operators (`+`, `?`, comparisons)
 resolve per instantiation. The same operator dispatches differently:
 `add(3, 4)` is integer `+`, `add("a", "b")` is string concatenation.
 
-**Compile-time type dispatch.** A choice whose condition is a type comparison
+**Compile-time type dispatch & structural type-shape patterns.** A choice whose
+scrutinee is a `Type` (`T [...]`) or whose condition is a type comparison
 (`T == Int`, `T != String`) is resolved at compile time and pruned to the taken
-branch — the untaken branch is never codegen'd, so it may use operations
-illegal for the other type:
+branch — untaken branches are never codegen'd, so they may use operations
+only valid for the matched shape:
 
 ```
 length_or_id = #! T, x =>
    T == String | ?x | x           // ?x only valid when T is String
 ```
 
-Type equality is structural: two distinct instantiations of the same generator
-compare equal (`IntOpt == IntOpt2` is true when both are `Opt(Int)`).
+In `T [...]` choices on a `Type` scrutinee, branches may match exact types
+(`[Int, i32, u64]`), predicates (`[type::is_numeric]`), or structural type-shape
+patterns that optionally extract inner component types into compile-time `Type`
+binders:
+
+| Guard Pattern | Matches | Extracted `Type` Binders |
+|---|---|---|
+| `[()]` | Unit (`()`) | — |
+| `[<>]` or `[<\|>]` | Flag (`<>`, both slots unit) | — |
+| `[<P\|>]` | Option ramification (`<P \| >`) | `P`: positive payload `Type` |
+| `[<\|N>]` | Fallible ramification (`< \| N>`) | `N`: negative payload `Type` |
+| `[<P \| N>]` | Either ramification (`<P \| N>`) | `P`, `N`: slot payload `Type`s |
+| `[E{}]` | Growable array (`E{}`) | `E`: element `Type` |
+| `[E[]]` | Slice (`E[]`) | `E`: element `Type` |
+| `[(E * ..)]` | Any fixed-size homogeneous tuple (`(E * N)`) | `E`: element `Type` |
+| `[(E * 4)]` | Fixed-size homogeneous tuple of exact length `4` | `E`: element `Type` |
+| `[K ^ V]` / `[String ^ V]` | Map (`K ^ V`, or fixed key `K` with binder `V`) | `K`, `V`: key and value `Type`s |
+| `[(..)]` | Any record type | — |
+| `[<..>]` | Any nominal enum type | — |
+
+Type equality is structural unless a nominal user type or enum is matched.
+
+**Compile-time properties on `T: Type`.**
+- `#size T` / `#align T` — ABI byte size and alignment (`Int`).
+- `T.name` — declared `#type` name if nominal/aliased, or canonical type name (`String`).
+- `T.zero` — zero/default-initialized value of type `T` (honoring `f.default` on record fields and recursively zeroing nested fields; empty `E{}` / `K ^ V` for growable containers; `<->` for `<>`; `<-->` for `<P|>`).
+- `?T` — compile-time arity (`Int`): field count for records, element count `N` for `(E * N)`, variant count for enums, `0` for `()`.
+
+**Compile-time record & enum unrolling (`T @ f =>`, `T @ v =>`).**
+Iterating a `Type` directly with `@` unrolls the loop body at compile time over `0..?T`:
+- When `T` is a record (`[(..)]`), `T @ f =>` binds a compile-time field cursor `f`:
+  - `f.idx` (`Int`), `f.name` (`String`), `f.type` (`Type`), `f.default` (`<f.type|>`).
+  - `val.(f)` reads field `f.idx` with static type `f.type`; `val.(f) = expr` writes field `f.idx` (marking it initialized for definite-assignment tracking).
+- When `T` is an enum (`[<..>]`), `T @ v =>` binds a compile-time variant cursor `v`:
+  - `v.idx` (`Int`), `v.name` (`String`), `v.type` (`Type`, `()` for unit variants).
+  - `val.(v)` inspects whether `val`'s active tag is `v.idx`, returning `<v.type|>` (`<+ payload +>` / `<++>` on match, `<-->` otherwise).
+  - `T(v)` constructs unit variant `v`, and `T(v, payload)` constructs payload variant `v` (or unit variant `v` when `v.type [()]` and `payload` is unit).
 
 **Type generators.** A signature whose parameters are all compile-time and whose
 return is a type is a *type generator* — a compile-time function yielding a

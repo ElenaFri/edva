@@ -1,0 +1,287 @@
+// Standard Binary Heap / Priority Queue Module (std/heap.dva)
+// O(log n) `push`, `pop`, `push_max`, `pop_max`, `push_by`, `pop_by`, and O(1) `peek`.
+// Supports `IntHeap`, `StrHeap`, `FloatHeap`, or any user record matching
+// `(data: T{}, size: Int)`. Composite records/tuples default to lexicographical field order.
+
+#use str
+
+#public
+
+#type IntHeap (
+   data: Int{},
+   size: Int
+)
+
+#type StrHeap (
+   data: String{},
+   size: Int
+)
+
+#type FloatHeap (
+   data: Float{},
+   size: Int
+)
+
+#private
+
+make_empty_like: #! A: Type, A => A
+make_empty_like = _sample =>
+   A.zero
+
+arr_len: #! T: Type, T{} => Int
+arr_len = arr =>
+   ?arr
+
+arr_get: #! T: Type, T{}, Int => T
+arr_get = arr, idx =>
+   arr(idx)!!
+
+arr_set: #! T: Type, T{}, Int, T => ()
+arr_set = arr, idx, val =>
+   arr(idx) = val
+
+arr_push: #! T: Type, T{}, T => ()
+arr_push = arr, val =>
+   arr += val
+
+default_less: #! T: Type, T, T => <>
+default_less = a, b =>
+   T
+      [String] str::cmp(a, b) < 0
+      [Int, i8, i16, i32, i64, u8, u16, u32, u64] Int(a) < Int(b)
+      [Float, f32, f64] Float(a) < Float(b)
+      [Rune] Int(a) < Int(b)
+      [<>] !a && b
+      [(..)]
+         decided' = <->
+         res' = <->
+         T @ f =>
+            !decided' |
+               f.type
+                  [<P|>]
+                     decided' = decided'
+                  |
+                     default_less(f.type, a.(f), b.(f)) |
+                        decided' = <+>
+                        res' = <+>
+                     !decided' && default_less(f.type, b.(f), a.(f)) |
+                        decided' = <+>
+                        res' = <->
+         res'
+      | <->
+
+sift_up_default: #! T: Type, (data: T{}, size: Int), Int, <> => ()
+sift_up_default = h, start_idx, is_max =>
+   idx' = start_idx
+   (idx' > 0) @
+      parent = (idx' - 1) / 2
+      cur_v = arr_get(T, h.data, idx')
+      par_v = arr_get(T, h.data, parent)
+      better = is_max
+         | default_less(T, par_v, cur_v)
+         | default_less(T, cur_v, par_v)
+      better
+         |
+            arr_set(T, h.data, idx', par_v)
+            arr_set(T, h.data, parent, cur_v)
+            idx' = parent
+         | -->
+
+sift_down_default: #! T: Type, (data: T{}, size: Int), Int, <> => ()
+sift_down_default = h, start_idx, is_max =>
+   n = h.size
+   idx' = start_idx
+   (idx' * 2 + 1 < n) @
+      left = idx' * 2 + 1
+      right = left + 1
+      best' = idx'
+      best_v' = arr_get(T, h.data, best')
+      left_v = arr_get(T, h.data, left)
+      left_better = is_max
+         | default_less(T, best_v', left_v)
+         | default_less(T, left_v, best_v')
+      left_better |
+         best' = left
+         best_v' = left_v
+      right < n |
+         right_v = arr_get(T, h.data, right)
+         right_better = is_max
+            | default_less(T, best_v', right_v)
+            | default_less(T, right_v, best_v')
+         right_better |
+            best' = right
+            best_v' = right_v
+      best' != idx'
+         |
+            cur_v = arr_get(T, h.data, idx')
+            arr_set(T, h.data, idx', best_v')
+            arr_set(T, h.data, best', cur_v)
+            idx' = best'
+         | -->
+
+sift_up_by: #! T: Type, (data: T{}, size: Int), Int, (T, T => <>) => ()
+sift_up_by = h, start_idx, less =>
+   idx' = start_idx
+   (idx' > 0) @
+      parent = (idx' - 1) / 2
+      cur_v = arr_get(T, h.data, idx')
+      par_v = arr_get(T, h.data, parent)
+      less(cur_v, par_v)
+         |
+            arr_set(T, h.data, idx', par_v)
+            arr_set(T, h.data, parent, cur_v)
+            idx' = parent
+         | -->
+
+sift_down_by: #! T: Type, (data: T{}, size: Int), Int, (T, T => <>) => ()
+sift_down_by = h, start_idx, less =>
+   n = h.size
+   idx' = start_idx
+   (idx' * 2 + 1 < n) @
+      left = idx' * 2 + 1
+      right = left + 1
+      best' = idx'
+      best_v' = arr_get(T, h.data, best')
+      left_v = arr_get(T, h.data, left)
+      less(left_v, best_v') |
+         best' = left
+         best_v' = left_v
+      right < n |
+         right_v = arr_get(T, h.data, right)
+         less(right_v, best_v') |
+            best' = right
+            best_v' = right_v
+      best' != idx'
+         |
+            cur_v = arr_get(T, h.data, idx')
+            arr_set(T, h.data, idx', best_v')
+            arr_set(T, h.data, best', cur_v)
+            idx' = best'
+         | -->
+
+#public
+
+// Creates a new empty `IntHeap`.
+new_int: () => IntHeap
+new_int = !=>
+   IntHeap(Int{}(), 0)
+
+// Creates a new empty `StrHeap`.
+new_str: () => StrHeap
+new_str = !=>
+   StrHeap(String{}(), 0)
+
+// Creates a new empty `FloatHeap`.
+new_float: () => FloatHeap
+new_float = !=>
+   FloatHeap(Float{}(), 0)
+
+// Creates a new empty heap of any heap record type `H` (e.g. `heap::new(heap::IntHeap)`).
+new: #! H: Type => H
+new = !=>
+   H.zero
+
+// Returns the number of active elements in `h`.
+len: #! T: Type, (data: T{}, size: Int) => Int
+len = h =>
+   h.size
+
+// Returns `<+>` if `h` is empty.
+is_empty: #! T: Type, (data: T{}, size: Int) => <>
+is_empty = h =>
+   h.size == 0
+
+// Clears all elements from `h` in O(1) time while keeping underlying capacity.
+clear: #! T: Type, (data: T{}, size: Int) => ()
+clear = h =>
+   h.size = 0
+
+// Returns the top (minimum, or highest-priority) element of `h` without removing it, or `<-->` if empty.
+peek: #! T: Type, (data: T{}, size: Int) => < T | >
+peek = h =>
+   h.size == 0
+      | <-->
+      | <+ arr_get(T, h.data, 0) +>
+
+// Inserts `val` into min-heap `h` in O(log n) time using natural `<` ordering.
+push: #! T: Type, (data: T{}, size: Int), T => ()
+push = h, val =>
+   idx = h.size
+   idx < arr_len(T, h.data)
+      | arr_set(T, h.data, idx, val)
+      | arr_push(T, h.data, val)
+   h.size = idx + 1
+   sift_up_default(T, h, idx, <->)
+
+// Removes and returns the minimum element of min-heap `h` in O(log n) time, or `<-->` if empty.
+pop: #! T: Type, (data: T{}, size: Int) => < T | >
+pop = h =>
+   h.size == 0
+      | <-->
+      |
+         top = arr_get(T, h.data, 0)
+         last_idx = h.size - 1
+         h.size = last_idx
+         last_idx > 0
+            |
+               arr_set(T, h.data, 0, arr_get(T, h.data, last_idx))
+               sift_down_default(T, h, 0, <->)
+         <+ top +>
+
+// Inserts `val` into max-heap `h` in O(log n) time using natural `>` ordering.
+push_max: #! T: Type, (data: T{}, size: Int), T => ()
+push_max = h, val =>
+   idx = h.size
+   idx < arr_len(T, h.data)
+      | arr_set(T, h.data, idx, val)
+      | arr_push(T, h.data, val)
+   h.size = idx + 1
+   sift_up_default(T, h, idx, <+>)
+
+// Removes and returns the maximum element of max-heap `h` in O(log n) time, or `<-->` if empty.
+pop_max: #! T: Type, (data: T{}, size: Int) => < T | >
+pop_max = h =>
+   h.size == 0
+      | <-->
+      |
+         top = arr_get(T, h.data, 0)
+         last_idx = h.size - 1
+         h.size = last_idx
+         last_idx > 0
+            |
+               arr_set(T, h.data, 0, arr_get(T, h.data, last_idx))
+               sift_down_default(T, h, 0, <+>)
+         <+ top +>
+
+// Inserts `val` into priority queue `h` using custom comparator `less(a, b)`.
+push_by: #! T: Type, (data: T{}, size: Int), T, (T, T => <>) => ()
+push_by = h, val, less =>
+   idx = h.size
+   idx < arr_len(T, h.data)
+      | arr_set(T, h.data, idx, val)
+      | arr_push(T, h.data, val)
+   h.size = idx + 1
+   sift_up_by(T, h, idx, less)
+
+// Removes and returns the top element of priority queue `h` using custom comparator `less(a, b)`.
+pop_by: #! T: Type, (data: T{}, size: Int), (T, T => <>) => < T | >
+pop_by = h, less =>
+   h.size == 0
+      | <-->
+      |
+         top = arr_get(T, h.data, 0)
+         last_idx = h.size - 1
+         h.size = last_idx
+         last_idx > 0
+            |
+               arr_set(T, h.data, 0, arr_get(T, h.data, last_idx))
+               sift_down_by(T, h, 0, less)
+         <+ top +>
+
+// Returns a copy of the active elements of `h` (`0..h.size`) as a new growable array `T{}`.
+to_array: #! T: Type, (data: T{}, size: Int) => T{}
+to_array = h =>
+   out = make_empty_like(h.data)
+   h.size @ idx =>
+      arr_push(T, out, arr_get(T, h.data, idx))
+   out

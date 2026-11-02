@@ -22,6 +22,8 @@
 #use "pkg"
 #use "version"
 #use "poll"
+#use "cli"
+#use "log"
 
 #public
 
@@ -292,6 +294,18 @@ is_generic_assign = t =>
    is_fe = is_generic_fn(t.5)
    is_ct || is_ti || is_fe
 
+acc_has_generic_sig: ast::Exprs, String => <>
+acc_has_generic_sig = acc, qname =>
+   found' = <->
+   acc @ st =>
+      st
+         [Assign a]
+            a.0 == qname && is_generic_assign(a)
+               |
+                  found' = <+>
+                  -->
+   found'
+
 prefix_decl_name: String, String, ast::Names, ast::Names => String
 prefix_decl_name = name, prefix, publics, privates =>
    has_hash = ?name > 0 && name(0) == '#'
@@ -342,17 +356,17 @@ prefix_stmt_to_acc = e, prefix, publics, privates, acc, is_interface =>
                            is_pub
                               |
                                  is_fn = t.5 [Fn]
+                                 new_asgn = prefix + "::" + clean
                                  is_fn
                                     |
-                                       is_gen = is_generic_assign(t)
+                                       is_gen = is_generic_assign(t) ||
+                                          acc_has_generic_sig(acc, new_asgn)
                                        is_gen
                                           |
-                                             new_asgn = prefix + "::" + clean
                                              acc += ast::Expr(Assign, (
                                                 new_asgn, t.1, t.2,
                                                 t.3, t.4, t.5, t.6, t.7, t.8))
                                     |
-                                       new_asgn = prefix + "::" + clean
                                        acc += ast::Expr(Assign, (
                                           new_asgn, t.1, t.2,
                                           t.3, t.4, t.5, t.6, t.7, t.8))
@@ -530,7 +544,7 @@ find_and_load_import_map = target_path, explicit_map_path =>
                lock_stale = file_exists(lock_file) && mtime_map < path_mtime(lock_file)
                ccl_stale || lock_stale
                   |
-                     print $ "E5031: import map is older than edva.ccl — run 'edva pkg fetch'"
+                     log::error $ "E5031: import map is older than edva.ccl — run 'edva pkg fetch'"
                      <-->
                   |
                      inst_list = PkgInstances()
@@ -579,7 +593,7 @@ find_and_load_import_map = target_path, explicit_map_path =>
                      <+ ImportMapState(<+>, map_path', eff_root, root_name', inst_list,
                         nat_libs', nat_pkg') +>
             |
-               print $ "E5030: Could not parse import map '" + map_path' + "'"
+               log::error $ "E5030: Could not parse import map '" + map_path' + "'"
                <-->
 
 compute_local_cid: PkgInstance, String => String
@@ -662,7 +676,7 @@ resolve_pkg_root = alias, inst_id, inst =>
    file_exists(root_f)
       | ResolvedModule(File, ResolvedFile(root_f, inst_id + "::" + inst.name, <+>))
       |
-         print $ "E5033: #use @" + alias + ": package '" + inst.name +
+         log::error $ "E5033: #use @" + alias + ": package '" + inst.name +
             "' has no root module src/" + inst.name + ".dva"
          ResolvedModule(None)
 
@@ -672,13 +686,13 @@ resolve_pkg_sub = alias, submod, inst_id, inst =>
    use_path = "#use @" + alias + "/" + submod
    is_internal_path(submod)
       |
-         print $ "E5035: " + use_path + ": module is internal to package '" +
+         log::error $ "E5035: " + use_path + ": module is internal to package '" +
             inst.name + "'"
          ResolvedModule(None)
       |
          r = resolve_in_dir(inst.src, submod, inst_id + "::" + submod, <+>)
          !is_resolved(r)
-            | print $ "E5034: " + use_path + ": package '" + inst.name +
+            | log::error $ "E5034: " + use_path + ": package '" + inst.name +
                "' has no module '" + submod + "'"
          r
 
@@ -691,12 +705,12 @@ resolve_pkg_module = base, mod_path, ldr =>
    submod = slash_idx < 0 | "" | mod_path(slash_idx + 1..)
    alias == curr_inst.name
       |
-         print $ "E5037: #use @" + alias +
+         log::error $ "E5037: #use @" + alias +
             ": a package cannot import itself; use a local #use"
          ResolvedModule(None)
       | !(curr_inst.aliases ^? alias)
          |
-            print $ "E5032: #use @" + alias + ": '" + alias +
+            log::error $ "E5032: #use @" + alias + ": '" + alias +
                "' is not a dependency of package '" + curr_inst.name + "'"
             ResolvedModule(None)
          |
@@ -744,7 +758,7 @@ resolve_module = base, mod_path, ldr =>
       | resolve_local_module(base, mod_path, ldr)
       | !ldr.import_map.has_map
          |
-            print $ "E5030: #use " + mod_path + ": no import map — run 'edva pkg fetch'"
+            log::error $ "E5030: #use " + mod_path + ": no import map — run 'edva pkg fetch'"
             ResolvedModule(None)
          | resolve_pkg_module(base, mod_path, ldr)
 
@@ -806,7 +820,7 @@ collect_module_exports = exprs, bound_name, canonical_id, is_import, table, sour
                                     existing != a.0
                                        |
                                           src = sources ^ bare | _ | ""
-                                          print $ "E3033: Name clash: symbol '" +
+                                          log::error $ "E3033: Name clash: symbol '" +
                                              bare + "' imported from '" + bound_name +
                                              diag::imported_symbol_conflict_suffix! +
                                              src + "'"
@@ -830,7 +844,7 @@ collect_module_exports = exprs, bound_name, canonical_id, is_import, table, sour
                               existing != td.name
                                  |
                                     src = sources ^ bare | _ | ""
-                                    print $ "E3033: Name clash: type '" +
+                                    log::error $ "E3033: Name clash: type '" +
                                        bare + "' imported from '" + bound_name +
                                        "' conflicts with type already imported from '" +
                                        src + "'"
@@ -854,7 +868,7 @@ collect_module_exports = exprs, bound_name, canonical_id, is_import, table, sour
                               existing != f.dva_name
                                  |
                                     src = sources ^ bare | _ | ""
-                                    print $ diag::E3033_foreign_function_clash_prefix! +
+                                    log::error $ diag::E3033_foreign_function_clash_prefix! +
                                        bare + "' imported from '" + bound_name +
                                        diag::imported_symbol_conflict_suffix! +
                                        src + "'"
@@ -877,7 +891,7 @@ check_file_clash = stmts, table, sources =>
                   table ^? bare
                      |
                         src = sources ^ bare | _ | ""
-                        print $ "E3033: Name clash: symbol '" + bare +
+                        log::error $ "E3033: Name clash: symbol '" + bare +
                            diag::declared_symbol_conflict_suffix! +
                            src + "'"
                         ok' = <->
@@ -886,7 +900,7 @@ check_file_clash = stmts, table, sources =>
             table ^? bare
                |
                   src = sources ^ bare | _ | ""
-                  print $ "E3033: Name clash: type '" + bare +
+                  log::error $ "E3033: Name clash: type '" + bare +
                      "' declared in module conflicts with type imported from '" +
                      src + "'"
                   ok' = <->
@@ -895,7 +909,7 @@ check_file_clash = stmts, table, sources =>
             table ^? bare
                |
                   src = sources ^ bare | _ | ""
-                  print $ diag::E3033_foreign_function_clash_prefix! + bare +
+                  log::error $ diag::E3033_foreign_function_clash_prefix! + bare +
                      diag::declared_symbol_conflict_suffix! +
                      src + "'"
                   ok' = <->
@@ -1074,7 +1088,7 @@ rewrite_import_expr = e, table, locals =>
          new_lhs = r.has_lhs | rewrite_import_expr(r.lhs, table, locals) | r.lhs
          new_rhs = r.has_rhs | rewrite_import_expr(r.rhs, table, locals) | r.rhs
          ast::Expr(Range, ast::RangeExpr(r.has_lhs, r.has_rhs, new_lhs,
-            new_rhs))
+            new_rhs, r.is_inclusive))
       [NamedArg na]
          new_val = rewrite_import_expr(na.val, table, locals)
          ast::Expr(NamedArg, ast::NamedArgExpr(na.name, new_val))
@@ -1138,7 +1152,7 @@ load_stmts = stmts, base, prefix, publics, privates, ldr, path, lines, cols =>
                [None]
                   !starts_with(imp.module_path, "@")
                      |
-                        print $ "E5006: Imported module '" + imp.module_name +
+                        log::error $ "E5006: Imported module '" + imp.module_name +
                            "' not found at '" + imp.module_path +
                            "' or in stdlib"
                   ok' = <->
@@ -1258,7 +1272,7 @@ load_single_file = path, prefix, is_pkg, imp_path, ldr =>
                   | prog =>
                      is_pkg && ?ppr.publics == 0
                         |
-                           print $ "E5036: #use " + imp_path +
+                           log::error $ "E5036: #use " + imp_path +
                               ": module exports nothing (no #public)"
                            <->
                         |
@@ -1274,7 +1288,7 @@ load_single_file = path, prefix, is_pkg, imp_path, ldr =>
                               | <->
                   | <->
       |
-         print $ "E5005: Could not read source file '" + path + "'"
+         log::error $ "E5005: Could not read source file '" + path + "'"
          <->
 
 load_file: String, String, <>, String, Loader => <>
@@ -1307,7 +1321,7 @@ load_resolved = resolved, imp_path, ldr =>
          stk_idx !< 0
             |
                chain = format_cycle_chain(ldr.loading_stack, stk_idx, f.canonical_id)
-               print $ diag::E5038_package_import_cycle_prefix! + chain
+               log::error $ diag::E5038_package_import_cycle_prefix! + chain
                <->
             |
                loaded_has(ldr.loaded, f.canonical_id)
@@ -1326,7 +1340,7 @@ load_resolved = resolved, imp_path, ldr =>
          stk_idx !< 0
             |
                chain = format_cycle_chain(ldr.loading_stack, stk_idx, d.canonical_id)
-               print $ diag::E5038_package_import_cycle_prefix! + chain
+               log::error $ diag::E5038_package_import_cycle_prefix! + chain
                <->
             |
                loaded_has(ldr.loaded, d.canonical_id)
@@ -1449,7 +1463,7 @@ run_cmd = args =>
                      sig = status .&. 127
                      sig != 0
                         |
-                           print $ "Process terminated by signal " +
+                           log::warn $ "Process terminated by signal " +
                               str::from_int(sig)
                            128 + sig
                         |
@@ -1463,7 +1477,7 @@ get_default_target_triple = ignored =>
          llvm_dispose_message(t)
          s
       |
-         print $ "E5016: LLVM could not determine" +
+         log::error $ "E5016: LLVM could not determine" +
             " a default target triple; pass one with -target"
          sys::exit(1)
          ""
@@ -1547,10 +1561,10 @@ find_char_at = s, i, ch =>
 
 c_guard_char: Int => Int
 c_guard_char = ch =>
-   (ch !< 97 && ch !> 122)
+   ch [97...122]
       | ch - 32
       |
-         ((ch !< 65 && ch !> 90) || (ch !< 48 && ch !> 57))
+         ch [65...90, 48...57]
             | ch
             | 95
 
@@ -1561,7 +1575,7 @@ c_header_guard = p =>
    ?base @ i =>
       b += c_guard_char(base(i))
    s0 = +b
-   s = (?s0 > 0 && s0(0) !< 48 && s0(0) !> 57) | "_" + s0 | s0
+   s = (?s0 > 0 && s0(0) [48...57]) | "_" + s0 | s0
    has_h = ?s !< 2 && s(-2..) == "_H"
    res = has_h | s | s + "_H"
    ?s0 == 0 | "DVA_EXPORTS_H" | res
@@ -1734,7 +1748,7 @@ generate_c_header = prog, exports, header_path =>
             !sig_res'.ok | sig_res' = find_assign_sig(stmts, bare)
             !sig_res'.ok
                |
-                  print $ "E5020: Exported function '" + dva_name +
+                  log::error $ "E5020: Exported function '" + dva_name +
                      "' has no type signature."
                   has_error' = <+>
                |
@@ -1767,7 +1781,7 @@ generate_c_header = prog, exports, header_path =>
                         hdr += s_proto
                         emitted_symbols += c_name
                      |
-                        print $ "E5020: Exported symbol '" + dva_name +
+                        log::error $ "E5020: Exported symbol '" + dva_name +
                            "' is not a function."
                         has_error' = <+>
 
@@ -1782,7 +1796,7 @@ generate_c_header = prog, exports, header_path =>
          ok = write_file(header_path, +hdr)
          !ok
             |
-               print $ "E5021: Could not write header file '" +
+               log::error $ "E5021: Could not write header file '" +
                   header_path + "'"
                <->
             | <+>
@@ -1798,7 +1812,7 @@ is_darwin_triple = triple =>
 print_program_errors: unify::TypeErrors => ()
 print_program_errors = errs =>
    errs @ err =>
-      print $ unify::format_error(err)
+      log::error $ unify::format_error(err)
 
 sq: String => String
 sq = s =>
@@ -1899,7 +1913,7 @@ compile_ast_to_binary = prog, exports, opts, out_ll, out_bin, dmods, dpaths, nli
                   |
                      cg_ok' = 1
                      is_cached' = <+>
-                     !quiet | print $ "cached LLVM IR: " + output_ll
+                     !quiet | log::info $ "cached LLVM IR: " + output_ll
                   |
                      cg_ok' = codegen::codegen_typed_program_opts(succ.prog, prog,
                         output_ll, exports, opts.target, cg_opts)
@@ -1915,13 +1929,13 @@ compile_ast_to_binary = prog, exports, opts, out_ll, out_bin, dmods, dpaths, nli
          cg_ok' = 0
    cg_ok' == 0
       |
-         print $ "E" + str::from_int(cg_err) +
+         log::error $ "E" + str::from_int(cg_err) +
             ": Compilation aborted due to code generation errors."
          <- 1 ->
       |
          !quiet && !is_cached'
             |
-               print $ "Successfully generated LLVM IR via LLVM C API: " +
+               log::info $ "Successfully generated LLVM IR via LLVM C API: " +
                   output_ll
          opts.header_path != ""
             |
@@ -1952,7 +1966,7 @@ compile_ast_to_binary = prog, exports, opts, out_ll, out_bin, dmods, dpaths, nli
                      cres = run_cmd(clang_args)
                      cres != 0
                         |
-                           print $ "E" + str::from_int(clang_err) +
+                           log::error $ "E" + str::from_int(clang_err) +
                               diag::clang_compilation_failed_suffix! +
                               str::from_int(cres)
                            <- cres ->
@@ -1973,14 +1987,14 @@ compile_ast_to_binary = prog, exports, opts, out_ll, out_bin, dmods, dpaths, nli
                            run_cmd(rm_args)
                            lres != 0
                               |
-                                 print $ "E" + str::from_int(clang_err) +
+                                 log::error $ "E" + str::from_int(clang_err) +
                                     ": wasm-ld linking failed with exit code " +
                                     str::from_int(lres)
                                  <- lres ->
                               |
                                  !quiet
                                     |
-                                       print $ "Successfully compiled binary: " +
+                                       log::info $ "Successfully compiled binary: " +
                                           output_bin
                                  <++>
                   |
@@ -2022,7 +2036,7 @@ compile_ast_to_binary = prog, exports, opts, out_ll, out_bin, dmods, dpaths, nli
                                     ok = resolve_pkg_config(pname, clang_args)
                                     !ok
                                        |
-                                          print $ "E5039: missing native requirement: pkg-config '" +
+                                          log::error $ "E5039: missing native requirement: pkg-config '" +
                                              pname + "' failed"
                                           pkg_err' = <+>
                            ?dynamic_mods > 0
@@ -2044,7 +2058,7 @@ compile_ast_to_binary = prog, exports, opts, out_ll, out_bin, dmods, dpaths, nli
                                  run_cmd(rm_args)
                            cres != 0
                               |
-                                 print $ "E" + str::from_int(clang_err) +
+                                 log::error $ "E" + str::from_int(clang_err) +
                                     diag::clang_compilation_failed_suffix! +
                                     str::from_int(cres)
                                  <- cres ->
@@ -2054,7 +2068,7 @@ compile_ast_to_binary = prog, exports, opts, out_ll, out_bin, dmods, dpaths, nli
                                        mod_msg = "Successfully compiled module object: "
                                        bin_msg = "Successfully compiled binary: "
                                        msg = opts.is_module | mod_msg | bin_msg
-                                       print $ msg + output_bin
+                                       log::info $ msg + output_bin
                                  <++>
 
 // --- REPL -------------------------------------------------------------------
@@ -2580,7 +2594,7 @@ repl_step = opts, session_src, line, sess =>
          temp_src = sess.src_path
          !write_file(temp_src, full_src)
             |
-               print $ "E6001: Could not write scratch source file"
+               log::error $ "E6001: Could not write scratch source file"
                session_src
             |
                load_res = load_all(temp_src, "", <->, opts.import_map)
@@ -2600,7 +2614,7 @@ repl_step = opts, session_src, line, sess =>
                            rres = run_cmd(run_args)
                            rres != 0
                               |
-                                 print $ "E6004: Program exited with code " +
+                                 log::error $ "E6004: Program exited with code " +
                                     str::from_int(rres)
                                  session_src
                               |
@@ -2649,7 +2663,7 @@ repl_run = opts =>
    scratch_dir = make_scratch_dir!
    ?scratch_dir == 0
       |
-         print $ "E6005: Could not create scratch directory for REPL"
+         log::error $ "E6005: Could not create scratch directory for REPL"
       |
          session_src = path_join(scratch_dir, "session.dva")
          session_ll = path_join(scratch_dir, "session.ll")
@@ -2670,267 +2684,116 @@ repl_run = opts =>
 format_version: () => String
 format_version = !=> "edva " + version::VERSION
 
-parse_args_step: Int, CliOpts => CliOpts
-parse_args_step = i, opts =>
-   i !< sys::argc
-      | opts
-      |
-         arg = sys::argv_string(i)
-         arg
-            ["-v", "--version"]
-               print $ format_version!
-               sys::exit(0)
-               opts
-            ["-h", "--help"]
-               opts.help = <+>
-               parse_args_step(i + 1, opts)
-            ["-r", "--run"]
-               opts.run_exec = <+>
-               parse_args_step(i + 1, opts)
-            ["-ir", "--ir-only"]
-               opts.ir_only = <+>
-               parse_args_step(i + 1, opts)
-            ["-no-runtime", "--no-runtime"]
-               opts.no_runtime = <+>
-               parse_args_step(i + 1, opts)
-            ["-no-main", "--no-main"]
-               opts.no_main = <+>
-               parse_args_step(i + 1, opts)
-            ["-shared", "--shared"]
-               opts.is_shared = <+>
-               opts.no_main = <+>
-               parse_args_step(i + 1, opts)
-            ["-repl", "--repl"]
-               opts.repl_mode = <+>
-               parse_args_step(i + 1, opts)
-            ["-ast", "--ast", "--dump-ast"]
-               opts.ast_dump = <+>
-               parse_args_step(i + 1, opts)
-            ["-ast-tree", "--ast-tree"]
-               opts.ast_dump = <+>
-               opts.ast_tree = <+>
-               parse_args_step(i + 1, opts)
-            ["-typed-ast", "--typed-ast", "-check-types", "--check-types"]
-               opts.typed_ast = <+>
-               parse_args_step(i + 1, opts)
-            ["-typed-codegen", "--typed-codegen"]
-               parse_args_step(i + 1, opts)
-            ["-legacy-codegen", "--legacy-codegen"]
-               print $ "E5008: Legacy untyped codegen has been retired; " +
-                  "typed codegen is the standard pipeline."
-               sys::exit(1)
-               opts
-            ["-typed-ast-tree", "--typed-ast-tree"]
-               opts.typed_ast = <+>
-               opts.ast_dump = <+>
-               opts.ast_tree = <+>
-               parse_args_step(i + 1, opts)
-            ["-e", "--eval"]
-               parse_eval_arg(i, opts)
-            ["-O0", "-O1", "-O2", "-O3", "-Os", "-Oz"]
-               opts.opt = arg
-               parse_args_step(i + 1, opts)
-            ["-O"]
-               opts.opt = "-O2"
-               parse_args_step(i + 1, opts)
-            ["-target", "--target"]
-               parse_target_arg(i, opts)
-            ["-c", "--compile-only"]
-               opts.is_module = <+>
-               opts.no_main = <+>
-               parse_args_step(i + 1, opts)
-            ["--entry", "-entry"]
-               opts.no_main = <->
-               opts.module_name = ""
-               parse_args_step(i + 1, opts)
-            ["--module"]
-               parse_module_arg(i, opts)
-            ["--import-map"]
-               parse_import_map_arg(i, opts)
-            ["-H", "--header"]
-               parse_header_arg(i, opts)
-            ["--cache"]
-               parse_cache_arg(i, opts)
-            ["--no-cache"]
-               opts.no_cache = <+>
-               parse_args_step(i + 1, opts)
-            ["-o", "--output"]
-               parse_output_arg(i, opts)
-            ["-cflag", "--cflag", "-cflags", "--cflags"]
-               parse_cflag_arg(i, opts)
-            |
-               parse_pos_arg(i, arg, opts)
+not_flag: String => < | String >
+not_flag = s =>
+   (?s > 0 && s(0) == '-') | <- "argument must not begin with '-'; got '" + s + "'" ->
 
-parse_cflag_arg: Int, CliOpts => CliOpts
-parse_cflag_arg = i, opts =>
-   i + 1 !< sys::argc
-      |
-         print $ "E5016: '-cflag' requires a flag argument"
-         sys::exit(1)
-         opts
-      |
-         opts.cflags += sys::argv_string(i + 1)
-         parse_args_step(i + 2, opts)
+valid_opt_level: String => < | String >
+valid_opt_level = s =>
+   s !["", "0", "1", "2", "3", "s", "z", "-O0", "-O1", "-O2", "-O3", "-Os", "-Oz"]
+      | <- "invalid optimization level '" + s + "'" ->
 
-parse_cache_arg: Int, CliOpts => CliOpts
-parse_cache_arg = i, opts =>
-   i + 1 !< sys::argc
-      |
-         print $ "E5016: '--cache' requires a directory path"
-         sys::exit(1)
-         opts
-      |
-         opts.cache_dir = sys::argv_string(i + 1)
-         parse_args_step(i + 2, opts)
-
-parse_module_arg: Int, CliOpts => CliOpts
-parse_module_arg = i, opts =>
-   i + 1 !< sys::argc
-      |
-         print $ "E5016: '--module' requires a module name argument"
-         sys::exit(1)
-         opts
-      |
-         mv = sys::argv_string(i + 1)
-         ?mv > 0 && mv(0) == '-'
-            |
-               print $ "E5016: Module name must not begin with '-'; got '" +
-                  mv + "'"
-               sys::exit(1)
-         opts.module_name = mv
-         opts.is_module = <+>
-         opts.no_main = <+>
-         parse_args_step(i + 2, opts)
-
-parse_eval_arg: Int, CliOpts => CliOpts
-parse_eval_arg = i, opts =>
-   i + 1 !< sys::argc
-      |
-         print $ "E5019: '-e' requires a code string argument"
-         print_usage(0)
-         sys::exit(1)
-         opts
-      |
-         opts.eval_src = sys::argv_string(i + 1)
-         parse_args_step(i + 2, opts)
-
-parse_target_arg: Int, CliOpts => CliOpts
-parse_target_arg = i, opts =>
-   i + 1 !< sys::argc
-      |
-         print $ "E5015: '-target' requires a target triple argument"
-         print_usage(0)
-         sys::exit(1)
-         opts
-      |
-         tv = sys::argv_string(i + 1)
-         ?tv > 0 && tv(0) == '-'
-            |
-               print $ "E5017: Target triple must" +
-                  " not begin with '-'; got '" +
-                  tv + "'"
-               sys::exit(1)
-         opts.triple = tv
-         parse_args_step(i + 2, opts)
-
-parse_header_arg: Int, CliOpts => CliOpts
-parse_header_arg = i, opts =>
-   i + 1 !< sys::argc
-      |
-         print $ "E5018: '-H' requires a header file path argument"
-         sys::exit(1)
-         opts
-      |
-         hv = sys::argv_string(i + 1)
-         ?hv > 0 && hv(0) == '-'
-            |
-               print $ "E5018: Header path must not begin with '-'; got '" +
-                  hv + "'"
-               sys::exit(1)
-         opts.header_path = hv
-         parse_args_step(i + 2, opts)
-
-parse_output_arg: Int, CliOpts => CliOpts
-parse_output_arg = i, opts =>
-   i + 1 !< sys::argc
-      |
-         print $ "E5016: '-o' requires an output path argument"
-         sys::exit(1)
-         opts
-      |
-         ov = sys::argv_string(i + 1)
-         ?ov > 0 && ov(0) == '-'
-            |
-               print $ "E5016: Output path must not begin with '-'; got '" +
-                  ov + "'"
-               sys::exit(1)
-         opts.outpath = ov
-         parse_args_step(i + 2, opts)
-
-parse_import_map_arg: Int, CliOpts => CliOpts
-parse_import_map_arg = i, opts =>
-   i + 1 !< sys::argc
-      |
-         print $ "E5030: '--import-map' requires a file path argument"
-         sys::exit(1)
-         opts
-      |
-         mv = sys::argv_string(i + 1)
-         ?mv > 0 && mv(0) == '-'
-            |
-               print $ "E5030: Import map path must not begin with '-'; got '" +
-                  mv + "'"
-               sys::exit(1)
-         opts.import_map = mv
-         parse_args_step(i + 2, opts)
-
-parse_pos_arg: Int, String, CliOpts => CliOpts
-parse_pos_arg = i, arg, opts =>
-   ?arg > 0 && arg(0) == '-'
-      |
-         print $ "E5008: Unknown option '" +
-            arg + "'"
-         print_usage(0)
-         sys::exit(1)
-         opts
-      |
-         opts.target == ""
-            |
-               opts.target = arg
-               parse_args_step(i + 1, opts)
-            |
-               opts.outpath == ""
-                  |
-                     opts.outpath = arg
-                     parse_args_step(i + 1, opts)
-                  |
-                     print $ "E5008: Extra argument '" +
-                        arg + "'"
-                     print_usage(0)
-                     sys::exit(1)
-                     opts
+compiler_cli_opts: () => cli::Opts
+compiler_cli_opts = !=>
+   cli::Opts(
+      cli::opt("o:output", "", "Output binary or object path", not_flag),
+      cli::opt("r:run", <->, "Run binary immediately after linking"),
+      cli::opt("ir", <->, "Emit LLVM IR (.ll) only; do not invoke clang"),
+      cli::opt("c:compile-only", <->, "Compile to object file (.o) only"),
+      cli::opt("shared", <->, "Build a shared library (.so)"),
+      cli::opt("entry", <->, "Compile as program entry module"),
+      cli::opt("m:module", "", "Compile as named module", not_flag),
+      cli::opt("t:target", "", "Target triple (e.g. x86_64-unknown-linux-gnu)", not_flag),
+      cli::opt("O:opt", "2", "Optimization level (0, 1, 2, 3, s, z)", valid_opt_level),
+      cli::opt("H:header", "", "Generate C header from #export declarations", not_flag),
+      cli::opt("e:eval", "", "Evaluate inline code string"),
+      cli::opt("i:repl", <->, "Interactive REPL (reads from stdin)"),
+      cli::opt("ast", <->, "Print AST of target program"),
+      cli::opt("ast-tree", <->, "Print AST as an indented tree"),
+      cli::opt("typed-ast", <->, "Elaborate and verify typed AST"),
+      cli::opt("typed-ast-tree", <->, "Elaborate, verify, and dump typed AST tree"),
+      cli::opt("no-main", <->, "Emit main with internal linkage"),
+      cli::opt("no-runtime", <->, "Omit standard runtime emission"),
+      cli::opt("import-map", "", "Path to package import map", not_flag),
+      cli::opt("cache", "", "Compilation cache directory path"),
+      cli::opt("no-cache", <->, "Disable compilation cache"),
+      cli::opt("cflag", cli::Args(), "Pass additional flag to clang")
+   )
 
 print_usage: Int => ()
 print_usage = ignored =>
-   print $ "Usage: edva <input.dva | module_dir> [options]"
-   print $ "       edva <init|add|fetch|build|test|update|graph|vendor|cache> [dir] [options]"
-   print $ "       edva pkg <command> [dir] [options]"
-   print $ "Options:"
-   print $ "  -v, --version    Print compiler version and exit"
-   print $ "  -ast, --ast      Print AST of target program"
-   print $ "  -ast-tree        Print AST as an indented tree"
-   print $ "  -typed-ast       Elaborate and verify typed AST"
-   print $ "  -typed-ast-tree  Elaborate, verify, and dump typed AST tree"
-   print $ "  -e <code>        Evaluate/parse inline code string"
-   print $ "  -r, --run        Run binary immediately after linking"
-   print $ "  -ir, --ir-only   Emit LLVM IR (.ll) only; do not invoke clang"
-   print $ "  -o <path>        Output binary path"
-   print $ "  -target <triple> Target triple (e.g. x86_64-unknown-linux-gnu)"
-   print $ "  -no-main         Emit main with internal linkage"
-   print $ "  -shared          Build a shared library (.so)"
-   print $ "  -repl, --repl    Interactive REPL (reads from stdin)"
-   print $ "  -H, --header <h> Generate C header from #export declarations"
-   print $ "  -h, --help       Show this help message"
+   print $ cli::format_help(
+      compiler_cli_opts!,
+      "edva",
+      "Edva self-hosted compiler and package driver",
+      version::VERSION
+   )
+
+parse_cli_opts: () => CliOpts
+parse_cli_opts = !=>
+   res = cli::parse(
+      compiler_cli_opts!,
+      "Edva self-hosted compiler and package driver",
+      version::VERSION,
+      <+>
+   )
+   opts = init_opts(0)
+   pos = cli::rest(res)
+   ?pos > 0 | opts.target = (pos(0) | _ | "")
+   ?pos > 1 | opts.outpath = (pos(1) | _ | "")
+   ?pos > 2
+      |
+         log::error $ "E5008: Extra argument '" + (pos(2) | _ | "") + "'"
+         sys::exit(1)
+
+   out_flag = cli::str(res, "output")
+   out_flag != "" | opts.outpath = out_flag
+
+   opts.run_exec = cli::flag(res, "run")
+   opts.ir_only = cli::flag(res, "ir")
+   opts.no_runtime = cli::flag(res, "no-runtime")
+   opts.no_main = cli::flag(res, "no-main")
+   opts.repl_mode = cli::flag(res, "repl")
+
+   ast_tree = cli::flag(res, "ast-tree")
+   typed_tree = cli::flag(res, "typed-ast-tree")
+   ast_dump = cli::flag(res, "ast") || ast_tree || typed_tree
+   typed_ast = cli::flag(res, "typed-ast") || typed_tree
+   opts.ast_tree = (ast_tree || typed_tree)
+   opts.ast_dump = ast_dump
+   opts.typed_ast = typed_ast
+
+   opts.eval_src = cli::str(res, "eval")
+   opts.triple = cli::str(res, "target")
+   opts.header_path = cli::str(res, "header")
+   opts.import_map = cli::str(res, "import-map")
+   opts.cache_dir = cli::str(res, "cache")
+   opts.no_cache = cli::flag(res, "no-cache")
+   opts.cflags = cli::strs(res, "cflag")
+
+   opt_lvl = cli::str(res, "opt")
+   opt_flag = opt_lvl(..2) == "-O" | opt_lvl | "-O" + opt_lvl
+   opts.opt = opt_flag
+
+   cli::flag(res, "shared")
+      |
+         opts.is_shared = <+>
+         opts.no_main = <+>
+   cli::flag(res, "compile-only")
+      |
+         opts.is_module = <+>
+         opts.no_main = <+>
+   mod_name = cli::str(res, "module")
+   mod_name != ""
+      |
+         opts.module_name = mod_name
+         opts.is_module = <+>
+         opts.no_main = <+>
+   cli::flag(res, "entry")
+      |
+         opts.no_main = <->
+         opts.module_name = ""
+   opts
 
 verify_typed_ast: ast::Expr, <>, <> => ()
 verify_typed_ast = prog, dump_ast, as_tree =>
@@ -2985,7 +2848,7 @@ run_eval = opts =>
    eval_dir = make_scratch_dir!
    ?eval_dir == 0
       |
-         print $ "E6005: Could not create scratch directory for -e"
+         log::error $ "E6005: Could not create scratch directory for -e"
          sys::exit(1)
    eval_file = path_join(eval_dir, "eval.dva")
    eval_ll = path_join(eval_dir, "eval.ll")
@@ -2993,7 +2856,7 @@ run_eval = opts =>
    !write_file(eval_file, opts.eval_src + "\n")
       |
          eval_cleanup(eval_dir, eval_file, "", "")
-         print $ "E6001: Could not write scratch source file"
+         log::error $ "E6001: Could not write scratch source file"
          sys::exit(1)
    eval_prefix = opts.is_module && opts.no_main | opts.module_name | ""
    eval_load = load_all(eval_file, eval_prefix, opts.is_module, opts.import_map)
@@ -3070,7 +2933,7 @@ run_eval = opts =>
          eval_cleanup(eval_dir, eval_file, rm_ll, rm_bin)
          rres != 0
             |
-               print $ "E5014: Compiled program exited with code " +
+               log::error $ "E5014: Compiled program exited with code " +
                   str::from_int(rres)
                sys::exit(1)
          sys::exit(0)
@@ -3080,6 +2943,8 @@ run_eval = opts =>
 
 run_driver: Int => ()
 run_driver = ignored =>
+   log::set_fd(1)
+   log::set_timestamps(<->)
    sys::argc > 1 && sys::argv_string(1) == "pkg"
       |
          rc = pkg::main(2)
@@ -3090,11 +2955,7 @@ run_driver = ignored =>
          sys::exit(rc)
    init_compiler_paths!
    ast::cell_var_reset!
-   opts = parse_args_step(1, init_opts(0))
-   opts.help
-      |
-         print_usage(0)
-         sys::exit(0)
+   opts = parse_cli_opts!
    eff_triple = opts.triple != "" | opts.triple | get_default_target_triple(0)
    opts.triple = eff_triple
    parser::set_target_triple(eff_triple)
@@ -3115,7 +2976,7 @@ run_driver = ignored =>
          opts.target == ""
             |
                print $ format_version!
-               print $ diag::E5007_no_input!
+               log::error $ diag::E5007_no_input!
                print_usage(0)
                sys::exit(1)
          target_prefix_dump = opts.is_module | opts.module_name | ""
@@ -3131,19 +2992,19 @@ run_driver = ignored =>
    opts.target == ""
       |
          print $ format_version!
-         print $ diag::E5007_no_input!
+         log::error $ diag::E5007_no_input!
          print_usage(0)
          sys::exit(1)
 
    is_dir = dir_exists(opts.target)
    !is_dir && !file_exists(opts.target)
       |
-         print $ "E5009: Path '" + opts.target + "' does not exist"
+         log::error $ "E5009: Path '" + opts.target + "' does not exist"
          sys::exit(1)
 
    !is_dir && !is_dva_file(opts.target)
       |
-         print $ "E5010: Input file must have a '.dva' extension, got '" +
+         log::error $ "E5010: Input file must have a '.dva' extension, got '" +
             opts.target + "'"
          sys::exit(1)
 
@@ -3158,7 +3019,7 @@ run_driver = ignored =>
 
    ?base_name > 0 && base_name(0) == '-'
       |
-         print $ "E5018: Output name '" + base_name +
+         log::error $ "E5018: Output name '" + base_name +
             "' begins with '-'; rename the input."
          sys::exit(1)
    opts.is_module && opts.no_main && opts.module_name == "" | opts.module_name = base_name
@@ -3169,7 +3030,7 @@ run_driver = ignored =>
    output_bin = opts.outpath != "" | opts.outpath | base_name + bin_suffix
    !opts.ir_only && dir_exists(output_bin)
       |
-         print $ "E5022: Output name '" + output_bin +
+         log::error $ "E5022: Output name '" + output_bin +
             "' collides with an existing directory; pass -o <name> to set output name."
          sys::exit(1)
    ll_stem = opts.outpath != "" | (opts.is_module | base_name | opts.outpath) | base_name
@@ -3201,7 +3062,7 @@ run_driver = ignored =>
 
    opts.run_exec
       |
-         print $ "--- Running Executable ---"
+         log::info $ "--- Running Executable ---"
          exec_bin = path::is_abs(output_bin) ||
             output_bin(..2) == "./"
             | output_bin
@@ -3226,7 +3087,7 @@ run_driver = ignored =>
          rres = run_cmd(run_args)
          rres != 0
             |
-               print $ "E5014: Compiled program exited with code " +
+               log::error $ "E5014: Compiled program exited with code " +
                   str::from_int(rres)
                sys::exit(1)
 

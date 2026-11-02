@@ -1,0 +1,50 @@
+---
+meta:
+  audience: "Edva developers working with hash sets and mathematical set operations"
+  status: "current reference"
+  audited: "fb4fbc2"
+  evidence: "`std/set.dva`, `tests/pass/399_std_collections.dva`"
+---
+
+# `set` standard library
+
+The `set` module provides generic set operations over $O(1)$ hash-map-backed sets
+(`set::StrSet`, `set::IntSet`, `set::AddrSet`, or any `K ^ <>`) as well as structural
+array-backed sets (`E{}`) for composite record and enum types.
+
+```{.dva .run}
+#use set
+#use io
+#use str
+
+a = set::from_array(set::IntSet, Int{}(1, 2, 3))
+b = set::from_array(set::IntSet, Int{}(2, 3, 4))
+u = set::union(a, b)
+io::out $ str::from_int(set::len(u))
+```
+
+## Types and Function catalog
+
+| Symbol / Function | Signature | Description |
+|---|---|---|
+| `set::StrSet` | `String ^ <>` | Hash set of `String` |
+| `set::IntSet` | `Int ^ <>` | Hash set of `Int` |
+| `set::AddrSet` | `Addr ^ <>` | Hash set of `Addr` |
+| `set::new_str!` / `new_int!` | `() => StrSet / IntSet` | Creates a new empty `StrSet` or `IntSet` |
+| `set::new(S)` | `#! S: Type => S` | Creates a new empty set of type `S` |
+| `set::len(s)` | `#! S: Type, S => Int` | Returns the cardinality of `s` |
+| `set::is_empty(s)` | `#! S: Type, S => <>` | Returns `<+>` if `s` is empty |
+| `set::add(s, elem)` | `#! S: Type, #! E: Type, S, E => <>` | Inserts `elem` into `s`; returns `<+>` if newly added |
+| `set::contains(s, elem)` | `#! S: Type, #! E: Type, S, E => <>` | Returns `<+>` if `elem` is in `s` |
+| `set::remove(s, elem)` | `#! S: Type, #! E: Type, S, E => <>` | Removes `elem` from hash set `s`; returns `<+>` if removed |
+| `set::clear(s)` | `#! S: Type, S => ()` | Removes all elements from hash set `s` in place |
+| `set::union(a, b)` | `#! S: Type, S, S => S` | Returns a new set $a \cup b$ |
+| `set::intersect(a, b)` | `#! S: Type, S, S => S` | Returns a new set $a \cap b$ |
+| `set::diff(a, b)` | `#! S: Type, S, S => S` | Returns a new set $a \setminus b$ |
+| `set::symmetric_diff(a, b)` | `#! S: Type, S, S => S` | Returns a new set $a \triangle b$ |
+| `set::is_subset(a, b)` | `#! S: Type, S, S => <>` | Returns `<+>` if $a \subseteq b$ |
+| `set::is_superset(a, b)` | `#! S: Type, S, S => <>` | Returns `<+>` if $a \supseteq b$ |
+| `set::is_disjoint(a, b)` | `#! S: Type, S, S => <>` | Returns `<+>` if $a \cap b = \emptyset$ |
+| `set::equals(a, b)` | `#! S: Type, S, S => <>` | Returns `<+>` if `a` and `b` contain the exact same elements |
+| `set::to_array(ArrType, s)` | `#! ArrType: Type, #! S: Type, S => ArrType` | Copies all elements of `s` into a growable array `ArrType` |
+| `set::from_array(S, arr)` | `#! S: Type, #! A: Type, A => S` | Builds a set of type `S` from growable array or slice `arr` |

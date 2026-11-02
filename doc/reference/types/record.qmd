@@ -70,13 +70,13 @@ Packed records disable interior and tail alignment padding, ensuring exact byte-
 ```
 
 ### 5. Bitfields
-Bitfield records pack specific bit widths into a backing integer (`u8`, `u16`, `u32`, `u64`). The sum of all field widths must not exceed the backing integer's width (`E2055`):
+Bitfield records pack specific bit widths into a backing integer (`u8`, `u16`, `u32`, `u64`). The sum of all field widths must not exceed the backing integer's width (`E2055`). Fields specified with an integer width `N` have type `Int`; 1-bit boolean flag fields can be specified with `<>` (contributing 1 bit of width and having type `<>`, defaulting to `<->` when omitted in named construction):
 
 ```{.dva .run}
 #type TcpFlags #packed u16 (
-   fin: 1, syn: 1, rst: 1, psh: 1,
-   ack: 1, urg: 1, ece: 1, cwr: 1,
-   ns:  1, res: 7,
+   fin: <>, syn: <>, rst: <>, psh: <>,
+   ack: <>, urg: <>, ece: <>, cwr: <>,
+   ns:  <>, res: 7,
 )
 ```
 

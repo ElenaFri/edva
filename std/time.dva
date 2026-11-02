@@ -251,6 +251,27 @@ write_tz_compact_into = b, utc_off =>
    pad2(b, abs_off / 3600)
    pad2(b, (abs_off % 3600) / 60)
 
+write_date_basic_into: Builder, DateTime => ()
+write_date_basic_into = b, dt =>
+   dt.year < 0 | b += '-'
+   pad4(b, dt.year)
+   pad2(b, dt.month)
+   pad2(b, dt.day)
+
+write_clock_basic_into: Builder, DateTime => ()
+write_clock_basic_into = b, dt =>
+   pad2(b, dt.hour)
+   pad2(b, dt.min)
+   pad2(b, dt.sec)
+
+write_tz_basic_into: Builder, Int => ()
+write_tz_basic_into = b, utc_off =>
+   utc_off == 0
+      | b += 'Z'
+      | write_tz_compact_into(b, utc_off)
+
+#public
+
 format_dt_iso: DateTime => String
 format_dt_iso = dt =>
    b = {32}
@@ -258,6 +279,15 @@ format_dt_iso = dt =>
    b += 'T'
    write_clock_into(b, dt)
    write_tz_iso_into(b, dt.utc_off)
+   +b
+
+format_dt_iso_basic: DateTime => String
+format_dt_iso_basic = dt =>
+   b = {24}
+   write_date_basic_into(b, dt)
+   b += 'T'
+   write_clock_basic_into(b, dt)
+   write_tz_basic_into(b, dt.utc_off)
    +b
 
 format_dt_date: DateTime => String
@@ -271,8 +301,6 @@ format_dt_clock = dt =>
    b = {16}
    write_clock_into(b, dt)
    +b
-
-#public
 
 // --- Wall-Clock & Monotonic Clocks ------------------------------------------
 
@@ -394,8 +422,6 @@ datetime_utc = year, month, day, hour, min, sec =>
 
 // --- Broken-Down Local & UTC DateTime (Single-Call or From Epoch) -----------
 
-#private
-
 local_from_sec: Int, Int => DateTime
 local_from_sec = sec, nsec =>
    t_val' = i64(sec)
@@ -503,15 +529,13 @@ format_dt_pattern = fmt, dt =>
             i' = i' + 1
    +b
 
-#public
-
 // Local DateTime: call as `time::local!` for now, or `time::local(ts)`
 local: #! T: Type, T => DateTime
-local = x => resolve_local_dt(x)
+local = #! T, x => resolve_local_dt(x)
 
 // UTC DateTime: call as `time::utc!` for now, or `time::utc(ts)`
 utc: #! T: Type, T => DateTime
-utc = x => resolve_utc_dt(x)
+utc = #! T, x => resolve_utc_dt(x)
 
 // --- Ergonomic Single-Call Formatting ---------------------------------------
 // All formatting functions accept:
@@ -522,42 +546,52 @@ utc = x => resolve_utc_dt(x)
 // Local ISO-8601 string ("2026-10-31T03:00:00+02:00"):
 //   `time::iso!`, `time::iso(ts)`, or `time::iso(dt)`
 iso: #! T: Type, T => String
-iso = x => format_dt_iso(resolve_local_dt(x))
+iso = #! T, x => format_dt_iso(resolve_local_dt(x))
 
 // UTC ISO-8601 string ("2026-10-31T01:00:00Z"):
 //   `time::utc_iso!`, `time::utc_iso(ts)`, or `time::utc_iso(dt)`
 utc_iso: #! T: Type, T => String
-utc_iso = x => format_dt_iso(resolve_utc_dt(x))
+utc_iso = #! T, x => format_dt_iso(resolve_utc_dt(x))
+
+// Local ISO-8601 basic/compact string ("20261031T030000+0200"):
+//   `time::iso_basic!`, `time::iso_basic(ts)`, or `time::iso_basic(dt)`
+iso_basic: #! T: Type, T => String
+iso_basic = #! T, x => format_dt_iso_basic(resolve_local_dt(x))
+
+// UTC ISO-8601 basic/compact string ("20261031T010000Z"):
+//   `time::utc_iso_basic!`, `time::utc_iso_basic(ts)`, or `time::utc_iso_basic(dt)`
+utc_iso_basic: #! T: Type, T => String
+utc_iso_basic = #! T, x => format_dt_iso_basic(resolve_utc_dt(x))
 
 // Local YYYY-MM-DD date string ("2026-10-31"):
 //   `time::date!`, `time::date(ts)`, or `time::date(dt)`
 date: #! T: Type, T => String
-date = x => format_dt_date(resolve_local_dt(x))
+date = #! T, x => format_dt_date(resolve_local_dt(x))
 
 // UTC YYYY-MM-DD date string ("2026-10-31"):
 //   `time::utc_date!`, `time::utc_date(ts)`, or `time::utc_date(dt)`
 utc_date: #! T: Type, T => String
-utc_date = x => format_dt_date(resolve_utc_dt(x))
+utc_date = #! T, x => format_dt_date(resolve_utc_dt(x))
 
 // Local HH:MM:SS clock string ("03:00:00"):
 //   `time::clock!`, `time::clock(ts)`, or `time::clock(dt)`
 clock: #! T: Type, T => String
-clock = x => format_dt_clock(resolve_local_dt(x))
+clock = #! T, x => format_dt_clock(resolve_local_dt(x))
 
 // UTC HH:MM:SS clock string ("01:00:00"):
 //   `time::utc_clock!`, `time::utc_clock(ts)`, or `time::utc_clock(dt)`
 utc_clock: #! T: Type, T => String
-utc_clock = x => format_dt_clock(resolve_utc_dt(x))
+utc_clock = #! T, x => format_dt_clock(resolve_utc_dt(x))
 
 // Custom pattern formatting (`%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, `%F`, `%T`, `%a`, `%b`, ...):
 //   `time::format("%Y-%m-%d %H:%M")`      (current local time)
 //   `time::format("%Y-%m-%d %H:%M", ts)`  (epoch seconds `ts` in local time)
 //   `time::format("%Y-%m-%d %H:%M", dt)`  (given `DateTime` `dt`)
 format: #! T: Type, String, T => String
-format = fmt, x => format_dt_pattern(fmt, resolve_local_dt(x))
+format = #! T, fmt, x => format_dt_pattern(fmt, resolve_local_dt(x))
 
 // Custom pattern formatting in UTC:
 //   `time::utc_format("%Y-%m-%d %H:%M")`
 //   `time::utc_format("%Y-%m-%d %H:%M", ts)`
 utc_format: #! T: Type, String, T => String
-utc_format = fmt, x => format_dt_pattern(fmt, resolve_utc_dt(x))
+utc_format = #! T, fmt, x => format_dt_pattern(fmt, resolve_utc_dt(x))
