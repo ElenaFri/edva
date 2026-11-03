@@ -1,0 +1,68 @@
+// 403_inline_started_blocks.dva — Inline-started block bodies (`|`, `=>`, `[guard]`, continuations, cycles)
+
+#use io
+#use test
+
+#type Mode <
+   Fast
+   Safe
+>
+
+// 1. Inline-started function block (`=> first_line` followed by evenly indented block lines)
+my_function: Int, Int, Int => Int
+my_function = a, b, c => a1 = a + b
+   a2 = a1 + c
+   a2 * 2
+
+test::eq(my_function(3, 4, 5), 24, "inline-started function block")
+
+// 2. Inline-started choice arm (`| first_line` with +2 indented block lines)
+eval_choice: <> => Int
+eval_choice = flag =>
+   flag
+      | a = 20
+        b = 22
+        a + b
+      | c = 10
+        c - 3
+
+test::eq(eval_choice(<+>), 42, "inline choice arm true branch")
+test::eq(eval_choice(<->), 7, "inline choice arm false branch")
+
+// 3. Inline-started choice arm whose first statement has a +2 continuation line
+eval_cont: <> => Int
+eval_cont = flag =>
+   flag
+      | a = 10 +
+          20
+        a + 12
+      | 0
+
+test::eq(eval_cont(<+>), 42, "inline choice arm with continuation line")
+
+// 4. Inline-started choice arm whose first statement is a cycle
+eval_cycle_arm: <> => Int
+eval_cycle_arm = flag =>
+   acc' = 0
+   flag
+      | 0..4 @ i =>
+           acc' = acc' + i
+        acc' = acc' + 100
+      | acc' = -1
+   acc'
+
+test::eq(eval_cycle_arm(<+>), 106, "inline choice arm starting with cycle")
+
+// 5. Inline-started guard arm (`[Guard] first_line` with +3 indented block lines)
+eval_mode: Mode => Int
+eval_mode = m =>
+   m
+      [Fast] base = 40
+         base + 2
+      [Safe] base = 10
+         base - 3
+
+test::eq(eval_mode(Mode(Fast)), 42, "inline guard arm Fast")
+test::eq(eval_mode(Mode(Safe)), 7, "inline guard arm Safe")
+
+io::out("403_inline_started_blocks: ALL PASSED")

@@ -335,18 +335,146 @@ strip_leading_ws = s =>
          | -->
    s(i'..n)
 
-// Check whether all non-blank, non-comment code lines already use multiples of 3 spaces.
-all_indents_div3: LineInfos => <>
-all_indents_div3 = lines =>
-   ok' = <+>
-   lines @ ln =>
+// Strip trailing // comment (outside string/rune literals) and trailing horizontal whitespace.
+strip_code_comment: String => String
+strip_code_comment = body =>
+   n = ?body
+   i' = 0
+   in_str' = <->
+   in_rune' = <->
+   end_idx' = n
+   0.. @
+      i' !< n | -->
+      c = body(i')
+      c1 = i' + 1 < n | body(i' + 1) | 0
+      in_rune'
+         |
+            c == '\\' && i' + 1 < n
+               | i' = i' + 2
+               |
+                  c == '\'' | in_rune' = <->
+                  i' = i' + 1
+         |
+            in_str'
+               |
+                  c == '\\' && i' + 1 < n
+                     | i' = i' + 2
+                     |
+                        c == '"' | in_str' = <->
+                        i' = i' + 1
+               |
+                  c == '/' && c1 == '/'
+                     |
+                        end_idx' = i'
+                        -->
+                     |
+                        c == '\''
+                           |
+                              in_rune' = <+>
+                              i' = i' + 1
+                           |
+                              c == '"'
+                                 |
+                                    in_str' = <+>
+                                    i' = i' + 1
+                                 | i' = i' + 1
+   0.. @
+      end_idx' > 0 && (body(end_idx' - 1) [' ', '\t'])
+         | end_idx' = end_idx' - 1
+         | -->
+   body(0..end_idx')
+
+ends_with_str: String, String => <>
+ends_with_str = s, suf =>
+   ?s !< ?suf && s(?s - ?suf..?s) == suf
+
+starts_with_str: String, String => <>
+starts_with_str = s, pfx =>
+   ?s !< ?pfx && s(0..?pfx) == pfx
+
+// True when a line starts a choice arm (|, !|, |->, |+>, |--> , |++>, [guard], ![guard]).
+starts_with_choice_sep: String => <>
+starts_with_choice_sep = code =>
+   ?code == 0 | --| <->
+   c0 = code(0)
+   c0 == '[' | --| <+>
+   starts_with_str(code, "![") | --| <+>
+   starts_with_str(code, "!|") | --| <+>
+   c0 == '|' && (?code == 1 || code(1) != '|')
+
+// True when a line is an inline pipe arm (`| first_line` or `!| first_line`).
+is_inline_pipe_arm: String => <>
+is_inline_pipe_arm = code =>
+   starts_with_str(code, "|->") || starts_with_str(code, "|+>") ||
+      starts_with_str(code, "|-->") || starts_with_str(code, "|++>")
+      | <->
+      |
+         starts_with_str(code, "!|")
+            | ?code > 2
+            | (?code > 1 && code(0) == '|' && code(1) != '|')
+
+// True when a line ends with a token that opens a standard +3 indented block on the next line.
+ends_with_block_opener: String => <>
+ends_with_block_opener = code =>
+   ?code == 0 | --| <->
+   code ["|", "!|", "#public", "#private", "#export", "#foreign"] | --| <+>
+   starts_with_str(code, "#foreign ") | --| <+>
+   ends_with_str(code, "=>") || ends_with_str(code, "!=>") | --| <+>
+   ends_with_str(code, "@") || ends_with_str(code, "@@") || ends_with_str(code, ">--") | --| <+>
+   ends_with_str(code, "(") || ends_with_str(code, "{") | --| <+>
+   starts_with_str(code, "#type ") && ends_with_str(code, "<") | --| <+>
+   (code(0) == '[' || starts_with_str(code, "![")) && ends_with_str(code, "]") | --| <+>
+   ends_with_str(code, "=") && !ends_with_str(code, "==") &&
+      !ends_with_str(code, "!=") && !ends_with_str(code, "^=") &&
+      !ends_with_str(code, "<=") && !ends_with_str(code, ">=")
+
+// True when a line ends with a continuation operator whose wrapped line indents +2 spaces.
+ends_with_cont_op: String => <>
+ends_with_cont_op = code =>
+   ?code == 0 || ends_with_block_opener(code) | --| <->
+   ends_with_str(code, "+") && !ends_with_str(code, "++") &&
+      !ends_with_str(code, "<+>") && !ends_with_str(code, "<++>") | --| <+>
+   ends_with_str(code, "-") && !ends_with_str(code, "--") &&
+      !ends_with_str(code, "<->") && !ends_with_str(code, "<-->") | --| <+>
+   ends_with_str(code, "*") || ends_with_str(code, "/") || ends_with_str(code, "%") ||
+      ends_with_str(code, "&&") || ends_with_str(code, "||") ||
+      ends_with_str(code, "==") || ends_with_str(code, "!=") ||
+      ends_with_str(code, "!<") || ends_with_str(code, "!>") ||
+      ends_with_str(code, ",") || ends_with_str(code, ";") || ends_with_str(code, "$") ||
+      ends_with_str(code, ".&.") || ends_with_str(code, ".|.") || ends_with_str(code, ".^.")
+
+// Check whether a child line at `raw` under `parent_raw` is followed by an intermediate
+// dedent `mid` (`parent_raw < mid < raw`) before returning to `<= parent_raw`.
+has_intermediate_dedent: LineInfos, Int, Int, Int => <>
+has_intermediate_dedent = lines, start_idx, parent_raw, child_raw =>
+   found' = <->
+   idx' = start_idx + 1
+   n = ?lines
+   0.. @
+      idx' !< n | -->
+      ln = lines(idx')!!
       ln.start_state == 0 && !ln.is_blank && !ln.is_comment_only
          |
-            (ln.raw_indent % 3) != 0
+            r = ln.raw_indent
+            r !> parent_raw | -->
+            r < child_raw
                |
-                  ok' = <->
+                  found' = <+>
                   -->
-   ok'
+      idx' = idx' + 1
+   found'
+
+compute_child_delta: LineInfos, Int, String, String, Int, Int => Int
+compute_child_delta = lines, idx, parent_code, child_code, parent_raw, child_raw =>
+   starts_with_choice_sep(child_code) | --| 3
+   is_inline_pipe_arm(parent_code) && !ends_with_block_opener(parent_code)
+      |
+         ends_with_cont_op(parent_code) &&
+            has_intermediate_dedent(lines, idx, parent_raw, child_raw)
+            | 4
+            | 2
+      |
+         ends_with_cont_op(parent_code) | 2 | 3
 
 find_stack_level: ast::Ints, Int, Int => Int
 find_stack_level = stack, top, raw =>
@@ -362,19 +490,25 @@ find_stack_level = stack, top, raw =>
          | idx' = idx' - 1
    found'
 
-// Core formatting pass producing canonical 3-space Edva source.
+// Core formatting pass producing canonical Edva source:
+// - +3 spaces for standard blocks (functions `=>`, cycles `@`, `[guard]`, `#type`, `#foreign`, choice arms)
+// - +2 spaces for inline choice arm blocks (`| first_line` -> `second_line` aligned under `first_line`)
+// - +2 spaces for expression continuation lines
 format_lines: LineInfos => String
 format_lines = lines =>
-   div3 = all_indents_div3(lines)
-   stack = ast::Ints()
-   stack += 0
+   raw_stack = ast::Ints()
+   canon_stack = ast::Ints()
+   body_stack = ast::Names()
+   raw_stack += 0
+   canon_stack += 0
+   body_stack += ""
    top' = 1
    out = {4096}
    blank_run' = 0
    started' = <->
    cur_canon_indent' = 0
 
-   lines @ ln =>
+   lines @ ln, idx =>
       ln.start_state != 0
          |
             started' = <+>
@@ -395,29 +529,62 @@ format_lines = lines =>
                   body = strip_leading_ws(ln.raw)
                   ln.is_comment_only
                      |
-                        c_indent = div3
-                           | ln.raw_indent
-                           |
-                              lvl = find_stack_level(stack, top', ln.raw_indent)
-                              lvl * 3
+                        lvl = find_stack_level(raw_stack, top', ln.raw_indent)
+                        base_c = canon_stack(lvl) | _ | 0
+                        base_r = raw_stack(lvl) | _ | 0
+                        p_code = body_stack(lvl) | _ | ""
+                        c_indent = ln.raw_indent > base_r
+                           | base_c + (is_inline_pipe_arm(p_code) && !ends_with_block_opener(p_code) | 2 | 3)
+                           | base_c
                         out += make_spaces(c_indent)
                         out += body
                         out += '\n'
                      |
                         raw = ln.raw_indent
-                        top_raw = stack(top' - 1) | _ | 0
+                        cur_code = strip_code_comment(body)
+                        top_raw = raw_stack(top' - 1) | _ | 0
                         raw > top_raw
                            |
-                              top' == ?stack
-                                 | stack += raw
-                                 | (stack(top') = raw !| _)
+                              p_canon = canon_stack(top' - 1) | _ | 0
+                              p_code = body_stack(top' - 1) | _ | ""
+                              delta = compute_child_delta(lines, idx, p_code, cur_code, top_raw, raw)
+                              new_canon = p_canon + delta
+                              top' == ?raw_stack
+                                 |
+                                    raw_stack += raw
+                                    canon_stack += new_canon
+                                    body_stack += cur_code
+                                 |
+                                    raw_stack(top') = raw !| _
+                                    canon_stack(top') = new_canon !| _
+                                    body_stack(top') = cur_code !| _
                               top' = top' + 1
                            |
                               0.. @
-                                 top' > 1 && ((stack(top' - 1) | _ | 0) > raw)
+                                 top' > 1 && ((raw_stack(top' - 1) | _ | 0) > raw)
                                     | top' = top' - 1
                                     | -->
-                        canon_indent = div3 | raw | (top' - 1) * 3
+                              matched_raw = raw_stack(top' - 1) | _ | 0
+                              raw > matched_raw
+                                 |
+                                    // Intermediate dedent landing on an inline block column
+                                    p_canon = canon_stack(top' - 1) | _ | 0
+                                    p_code = body_stack(top' - 1) | _ | ""
+                                    delta = compute_child_delta(lines, idx, p_code, cur_code, matched_raw, raw)
+                                    new_canon = p_canon + delta
+                                    top' == ?raw_stack
+                                       |
+                                          raw_stack += raw
+                                          canon_stack += new_canon
+                                          body_stack += cur_code
+                                       |
+                                          raw_stack(top') = raw !| _
+                                          canon_stack(top') = new_canon !| _
+                                          body_stack(top') = cur_code !| _
+                                    top' = top' + 1
+                                 |
+                                    body_stack(top' - 1) = cur_code !| _
+                        canon_indent = canon_stack(top' - 1) | _ | 0
                         cur_canon_indent' = canon_indent
                         out += make_spaces(canon_indent)
                         out += format_code_body(body)

@@ -203,6 +203,24 @@ adv = lx, r =>
 is_ws: Rune => <>
 is_ws = [' ', '\t', '\r', '\n']
 
+has_more_on_line: Lx => <>
+has_more_on_line = lx =>
+   off' = 0
+   0.. @
+      c = pk(lx, off')
+      c [' ', '\t']
+         | off' = off' + 1
+         | -->
+   c = pk(lx, off')
+   !(c ['\n', '\r', '\0'] || (c == '/' && pk(lx, off' + 1) == '/'))
+
+is_inline_block_opener: TokKind, String => <>
+is_inline_block_opener = kind, text =>
+   kind
+      [RBracket] <+>
+      [Op] text ["|", "!|", "=>", "!=>", "@", "@@", ">--"]
+      | <->
+
 // Uniform token constructor; reads/clears the leading-ws state and records
 // whether whitespace follows the token. has_trailing_ws is meaningful only
 // for the tokens the parser inspects it on — Op, Newline (always true), and
@@ -216,6 +234,8 @@ mktok = lx, kind, start, len, line, col, text =>
       [Newline] <+>
       [Op, LBracket, Semi, RBracket] ws
       | <->
+   is_inline_block_opener(kind, text) && has_more_on_line(lx)
+      | stack_mark_inline(lx)
    Tok(kind, start, len, line, col, lead, trail, text)
 
 // --- errors ---------------------------------------------------------------
@@ -1151,7 +1171,27 @@ scan_hash_name2 = lx, line, col =>
 
 stack_top: Lx => Int
 stack_top = lx => 
-   lx.stack(lx.top - 1) | _ | 0
+   (lx.stack(lx.top - 1) | _ | 0) .&. 0xFFFF
+
+stack_top_has_inline: Lx => <>
+stack_top_has_inline = lx =>
+   ((lx.stack(lx.top - 1) | _ | 0) .&. 0x10000) != 0
+
+stack_mark_inline: Lx => ()
+stack_mark_inline = lx =>
+   idx = lx.top - 1
+   idx !< 0
+      |
+         cur = lx.stack(idx) | _ | 0
+         lx.stack(idx) = (cur .|. 0x10000) !| _
+
+stack_clear_inline: Lx => ()
+stack_clear_inline = lx =>
+   idx = lx.top - 1
+   idx !< 0
+      |
+         cur = lx.stack(idx) | _ | 0
+         lx.stack(idx) = (cur .&. 0xFFFF) !| _
 
 stack_pop: Lx, Int => ()
 stack_pop = lx, q => 
@@ -1180,6 +1220,11 @@ queue_dedent: Lx, Int, Int => ()
 queue_dedent = lx, q, col => 
    qu = lx.queue
    qu += Tok(TokKind(Dedent), 0, 0, lx.line, col, <->, <->, "DEDENT")
+
+queue_indent: Lx, Int, Int => ()
+queue_indent = lx, line, col =>
+   qu = lx.queue
+   qu += Tok(TokKind(Indent), 0, 0, line, col, <->, <->, "INDENT")
 
 // The EOF token produced when the token queue runs dry (the file ended at
 // column depth without any queued DEDENTs to flush): carries the real end
@@ -1221,7 +1266,10 @@ count_indent = lx, q =>
    lx.depth = depth
 
 // Pop indent levels down to lx.depth (queueing DEDENTs), then return the
-// first queued token. Mismatched levels are E1004.
+// first queued token. Mismatched levels are E1004, unless the outer level
+// opened an inline block on the same line (| / => / @ / ]), in which case
+// unindenting from the first inline statement's continuation/sub-block to
+// the inline block's column transitions into an INDENT for the inline block.
 drain_to: Lx, Int, Int => Tok
 drain_to = lx, depth, line => 
    0.. @
@@ -1230,10 +1278,16 @@ drain_to = lx, depth, line =>
             stack_pop(lx, 0)
             queue_dedent(lx, 0, 1)
          | -->
-   stack_top(lx) != depth
-      | fail(1004, line, 1,
-         "Unindent level " + str::from_int(depth) +
-         " does not match any outer indentation level.")
+   stack_top(lx) < depth && stack_top_has_inline(lx)
+      |
+         stack_clear_inline(lx)
+         stack_push(lx, depth)
+         queue_indent(lx, line, 1)
+      |
+         stack_top(lx) != depth
+            | fail(1004, line, 1,
+               "Unindent level " + str::from_int(depth) +
+               " does not match any outer indentation level.")
    take_queued(lx, 0)
 
 // Measure one line's indentation and hand off to layout_step (INDENT /
@@ -1278,7 +1332,9 @@ layout_step = lx, depth, line =>
       |
          depth < top
             | drain_to(lx, depth, line)
-            | next_tok(lx, 0)
+            |
+               stack_clear_inline(lx)
+               next_tok(lx, 0)
 
 // --- main dispatch --------------------------------------------------------
 

@@ -78,7 +78,7 @@ All package commands may be invoked at top level (`edva build`) or under `edva p
 
 | Command | Arguments & Options | Behavior |
 |---|---|---|
-| `edva fmt` | `[--check] [--stdout] [--stdin] [path...]` | Canonical Edva source formatter. Normalizes 3-space indentation, delimiter spacing, blank lines, and trailing whitespace while verifying AST equivalence via `show::show_expr`. Formats `.` recursively when no paths are given. `--check` exits `1` if any file differs; `--stdin` formats stdin to stdout |
+| `edva fmt` | `[--check] [--stdout] [--stdin] [path...]` | Canonical Edva source formatter. Normalizes block indentation (`+3` spaces for standard blocks and lambda arms `| x =>`; `+2` spaces for inline choice arm bodies `| first_line` and expression continuation lines), delimiter spacing, blank lines, and trailing whitespace while preserving intentional horizontal alignment and verifying AST equivalence via `show::show_expr`. Formats `.` recursively when no paths are given. `--check` exits `1` if any file differs; `--stdin` formats stdin to stdout |
 | `edva lsp` | — | JSON-RPC 2.0 Language Server Protocol server over stdio (`Content-Length` framing). Provides live diagnostics (`textDocument/publishDiagnostics`), inferred-type hover (`textDocument/hover`), same-file and cross-module go-to-definition (`textDocument/definition`), document symbols (`textDocument/documentSymbol`), completion (`textDocument/completion`), and canonical formatting (`textDocument/formatting`) |
 
 ## Package directory layout and `edva.ccl` manifest schema

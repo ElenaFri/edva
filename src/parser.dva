@@ -2565,7 +2565,69 @@ fn_arrow = p, params, ct_params =>
             p.curr.text + "'")
          <-->
 
-// A block: an indented statement list, or a single inline expression.
+peek_has_block_cont: Parser => <>
+peek_has_block_cont = p =>
+   p.curr.kind [Indent]
+      |
+         c = lexer::clone_lx(p.lx)
+         t2' = lexer::next_tok(c, 0)
+         0.. @
+            t2'.kind [Newline]
+               | t2' = lexer::next_tok(c, 0)
+               | -->
+         !(t2'.kind [LBracket] || token_is_pipe(t2'))
+      |
+         !tok_is_nl(p.curr)
+            | <->
+            |
+               c = lexer::clone_lx(p.lx)
+               cd' = p.cont_depth
+               t1' = lexer::next_tok(c, 0)
+               0.. @
+                  t1'.kind [Newline]
+                     | t1' = lexer::next_tok(c, 0)
+                     |
+                        t1'.kind [Dedent] && cd' > 0
+                           |
+                              cd' = cd' - 1
+                              t1' = lexer::next_tok(c, 0)
+                           | -->
+               t1'.kind ![Indent]
+                  | <->
+                  |
+                     t2' = lexer::next_tok(c, 0)
+                     0.. @
+                        t2'.kind [Newline]
+                           | t2' = lexer::next_tok(c, 0)
+                           | -->
+                     !(t2'.kind [LBracket] || token_is_pipe(t2'))
+
+maybe_inline_block_cont: Parser, <ast::Expr|> => <ast::Expr|>
+maybe_inline_block_cont = p, first_res =>
+   first_res
+      | first_e =>
+         is_empty = first_e [Var v] (v == "<empty>") | <->
+         is_cyc_fn = p.cycle_depth > 0 && (first_e [Fn])
+         is_empty || is_cyc_fn || !peek_has_block_cont(p)
+            | <+ first_e +>
+            |
+               0.. @
+                  tok_is_nl(p.curr) || (p.curr.kind [Dedent] && p.cont_depth > 0)
+                     | parser_advance(p)
+                     | -->
+               p.curr.kind [Indent] | parser_advance(p)
+               stmts = ast::Exprs()
+               stmts += first_e
+               saved_fd = p.fn_depth
+               p.fn_depth = 0
+               res = block_stmts(p, stmts)
+               p.fn_depth = saved_fd
+               p.curr.kind [Dedent] parser_advance(p); p.just_dedented = <+>
+               res
+      | <-->
+
+// A block: an indented statement list, or a single inline expression (optionally
+// followed by an indented statement list when the block starts on the same line).
 parse_block: Parser => <ast::Expr|>
 parse_block = p =>
    tok_is_nl(p.curr)
@@ -2583,7 +2645,8 @@ parse_block = p =>
                p.curr.kind [Dedent] parser_advance(p); p.just_dedented = <+>
                res
             |
-               parse_expr(p)
+               first_res = parse_expr(p)
+               maybe_inline_block_cont(p, first_res)
 
 block_stmts: Parser, ast::Exprs => <ast::Expr|>
 block_stmts = p, stmts =>
@@ -6536,7 +6599,7 @@ choice_body = p =>
          p.branch_body_depth = p.branch_body_depth + 1
          r = choice_body_inner(p)
          p.branch_body_depth = p.branch_body_depth - 1
-         r
+         maybe_inline_block_cont(p, r)
 
 // A bare choice branch may start its body on the next indented line. Consume
 // the matching DEDENT so the following top-level '|' remains available to the
@@ -6666,7 +6729,11 @@ choice_same_line = p =>
             | le2 =>
                r = choice_same_line_loop(p, empty_pbrs())
                r
-                  | brs => finish_parsed_choice(p, le2, brs)
+                  | brs =>
+                     ch_opt = finish_parsed_choice(p, le2, brs)
+                     ch_opt
+                        | ce => cycle_cont(p, ce)
+                        | <-->
                   | <-->
             | <-->
       | <-->
@@ -6706,7 +6773,7 @@ choice_pipe_body = p, saw_sep =>
                p.branch_body_depth = p.branch_body_depth + 1
                rs = saw_sep | choice_same_line_seq(p) | choice_body_inner(p)
                p.branch_body_depth = p.branch_body_depth - 1
-               rs
+               maybe_inline_block_cont(p, rs)
 
 // --- identifier dispatch & assignment --------------------------------------
 

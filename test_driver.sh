@@ -2109,6 +2109,36 @@ if [ "$STDIN_OUT" != "$(printf "f = x =>\n   x + 1")" ]; then
     echo "FAILED: edva fmt --stdin unexpected output: $STDIN_OUT"
     exit 1
 fi
+# Inline choice arm body (+2 spaces)
+PIPE_OUT=$(printf "foo = x =>\n   x > 0\n      | a = 10\n          b = 20\n          a + b\n      | 0\n" | ./edva fmt --stdin)
+if [ "$PIPE_OUT" != "$(printf "foo = x =>\n   x > 0\n      | a = 10\n        b = 20\n        a + b\n      | 0")" ]; then
+    echo "FAILED: edva fmt did not indent inline choice arm body by +2 spaces: $PIPE_OUT"
+    exit 1
+fi
+# Lambda choice arm (+3 spaces)
+LAMBDA_OUT=$(printf "foo = r =>\n   r\n      | x =>\n        x + 1\n      | 0\n" | ./edva fmt --stdin)
+if [ "$LAMBDA_OUT" != "$(printf "foo = r =>\n   r\n      | x =>\n         x + 1\n      | 0")" ]; then
+    echo "FAILED: edva fmt did not indent lambda choice arm by +3 spaces: $LAMBDA_OUT"
+    exit 1
+fi
+# Inline-started function block (+3 spaces)
+INLINE_FN_OUT=$(printf "my_fn = a, b => a1 = a + b\n     a1 * 2\n" | ./edva fmt --stdin)
+if [ "$INLINE_FN_OUT" != "$(printf "my_fn = a, b => a1 = a + b\n   a1 * 2")" ]; then
+    echo "FAILED: edva fmt did not indent inline-started function block by +3 spaces: $INLINE_FN_OUT"
+    exit 1
+fi
+# Expression continuation (+2 spaces)
+CONT_OUT=$(printf "total = 10 +\n   20 +\n   12\n" | ./edva fmt --stdin)
+if [ "$CONT_OUT" != "$(printf "total = 10 +\n  20 +\n  12")" ]; then
+    echo "FAILED: edva fmt did not indent expression continuation by +2 spaces: $CONT_OUT"
+    exit 1
+fi
+# Preserve guard table horizontal alignment
+GUARD_OUT=$(printf "#type Tok <\n   Ident\n   IntLit\n>\nname = tok =>\n   tok\n      [Ident]   \"ident\"\n      [IntLit]  \"int\"\n" | ./edva fmt --stdin)
+if ! printf "%s\n" "$GUARD_OUT" | grep -q '\[Ident\]   "ident"'; then
+    echo "FAILED: edva fmt did not preserve guard table alignment: $GUARD_OUT"
+    exit 1
+fi
 echo "PASS"
 
 # --- Test 50: edva lsp (JSON-RPC 2.0 initialize, diagnostics, hover, definition, formatting) ---
