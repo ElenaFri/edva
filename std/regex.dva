@@ -878,8 +878,7 @@ match = #! P, pat, text =>
 // Finds the first match of `re` in `text` starting at or after byte index `start_pos`.
 find_at: Regex, String, Int => < Match >
 find_at = re, text, start_pos =>
-   pos = start_pos < 0 | 0 | start_pos
-   run_vm(re, text, pos)
+   run_vm(re, text, %clamp(start_pos, 0, ?text + 1))
       | saved => <+ build_match(text, saved, re.num_groups) +>
       | <-->
 
