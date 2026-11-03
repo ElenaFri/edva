@@ -29,7 +29,7 @@ The `regex` module (`#use regex`) implements a linear-time regular expression en
 | `*`, `+`, `?` | Greedy quantifiers: `0+`, `1+`, `0..1` |
 | `*?`, `+?`, `??` | Lazy (non-greedy) quantifiers |
 | `{m}`, `{m,}`, `{m,n}` | Bounded quantifiers up to 256 (append `?` for lazy `{m,n}?`) |
-| `a\|b` | Leftmost-first alternation |
+| `a|b` | Leftmost-first alternation |
 | `(...)` | Numbered capture group (`1..N`) |
 | `(?:...)` | Non-capturing group |
 | `(?ims)` / `(?ims:...)` | Inline flags: `i` (case-insensitive), `m` (multiline `^`/`$`), `s` (dotall `.`) |
@@ -43,7 +43,7 @@ The `regex` module (`#use regex`) implements a linear-time regular expression en
 
 | Function | Signature | Description |
 |---|---|---|
-| `compile` | `String => < Regex \| Error >` | Compiles a pattern into a PikeVM `Regex` |
+| `compile` | `String => < Regex | Error >` | Compiles a pattern into a PikeVM `Regex` |
 | `match` | `#! P: Type, P, String => <>` | Returns `<+>` if `pat` (`Regex` or pattern `String`) matches anywhere in `text` |
 | `find` | `Regex, String => < Match >` | Finds the first match of `re` in `text` |
 | `find_at` | `Regex, String, Int => < Match >` | Finds the first match starting at or after `start_pos` |

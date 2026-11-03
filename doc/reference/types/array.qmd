@@ -2,139 +2,91 @@
 meta:
   audience: "Edva developers"
   status: "current reference"
-  audited: "51081a6"
-  evidence: "`src/codegen/types.dva`, `src/codegen/expr.dva`, `GRAMMAR.md` §2.5, §2.13"
+  audited: "f45d35b"
+  evidence: "`src/codegen/types.dva`, `src/codegen/expr.dva`, `src/codegen/runtime.dva`, `src/codegen/stmt.dva`, `GRAMMAR.md`"
 ---
 
-# `Array` and `Slice`
+# Arrays, Slices & Maps
 
-Edva provides two primary sequential container types:
-1. **Growable Arrays (`T{}`)**: Owning, heap-allocated, dynamically resizable buffers.
-2. **Slices (`T[]`)**: Non-owning, lightweight contiguous views into existing buffers or records.
+Edva provides three built-in collection shapes backed by the active arena:
+- **Growable arrays (`T{}` / `T{cap}`)**: Dynamically resized contiguous buffers (`{ i64 len, ptr data, i64 cap }`, 24 bytes).
+- **Slices (`T[]`)**: Non-owning contiguous views (`{ i64 len, ptr data }`, 16 bytes) over arrays or homogeneous tuples `(T * N)`.
+- **Hash maps (`K ^ V`)**: Open-addressed associative tables with linear probing and tombstone compaction.
 
-## Growable arrays (`T{}`)
+## Container comparison table
 
-A growable array is declared using `#type Name Element{}`. An optional integer inside `{...}` sets the initial pre-allocated capacity (default is 16):
+| Property | Growable Array (`T{}`) | Slice (`T[]`) | Hash Map (`K ^ V`) |
+|---|---|---|---|
+| **Declaration** | `#type Ints Int{}` / `Int{100}` | `#type View Int[]` | `#type Dict String ^ Int` |
+| **Runtime layout** | `{ i64 len, ptr data, i64 cap }` (24B) | `{ i64 len, ptr data }` (16B) | Arena table handle (`ptr`, 8B) |
+| **Construction** | `Ints()` or `Int{}` | `xs(a..b)` / `tuple(a..b)` | `Dict()` or `("a" ^= 1, "b" ^= 2)` |
+| **Element / key read** | `xs(i)` $\to$ `< T | Error >` (fallible) | `view(i)` $\to$ `T` (bounds-checked) | `m ^ k` $\to$ `< V | Error >` (fallible) |
+| **Element / key write** | `xs(i) = v` $\to$ `< | Error >` (`!| _`) | `view(i) = v` $\to$ `()` | `m ^ k = v` $\to$ `()` |
+| **Count** | `?xs` (`Int`) | `?view` (`Int`) | `?m` (`Int`, active live entries) |
+| **Cycle binders (`@`)** | `elem =>` or `elem, i =>` (`_`, `_i`) | `elem =>` or `elem, i =>` (`_`, `_i`) | `val =>` or `val, key =>` (`_`, `_i`) |
+
+## Growable arrays (`T{}`) and slices (`T[]`)
+
+| Operation | Syntax | Result Type | Semantics |
+|---|---|---|---|
+| **Instantiate empty** | `xs = Ints()` / `xs = Int{}` | `T{}` | Allocates array descriptor (default initial capacity `16`, or `cap` in `T{cap}`) |
+| **Append element** | `xs += val` | `()` | Appends `val` in place, doubling capacity in the arena when `len == cap` |
+| **Fallible read** | `xs(i)` | `< T | Error >` | Returns `<+ elem ->` if `0 <= i < ?xs`, else `<- Error(...) +>` |
+| **Unwrap / fallback read** | `xs(i)!!` / `xs(i) | _ | def` | `T` | Panics on out-of-bounds (`!!`) or substitutes `def` |
+| **Fallible write** | `xs(i) = val` / `xs(i) = val !| _` | `< | Error >` / `()` | Updates slot `i` if in bounds; `!| _` aborts on out-of-bounds write |
+| **Create slice view** | `xs(a..b)` / `xs(a...b)` / `xs(..)` | `T[]` | Non-owning window into `xs`'s current buffer (`a..`, `..b`, `-k..` supported) |
+| **Shallow container copy** | `++xs` / `++view` | Same as operand | Allocates a fresh backing buffer and copies element slots |
+| **Iteration (`@`)** | `xs @ x, i => body` | `()` (or `<U|>` with `>--`) | Captures initial `len` and `data` pointer at loop entry |
 
 ```{.dva .run}
-// Growable array of 64-bit integers
+#use io
+
 #type Ints Int{}
 
-// Array with pre-allocated capacity of 100 elements
-#type PreallocatedFloats Float{100}
-```
+sum_slice: Int[] => Int
+sum_slice = s =>
+   acc' = 0
+   s @ x => acc' = acc' + x
+   acc'
 
-### Runtime representation
-
-A growable array is represented at runtime by a 24-byte struct:
-
-```{.dva .partial}
-{ len: i64, data: ptr, cap: i64 }
-```
-
-### Construction and appending
-
-Arrays are instantiated empty. Appending with `+=` automatically allocates and dynamically doubles the underlying buffer as needed:
-
-```{.dva .partial}
-xs = Ints()
-
-// Append elements
-xs += 10
-xs += 20
-xs += 30
-
-// Element count
-count = ?xs       // 3
-```
-
-### Indexing and bounds checking
-
-In Edva, array indexing is fallible and produces a ramification:
-- **Indexed read `xs(i)`**: Returns `< T | Error >` (RamPP). If `i` is in bounds (`0 <= i < ?xs`), the positive slot contains the element; otherwise, the negative slot contains an `Error`.
-- **Indexed write `xs(i) = val`**: Returns `< | Error >` (RamNP). If `i` is in bounds (`0 <= i < ?xs`), the assignment updates the slot and produces `< | >`; otherwise, it returns `< | Error >` without modifying storage.
-
-```{.dva .partial}
-xs = Ints()
-xs += 42
-
-// Unwrap or panic on out-of-bounds read
-val = xs(0)!!
-
-// Handling fallible access with ramification matching
-element = xs(1) | _ | -1
-
-// Write-or-panic on assignment
-xs(0) = 99 !| _
-```
-
-### Container copying (`++`)
-
-The unary prefix `++` operator creates a clone of the array container:
-
-```{.dva .partial}
-original = Ints()
-original += 1
-
-copied = ++original
-copied += 2
-
-// original still has length 1, copied has length 2
-```
-
-`++array` allocates a fresh backing buffer and copies the element slots. For scalar element types (integers, floats, flags), modifying or appending to `copied` does not affect `original`. For reference-bearing element types (records, inner arrays), `++` performs a shallow copy of the container slots: the pointers are copied, so referenced nested objects remain shared between the original and copied arrays.
-
-### Iteration and mutation across growth
-
-Arrays can be iterated with `?xs @ elem => ...`. The iteration captures the initial length and backing buffer pointer upon loop entry.
-
-- **In-place updates**: Mutations to existing slots within the pre-growth buffer (`xs(i) = new_val`) during iteration are visible to subsequent loop iterations if no reallocation occurs.
-- **Buffer reallocation on growth**: If elements are appended during iteration (`xs += elem`) triggering a capacity reallocation, the array variable `xs` points to the newly allocated buffer, while the active loop continues iterating through the initial buffer up to the pre-loop length.
-
-
-## Slices (`T[]`)
-
-A slice is a non-owning window over contiguous memory. Slices are written as `T[]` and consist of a 16-byte fat pointer:
-
-```{.dva .partial}
-{ len: i64, data: ptr }
-```
-
-### Creating slices
-
-Slices are created by sub-slicing an array or a homogeneous record:
-
-```{.dva .partial}
 xs = Ints()
 xs += 10
 xs += 20
 xs += 30
-xs += 40
+xs(1) = 25 !| _
 
-// Sub-slice from index 1 up to index 3 (forward declaration + assignment)
-view: Int[]
-view = xs(1..3)
-
-view_len = ?view       // 2
-first_elem = view(0)    // 20
+io::out $ (xs(0)!!, ?xs, sum_slice(xs(0..3)))   // (10, 3, 65)
 ```
 
-### Slice lifetime and array growth
+## Associative hash maps (`K ^ V`)
 
-Because a slice captures `{ len, data }` pointing directly into the array's backing buffer at the time of slice creation:
-- Writes through the slice (`view(i) = val`) or direct writes to the array within range mutate the shared buffer slots.
-- If the originating array subsequently grows beyond its current capacity and reallocates a new backing buffer, existing slices continue to reference the previous buffer. Slices are non-owning views and do not automatically track array reallocations.
+### Supported key and value types
 
-### Function parameters
+| Slot | Allowed Types | Hashing & Storage Mechanism |
+|---|---|---|
+| **Key (`K`)** | `String`, `Int`, `Addr` | `String`: 64-bit FNV-1 variant ($O(L)$); `Int` & `Addr`: SplitMix64 (Stafford variant 13) mixer |
+| **Value (`V`)** | Any storable Edva type | Stored in 64-bit packed slots (`Float`, `Int`, `Addr`, or arena pointers to records/strings/containers) |
 
-When writing functions that only need to inspect sequential elements without modifying buffer capacity, prefer slice types `T[]` over growable arrays to avoid unnecessary couplings to heap allocation strategies:
+### Map operations and runtime characteristics
+
+| Operation | Syntax | Result Type | Semantics |
+|---|---|---|---|
+| **Empty construction** | `m = Dict()` | `K ^ V` | Initial capacity `8` slots |
+| **Literal construction** | `m = ("k1" ^= 10, "k2" ^= 20)` | `K ^ V` | Infers `K ^ V` from `key ^= value` pairs |
+| **Insert / overwrite** | `m ^ k = val` | `()` | Inserts `(k, val)` or overwrites existing `k` in place without rehashing |
+| **Fallible lookup** | `m ^ k` | `< V | Error >` | Returns `<+ val ->` if present, else `<- Error(...) +>` |
+| **Membership check** | `m ^? k` | `<>` | Returns `<+>` if `k` is present, `<->` if absent |
+| **Delete entry** | `m ^- k` | `<>` | Marks slot as tombstone (`2`) and returns `<+>` if removed, `<->` if absent |
+| **Active count** | `?m` | `Int` | Number of live occupied entries (excludes tombstones) |
+| **Snapshot iteration** | `m @ val, key => body`<br>`m @ body` | `()` | Captures snapshot of `(keys, vals, states)` at loop entry; concurrent `m ^ k = v` or `m ^- k` mutations never invalidate or desynchronize the active traversal. **Note:** binder order is **value first (`_`), key second (`_i`)** |
+| **Load factor & resize** | Automatic at 75% occupancy | — | When `(count + tombs + 1) * 4 > cap * 3`: doubles capacity if `count > cap / 2`, otherwise rebuilds in place at same capacity to purge tombstones |
 
 ```{.dva .run}
-sum_slice: Int[] => Int
-sum_slice = slice =>
-   total' = 0
-   ?slice @ i =>
-      elem = slice(i)
-      total' = total' + elem
-   total'
+#use io
+
+scores = ("Alice" ^= 95, "Bob" ^= 88)
+scores ^ "Carol" = 92
+removed = scores ^- "Bob"
+
+io::out $ (?scores, removed, scores ^? "Alice", scores ^ "Carol" | _ | 0)
 ```

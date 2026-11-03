@@ -3,154 +3,83 @@ meta:
   audience: "Edva developers"
   status: "current reference"
   audited: "51081a6"
-  evidence: "`src/codegen/types.dva`, `src/codegen/expr.dva`, `GRAMMAR.md` §3.6"
+  evidence: "`src/codegen/types.dva`, `src/codegen/expr.dva`, `src/codegen/main.dva`, `GRAMMAR.md`"
 ---
 
-# `String`
+# `String` & `Builder`
 
-The `String` type represents an immutable, length-prefixed, NUL-reserved sequence of UTF-8 encoded bytes. Strings in Edva are value types designed for high performance, memory safety, and seamless C interoperability without allocations.
+Edva separates text and byte buffers into two paired types:
+- **`String`**: Immutable, NUL-reserved 16-byte fat pointer `{ i64 len, ptr data }` with arena generation-tag safety.
+- **`Builder`**: Mutable, growable 24-byte arena buffer `{ i64 len, ptr data, i64 cap }` that freezes into a `String` in $O(1)$ via unary `+b`.
 
-## Declaration and annotations
+## Architecture and ABI comparison
 
-Strings are bound using `=`:
+| Property | `String` | `Builder` |
+|---|---|---|
+| **Runtime layout** | `{ i64 len, ptr data }` (16 bytes) | `{ i64 len, ptr data, i64 cap }` (24 bytes) |
+| **Mutability** | Strictly immutable (`s(0) = x` rejected) | Mutable in place (`+=`, `= (...)`, `?b = n`, `@[&b] = x`) |
+| **NUL-reserved tail** | Guaranteed `data[len] == '\0'` on whole strings | Guaranteed upon `+b` freeze |
+| **Generation tag** | Upper 16 bits of `len` (`len >> 48`); traps with `E4010` on stale read | Allocated in active arena |
+| **Aliasing semantics** | Value descriptor sharing immutable bytes | Shared descriptor until `+b` detaches buffer and resets descriptor to `{0, null, 0}` |
 
-```{.dva .run}
-greeting = "Hello, world!"
-path = "/etc/edva/config.ccl"
-```
+## `String` literals, margin stripping, and interpolation
 
-## Literals and syntax
-
-Edva supports unified string literals enclosed in double quotes `"..."` supporting C-style escapes and `${...}` interpolation for both single-line and multi-line strings.
-
-### Standard single-line strings
-Enclosed in double quotes `"..."`, supporting C-style escape sequences and `${expr}` interpolation:
-
-```{.dva .run}
-message = "First line\nSecond line\t(tabbed)\nPath: \"/usr/bin\""
-```
-
-Supported escapes include `\n`, `\t`, `\r`, `\0`, `\a`, `\b`, `\f`, `\v`, `\e`, `\"`, `\'`, `\\`, and `\$`.
-
-### Multi-line strings (`"..."`)
-A string starting immediately after `"\n` enters multi-line mode, providing multiline formatted text blocks with baseline margin stripping and dynamic expression interpolation:
+| Feature | Syntax | Specification | Diagnostic |
+|---|---|---|---|
+| **Single-line literal** | `"Hello\n\t\"world\""` | Supports `\n`, `\t`, `\r`, `\0`, `\a`, `\b`, `\f`, `\v`, `\e`, `\"`, `\'`, `\\`, `\$`, `\xHH`, `\u{HEX}` | `E1003` / `E1006` |
+| **Multi-line literal** | `"` followed immediately by `\n` | Strips opening `\n` and strips the first content line's leading indentation (**baseline margin**) from all lines | `E1017`: line indented less than baseline margin |
+| **Line continuation** | Trailing `\` before `\n` | Suppresses newline while maintaining baseline margin stripping on the next line | — |
+| **Closing quote placement** | Own line vs end of content line | Closing `"` on its own line preserves trailing `\n`; closing `"` at end of text omits trailing `\n` | — |
+| **Interpolation (`${...}`)** | `"val = ${x + 1}"` | Lowers to `%to_str(expr)` for `String`, `Rune`, integers, and floats; in `b += "..."`, streams directly into `b` without intermediate allocations | `E3105`: non-scalar in `${...}` |
 
 ```{.dva .run}
-name = "world"
-count = 3
-template = "
-   Hello, ${name}!
-   Items remaining: ${count}
+#use io
+
+user = "Alice"
+items = 3
+doc = "
+   User: ${user}
+   Count: ${items}
    "
+io::out $ doc
 ```
 
-#### Indentation & baseline margin stripping
-- The indentation of the first content line defines the **baseline margin**. That leading whitespace prefix is stripped from the beginning of every content line.
-- Any subsequent non-empty line indented less than the baseline margin raises compile error `E1017`.
-- Blank lines are preserved without raising indentation errors.
+## Arena generation tags and stale-read protection (`E4010`)
 
-#### Newline handling & line continuation
-- An opening newline immediately following `"` is discarded.
-- When the closing `"` is on its own line, the preceding content line's trailing newline is preserved.
-- When the closing `"` closes the last line directly, no trailing newline is emitted.
-- A trailing backslash `\` at the end of a line acts as a line continuation: it suppresses the newline while preserving baseline margin stripping on subsequent lines.
+| Mechanism | Specification |
+|---|---|
+| **Tag encoding** | Upper 16 bits of the 64-bit `len` word (`len >> 48`) store the arena scope generation; actual byte length is `len & 0x0000FFFFFFFFFFFF` |
+| **Tag `0` (Immortal)** | String literals and top-level allocations outside restore scopes carry tag `0` and never expire |
+| **Active scope validation** | Scoped arena restores track active generation IDs (`1..65535`, wrapping to `1` and skipping active IDs). Reading a `String` whose tag is no longer active traps with `E4010` |
+| **FFI pointer masking** | `&s` returns the raw `data` pointer directly (`NUL`-terminated); `%ptrmask` is available for tagged raw addresses |
+
+## `String` and `Builder` operations
+
+| Operation | Syntax | Operand | Result Type | Semantics |
+|---|---|---|---|---|
+| **Byte length** | `?s` / `?b` | `String` / `Builder` | `Int` | Number of UTF-8 bytes currently stored (`.len` is rejected with `E3065`) |
+| **Rune count** | `??s` | `String` | `Int` | Number of UTF-8 Unicode codepoints |
+| **Data pointer** | `&s` / `&b` | `String` / `Builder` | `Addr` | Raw pointer to byte buffer (`&s` is NUL-terminated for C FFI) |
+| **Byte index** | `s(i)` | `String`, `i: Int` | `Int` | Unsigned byte value (`0..255`) at `i` (aborts on out-of-bounds) |
+| **Substring slice** | `s(a..b)` / `s(a...b)` | `String`, range | `String` | Zero-copy sub-range view (`a..`, `..b`, `-k..` supported) |
+| **Concatenation** | `s1 + s2` / `s + byte_or_rune` | `String` | `String` | Allocates concatenated `String` in arena |
+| **Segment equality** | `s == ("pre", mid, "suf")` | `String`, tuple of `String` | `<>` | Zero-allocation length + segment memory comparison |
+| **Allocate Builder** | `b = {cap}` | `cap: Int` | `Builder` | Allocates mutable arena buffer with initial capacity `cap` |
+| **Single append** | `b += x` | `x`: `String`, `Rune`, or byte `Int` | `()` | Appends string bytes, 1–4 UTF-8 rune bytes, or 1 byte (`0..255`) in place |
+| **Peephole chain append** | `b += s1 + s2 + s3` | `String` chain | `()` | Flattens into sequential in-place appends without intermediate `String` allocation |
+| **Tuple mass-append** | `b += (a, b, c)` or `b = (a, b, c)` | Tuple of `String`/`Rune`/`Int` | `()` | Pre-computes total byte length, reserves capacity once, and writes all items contiguously |
+| **Set Builder length** | `?b = new_len` | `Builder`, `new_len: Int` | `()` | Sets written byte length (`0 <= new_len <= cap`; aborts with `E4008` if out of bounds) |
+| **Copy-and-append** | `b + x` | `Builder`, `x` | `Builder` | Clones `b` and appends `x`, leaving `b` unchanged |
+| **Deep copy** | `++s` / `++b` | `String` / `Builder` | Same | Allocates an independent arena copy of the buffer |
+| **Freeze Builder** | `+b` | `Builder` | `String` | Writes trailing `\0`, transfers buffer to `String` in $O(1)$, and resets `b` (and any aliases) to `{0, null, 0}` |
 
 ```{.dva .run}
-long_line = "
-   This is a single \
-   unbroken line of text.
-   "
+#use io
+
+b = {64}
+b += ("SELECT ", "id, name", " FROM users WHERE active = ", '1')
+query = +b
+
+io::out $ query
+io::out $ (?query, ?b, query(0..6))
 ```
-
-#### Quotes & escaping
-- `\"` escapes to a literal `"`.
-- `\$` and `\${` escape interpolation sequences to literal `$` and `${`. Bare `$` without `{` is literal `$`.
-
-#### Expression interpolation
-- `${expr}` evaluates `expr` and splices the resulting scalar value (`String`, `Rune`, integer widths, `Float`) into the string at runtime without requiring `#use str`.
-- Under the hood, interpolation desugars directly to the `%to_str(expr)` compiler intrinsic, which converts scalar primitives directly into arena-allocated strings. `%to_str` can also be called directly as an intrinsic (`s = %to_str(val)`). Non-scalar types (records, arrays, raw pointers) cannot be interpolated and produce compile-time error `E3105`.
-
-```{.dva .run}
-part1 = "foo"
-part2 = "bar"
-combined = "
-   Value: ${part1 + "_" + part2}
-   "
-```
-
-#### Direct Builder lowering
-- Standalone strings evaluate to an immutable `String`.
-- When appended to a mutable buffer via compound assignment (`b += "..."`), literal segments and interpolated expressions are appended directly into the `Builder` buffer in place without allocating intermediate `String` values.
-
-## The `{ len, data }` fat-pointer ABI
-
-At runtime, every `String` value is represented by a 16-byte fat pointer struct:
-
-```{.dva .partial}
-{ len: i64, data: ptr }
-```
-
-### The NUL-reserved contract
-When a whole `String` is allocated or created from a literal, Edva guarantees that the byte immediately following the string data (`data[len]`) is a `NUL` (`\0`) byte.
-This allows Edva strings to pass directly to C library APIs (like `libc::open`, `libc::printf`, or `os::stat`) using the address-of operator `&s` without copying or allocating temporary buffers.
-
-### Generation-tagged liveness
-The upper 16 bits of the 64-bit `len` word (`len >> 48`) store an arena generation tag:
-- **Tag `0` (Immortal):** String literals and top-level allocations outside restore scopes carry generation tag `0` and never expire.
-- **Dynamic Scope Tracking:** Each nested loop or block restore scope is assigned an active generation tracked in the arena's active scope table (`scope_gens[1..depth]`). An allocation remains live as long as its tag matches any currently active enclosing scope, ensuring outer strings remain valid across inner restores.
-- **Stale Access Trapping (`E4010`):** Accessing a string whose tag does not match any active scope traps immediately with runtime error `E4010` (`stale String read after arena restore`) rather than allowing use-after-free corruption.
-- **Wrap & Exhaustion Policy:** The 16-bit counter spans generations `1..65535` and wraps back to `1` at `65536` (never resetting to `0` to prevent collision with immortal strings). On wrap, candidate generation values currently active in any enclosing scope are automatically skipped, guaranteeing unique active generation IDs and preventing false revival of stale allocations across long-running loops.
-
-## Operations
-
-### Reading string metadata
-
-Edva deliberately avoids dot-property member access (`.len` and `.data` are compile-time errors `E3065` / `E3084`). Instead, prefix operators query string metadata:
-
-```{.dva .run}
-s = "Edva Language"
-
-// Byte length
-byte_len = ?s          // 13
-
-// Unicode codepoint count
-codepoints = ??s       // 13
-
-// Raw pointer to UTF-8 data bytes
-raw_ptr = &s           // Addr / ptr
-```
-
-### Concatenation (`+`)
-
-The binary `+` operator concatenates two strings, or appends a single byte when given an integer:
-
-```{.dva .run}
-#use str
-
-prefix = "item_"
-id = 42
-
-key = prefix + "user"                 // "item_user"
-tagged = prefix + str::from_int(id)   // "item_42" (formatted decimal)
-raw_byte = prefix + id                // "item_*" (appends byte value 42 == ASCII '*')
-```
-
-### Slicing and indexing
-
-Strings support sub-range slicing and indexed byte access:
-
-```{.dva .partial}
-text = "Antigravity"
-
-// Substring slicing: text(start .. end) returns a String
-sub = text(0 .. 4)        // "Anti"
-
-// Indexed access text(i) returns the byte value at index i as an Int (0..255)
-first_byte = text(0)      // 65 (ASCII 'A')
-```
-
-Out-of-bounds indexing aborts execution with an out-of-bounds diagnostic.
-
-### Immutability guarantee
-
-Strings are strictly immutable. Any attempt to write into a string (`s(0) = 'B'`) or overwrite fields (`s.len = 5`) produces an immediate compile error. When mutable string accumulation is needed, use [`Builder`](builder.qmd).

@@ -36,15 +36,15 @@ listener
 
 | Function | Signature | Description |
 |---|---|---|
-| `net::parse_ipv4` | `String => < Int \| >` | Strictly parses dotted-quad IPv4 (`"a.b.c.d"`) into a 32-bit network-order integer |
+| `net::parse_ipv4` | `String => < Int | >` | Strictly parses dotted-quad IPv4 (`"a.b.c.d"`) into a 32-bit network-order integer |
 | `net::tcp_listen` | `Int, Int => Conn` | Creates and binds listening TCP socket on IPv4 port (`0.0.0.0`) |
 | `net::create_listener` | `String, Int, Int => Conn` | Creates listening TCP socket bound to `ip:port` with `SO_REUSEADDR`, `SO_REUSEPORT`, and `TCP_NODELAY` |
-| `net::ensure_port_free` | `String, Int => < \| String >` | Probes IPv4, wildcard, and IPv6 without `SO_REUSEPORT` to verify `ip:port` is not already bound |
-| `net::tcp_accept` | `Int => Conn` | Accepts client connection: `< client_fd \| error >` |
+| `net::ensure_port_free` | `String, Int => < | String >` | Probes IPv4, wildcard, and IPv6 without `SO_REUSEPORT` to verify `ip:port` is not already bound |
+| `net::tcp_accept` | `Int => Conn` | Accepts client connection: `< client_fd | error >` |
 | `net::tcp_connect` | `String, Int => Conn` | Connects to remote IPv4 host and port |
 | `net::tcp_connect_name` | `String, Int => Conn` | Connects via DNS name lookup using `getaddrinfo` |
 | `net::send_str` | `Int, String => Int` | Sends string bytes over socket |
-| `net::recv` | `Int, Int => Chunk` | Reads up to `max` bytes into Chunk (`< String \| >`) |
+| `net::recv` | `Int, Int => Chunk` | Reads up to `max` bytes into Chunk (`< String | >`) |
 | `net::close_fd` | `Int => Int` | Closes socket descriptor (returns 0 on success, -1 on error) |
 | `net::set_nonblocking` | `Int, <> => Int` | Sets non-blocking socket mode (`O_NONBLOCK` when `<+>`, blocking when `<->`) |
 | `net::set_nodelay` | `Int, <> => Int` | Disables (`<+>`) or enables (`<->`) Nagle's algorithm (`TCP_NODELAY`) |

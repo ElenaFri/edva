@@ -36,9 +36,9 @@ io::out $ "PNG bytes: " + str::from_int(?png) + ", QOI bytes: " + str::from_int(
 | `img::get_rgba(im, x, y)` | `Image, Int, Int => (Int, Int, Int, Int)` | Reads pixel `(x, y)` as `(r, g, b, a)` in `0..255` (clamped) |
 | `img::get_color(im, x, y)` | `Image, Int, Int => color::Color` | Reads pixel `(x, y)` as a normalized `color::Color` |
 | `img::encode_qoi(im)` | `Image => String` | Encodes an `Image` into the lossless QOI binary format |
-| `img::decode_qoi(data)` | `String => < Image \| Error >` | Decodes a QOI byte string into an RGBA8 `Image` |
+| `img::decode_qoi(data)` | `String => < Image | Error >` | Decodes a QOI byte string into an RGBA8 `Image` |
 | `img::encode_png(im)` | `Image => String` | Encodes an `Image` into an RFC 2083 RGBA8 PNG byte string |
-| `img::decode_png(data)` | `String => < Image \| Error >` | Decodes an RFC 2083 PNG byte string into an RGBA8 `Image` |
-| `img::decode(data)` | `String => < Image \| Error >` | Auto-detects PNG (`\x89PNG`) or QOI (`qoif`) magic header and decodes |
-| `img::load(path)` | `String => < Image \| Error >` | Reads and decodes a PNG or QOI image file from disk |
+| `img::decode_png(data)` | `String => < Image | Error >` | Decodes an RFC 2083 PNG byte string into an RGBA8 `Image` |
+| `img::decode(data)` | `String => < Image | Error >` | Auto-detects PNG (`\x89PNG`) or QOI (`qoif`) magic header and decodes |
+| `img::load(path)` | `String => < Image | Error >` | Reads and decodes a PNG or QOI image file from disk |
 | `img::save(path, im)` | `String, Image => <>` | Writes `im` to `path` (QOI if `.qoi` extension, otherwise PNG) |

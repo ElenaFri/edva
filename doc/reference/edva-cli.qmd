@@ -1,85 +1,113 @@
 ---
 meta:
-  audience: "Edva users and integrators"
-  status: "current"
-  audited: "df88a80"
-  evidence: "`src/edva.dva`, driver tests"
+  audience: "Edva users"
+  status: "current reference"
+  audited: "18a19d4"
+  evidence: "`src/edva.dva`, `src/pkg.dva`, `std/ccl.dva`, `std/cli.dva`, `test_driver.sh`"
 ---
 
-# `edva` command-line reference
+# CLI & Package Manager (`edva.ccl`)
 
-```text
-edva <input.dva | module_dir> [options]
+The `edva` binary provides single-file / modular compilation, interactive REPL and inline evaluation (`-i`, `-e`), AST/type inspection, and the integrated `edva pkg` package and build system.
+
+## Compiler invocation and options
+
+```sh
+edva [options] <input.dva | dir> [output]
+edva -e "<code_string>" [options]
+edva -i
 ```
 
-An input is a source file or a directory module. Normal compilation writes an
-executable binary; `-ir` stops after writing LLVM IR. Imports resolve first
-relative to the importing source, then from the compiler's `std/` directory. A
-file module is preferred over a same-named directory module.
+| Short / Long Option | Argument | Default | Specification |
+|---|---|---|---|
+| `-o`, `--output` | `<str>` | `<stem>` | Output binary, `.o` object, `.so` shared library, `.wasm`, or `.ll` path |
+| `-r`, `--run` | — | `<->` | Run compiled binary immediately after linking (uses `node` for `.wasm` targets) |
+| `--ir` | — | `<->` | Emit LLVM IR (`.ll`) only; do not invoke `clang` |
+| `-c`, `--compile-only` | — | `<->` | Compile module to object file (`.o`) only (implies `--no-main`) |
+| `--shared` | — | `<->` | Build a shared library (`.so`, implies `--no-main`) |
+| `--entry` | — | `<->` | Compile as program entry module (emits `main`) |
+| `-m`, `--module` | `<str>` | `""` | Compile as named module `<str>` (implies `-c` and `--no-main`) |
+| `-t`, `--target` | `<str>` | Host triple | Target triple (e.g. `x86_64-unknown-linux-gnu`, `aarch64-linux-gnu`, `wasm32-unknown-unknown`, `wasm32-wasi`) |
+| `-O`, `--opt` | `<str>` | `"2"` | Optimization level (`0`, `1`, `2`, `3`, `s`, `z`, or `-O0`..`-Oz`) |
+| `-H`, `--header` | `<str>` | `""` | Generate C header file at `<str>` from `#export` declarations |
+| `-e`, `--eval` | `<str>` | `""` | Compile and evaluate inline Edva code string (auto-prints single non-unit expressions) |
+| `-i`, `--repl` | — | `<->` | Start interactive terminal REPL (`:q`, `:quit`, `exit`, or `Ctrl-D` to exit) |
+| `--ast` | — | `<->` | Print parsed AST of target program and exit |
+| `--ast-tree` | — | `<->` | Print parsed AST as an indented tree and exit |
+| `--typed-ast` | — | `<->` | Elaborate and verify typed AST, print elaboration stats, and exit |
+| `--typed-ast-tree` | — | `<->` | Elaborate, verify, and dump typed AST tree |
+| `--no-main` | — | `<->` | Emit `main` with internal linkage |
+| `--no-runtime` | — | `<->` | Omit standard runtime emission |
+| `--import-map` | `<str>` | `""` | Path to package import map (`.edva/imports.ccl`) |
+| `--cache` | `<str>` | `~/.cache/edva/ir` | Compilation cache directory path |
+| `--no-cache` | — | `<->` | Disable compilation cache |
+| `--cflag` | `<str>` | `()` | Pass additional flag to `clang` (repeatable, e.g. `--cflag -lm --cflag -msimd128`) |
+| `-v`, `--version` | — | — | Display compiler version (`edva <version>`) and exit |
+| `-h`, `--help` | — | — | Display formatted CLI help and exit |
 
-| Option | Meaning |
+### Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EDVA_PATH` / `EDVA_STDLIB` | `<exe_dir>/std` | Overrides standard library directory resolution |
+| `XDG_CACHE_HOME` | `~/.cache` | Base directory for compilation cache (`edva/ir`) and package store (`edva/store`) |
+| `EDVA_STORE` | `~/.cache/edva/store` | Content-addressed package store directory |
+| `EDVA_OFFLINE` | `"0"` | Set to `"1"` to enforce `--offline` mode across `edva pkg` commands |
+| `EDVA_NO_CACHE` | `"0"` | Set to `"1"` to disable IR caching across `edva pkg` commands |
+| `EDVA_GIT` | `"git"` | Git executable used when fetching git dependencies |
+
+## Package and cache subcommands
+
+All package commands may be invoked at top level (`edva build`) or under `edva pkg` (`edva pkg build`):
+
+| Command | Arguments & Options | Behavior | Diagnostics |
+|---|---|---|---|
+| `edva init` | `<dir> [--name <name>]` | Scaffolds `edva.ccl`, `src/<name>.dva`, and `src/main.dva` in `<dir>` | `E7002`: missing `<dir>`<br>`E7020`: `edva.ccl` already exists |
+| `edva add` | `<alias> <path_or_git_url>`<br>`<alias> --path <p>`<br>`<alias> --git <url> [--rev <r>]`<br>`<alias> --url <u> --hash <h>` | Transactionally adds dependency to `edva.ccl`, resolves graph, and updates `edva.lock.ccl` (rolls back `edva.ccl` on failure) | `E7021`: rollback on fetch/resolve failure |
+| `edva fetch` | `[dir] [--locked] [--offline] [--store <d>] [--cache <d>] [--no-cache]` | Resolves dependencies, populates content store, writes `edva.lock.ccl` and `.edva/imports.ccl` | `E7007`: lockfile out of date (`--locked`) |
+| `edva build` | `[dir] [--locked] [--offline] [--store <d>] [--cache <d>] [--no-cache]` | Fetches if needed, then builds all targets under `targets =` (or `src/main.dva` $\to$ `./<name>`) | `E5039`: missing `pkg-config` lib |
+| `edva test` | `[dir] [--locked] [--offline] [--store <d>] [--cache <d>] [--no-cache]` | Compiles and runs every `tests/*.dva` file independently; passes when exit code is `0` | — |
+| `edva update` | `[pkg_name] [dir]` | Refreshes moving Git branches/tags in `edva.lock.ccl` (all or single `<pkg_name>`) | — |
+| `edva graph` | `[dir]` (alias `tree`) | Prints ASCII dependency tree with provenance, duplicate versions, and cycle checks | — |
+| `edva vendor` | `[dir]` | Materializes external dependencies into `vendor/<id>/` + `vendor/vendor.ccl` for air-gapped `--offline --locked` builds | `E7005`: tree hash mismatch |
+| `edva cache` | `dir`, `ls`, `clean` | Prints cache directory, lists cached `.ll` objects and sizes, or evicts cached IR artifacts | `E5026`–`E5028`: cache CLI errors |
+
+## Package directory layout and `edva.ccl` manifest schema
+
+### Standard package layout
+
+| Path | Role |
 |---|---|
-| `-r`, `--run` | Run the linked binary immediately. |
-| `-ir`, `--ir-only` | Emit a `.ll` file without invoking clang. |
-| `-c`, `--compile-only` | Compile to an object file (`.o`) or IR without linking. |
-| `--module <name>` | Compile as an isolated module unit with `<name>::` prefix. |
-| `--entry` | Designate this compilation unit as the executable entry point. |
-| `-o <path>` | Set the output binary or object path. |
-| `-target <triple>` | Select a target triple (e.g. `x86_64-unknown-linux-gnu`, `wasm32-unknown-unknown`). |
-| `-O0`, `-O1`, `-O2`, `-O3` | Set code generation optimization level (default `-O2`). |
-| `-cflag <flag>`, `--cflag <flag>` | Pass an additional flag (e.g. `-msimd128`, `-march=native`) to the underlying `clang` invocation. May be repeated. |
-| `-no-runtime` | Build without the runtime. |
-| `-no-main` | Emit `main` with internal linkage. |
-| `-shared` | Build a shared library (`.so`). |
-| `-H`, `--header <h>` | Generate a C header from `#export` declarations. |
-| `-repl`, `--repl` | Start the stdin-based interactive REPL. |
-| `-e <code>` | Parse/evaluate an inline code string. |
-| `-ast`, `--ast` | Print the program AST. |
-| `-ast-tree` | Print the AST as an indented tree. |
-| `-typed-ast`, `-check-types` | Elaborate, verify, and print typed AST statistics. |
-| `-typed-ast-tree` | Verify and dump the elaborated typed AST tree. |
-| `-h`, `--help` | Show usage. |
+| `edva.ccl` | Package manifest (name, version, dependencies, native libs, build targets) |
+| `edva.lock.ccl` | Deterministic lockfile pinning commit hashes and canonical `sha256-<hex>` tree digests |
+| `.edva/imports.ccl` | Generated import map linking `@alias` imports (`#use @pkg`) to resolved store/vendor paths |
+| `src/<name>.dva` | Root library module imported when dependents write `#use @<name>` |
+| `src/main.dva` | Default executable entry point when `targets =` is omitted |
+| `tests/*.dva` | Independent test executables discovered by `edva test` |
 
-`clang` must be available on `PATH` for modes that assemble or link. Use `-ir` when
-you only need the generated LLVM IR. In the REPL, `:q` exits the session.
+### `edva.ccl` configuration keys
 
-## Package management (`edva pkg`)
+The manifest uses CCL (Categorical Configuration Language) syntax (`key = value` with indentation-scoped sections):
 
-```text
-edva <init|add|fetch|build|test|update|graph|vendor|cache> [dir] [options]
-edva pkg <command> [dir] [options]
+| Section / Key | Example | Specification |
+|---|---|---|
+| `name`, `version`, `edva` | `name = my_app` | Package identifier, semantic version, and minimum compiler version |
+| `dependencies.<alias>.path` | `path = ../math_utils` | Local relative or absolute directory containing `edva.ccl` |
+| `dependencies.<alias>.git` / `rev` | `git = https://...`<br>`rev = v1.2.0` | Git repository URL and branch, tag, or commit (pinned with tree hash in `edva.lock.ccl`) |
+| `dependencies.<alias>.url` / `hash` | `url = https://.../a.tar.gz`<br>`hash = sha256-<hex>` | Tarball archive verified against `sha256-<hex>` digest |
+| `overrides.<alias>` | `path = ../local_fork` | Root-manifest override replacing direct or transitive dependency `<alias>` across the graph |
+| `native.libs` | `= m`<br>`= pthread` | List of system libraries forwarded as `-l<lib>` to Clang |
+| `native.pkg-config` | `= libssl` | List of packages resolved via `pkg-config --libs <name>` (`E5039` if missing on host) |
+| `targets.<id>.src` | `src = src/client.dva` | Entry `.dva` source file for build target `<id>` (default: `src/main.dva`) |
+| `targets.<id>.out` | `out = dist/client.wasm` | Output binary path for build target `<id>` (default: `<id>`) |
+| `targets.<id>.target` | `target = wasm32-unknown-unknown` | Target triple passed via `-t` / `--target` |
+| `targets.<id>.opt` | `opt = -O3` | Optimization level (`0`..`3`, `s`, `z`, or `-O0`..`-O3`) |
+| `targets.<id>.cflags` | `= -msimd128` | List or space-separated string of flags forwarded via `--cflag` |
+
+```{.dva .partial}
+// Importing external packages declared in edva.ccl:
+#use @term
+#use @term/colors
+
+term::print("ok")
 ```
-
-`edva pkg` manages dependencies, lockfiles, targets, and test execution for packages containing an `edva.ccl` manifest. All commands can also be invoked as top-level subcommands without the `pkg` prefix.
-
-### Commands
-
-| Command | Description |
-|---|---|
-| `edva init <dir> [--name <name>]` | Initialize a new package skeleton with `edva.ccl`, `src/<name>.dva`, and `src/main.dva`. |
-| `edva add <alias> [source] [dir]` | Add a dependency to `edva.ccl` and resolve the graph transactionally (`--path`, `--git`, or `--url`). |
-| `edva fetch [dir]` | Resolve dependencies, fetch sources, verify content hashes, write `edva.lock.ccl`, and generate `.edva/imports.ccl`. |
-| `edva build [dir]` | Fetch dependencies (if needed) and build all `targets` in `edva.ccl` (or compile `src/main.dva` into `./<name>` when `targets` is omitted). |
-| `edva test [dir]` | Fetch dependencies (if needed) and run every test target in `tests/*.dva`. |
-| `edva update [alias] [dir]` | Refresh moving branch/tag pins in `edva.lock.ccl` (selectively for `alias` or globally). |
-| `edva graph [dir]` / `edva tree` | Display the resolved dependency graph as an ASCII tree with source provenance. |
-| `edva vendor [dir]` | Materialize external dependencies into `<root>/vendor/` and generate `vendor/vendor.ccl` for offline builds. |
-| `edva cache <dir|ls|clean>` | Manage the LLVM IR compilation cache (`dir`: show path, `ls`: list entries, `clean`: evict cached objects). |
-
-### Package options
-
-| Option | Meaning |
-|---|---|
-| `--locked` | Validate against `edva.lock.ccl` without updating or mutating it. |
-| `--offline` | Disallow network access; require all dependencies to be local or present in cache. |
-| `--store <dir>` | Path to content-addressed package store (default: `~/.cache/edva/store/`). |
-| `--cache <dir>` | Path to LLVM IR compilation cache directory (default: `~/.cache/edva/ir/`). |
-| `--git <exe>` | Path to git executable (default: `git`). |
-| `--name <name>` | Explicit package name overriding directory basename for `edva init`. |
-| `--path <path>` | Path source for `edva add`. |
-| `--rev <rev>` | Git revision/branch/tag for `edva add` (default: `master`). |
-| `--url <url>` | Archive download URL for `edva add`. |
-| `--hash <sha256>` | Expected SHA-256 archive checksum for `edva add`. |
-
-
-

@@ -3,12 +3,12 @@ meta:
   audience: "Edva users"
   status: "current reference"
   audited: "df88a80"
-  evidence: "`operators.yaml`, `src/parser.dva`, `src/annotate.dva`, `src/codegen/match.dva`, `src/codegen/stmt.dva`"
+  evidence: "`operators.yaml`, `src/parser.dva`, `src/annotate.dva`, `src/codegen/match.dva`, `src/codegen/stmt.dva`, `tests/pass/004_choice_inline.dva`, `tests/pass/012_cycle_break.dva`, `tests/pass/345_implicit_ram_fallback.dva`"
 ---
 
-# Expressions
+# Expressions, Choices & Cycles
 
-Edva programs are composed from expressions: calls, choices, ranges, cycles, assignments, and blocks. For operator precedence and binding powers, see [Operators](operators.qmd).
+Edva programs are composed from expressions: calls, choices, ranges, cycles, assignments, early returns, and blocks. For operator precedence and binding powers, see [Operators, Sections & Underscore](operators.qmd).
 
 ## Calls and application
 
@@ -36,7 +36,7 @@ A choice expression evaluates a scrutinee against an ordered sequence of branche
 | Guarded choice | `s [g1] b1 [g2] b2 | fb` | Unified body type | Evaluates first matching `[g_i]` branch body, or trailing `| fb` |
 | Positional ram choice | `r | pos_body | neg_body` | Unified body type | First `|` matches positive slot; second `|` matches negative slot |
 | Ram payload binding | `r | x => b1 | err => b2` | Unified body type | Binds slot payload to lambda parameter (or `_` in implicit body) |
-| Skip-first ram choice | `r !| neg_body` | Unified body type | Sugar for `r | (void) | neg_body`; skips unit positive slot |
+| Skip-first ram choice | `r !| neg_body` | Unified body type | Sugar for `r | (void) | neg_body`; skips unit positive slot (e.g. `arr(i) = v !| _`) |
 | Bodyless guard | `s [guard]` | `<>` (Flag) | Evaluates to `<+>` on match, `<->` otherwise |
 | Negated guard | `s ![guard]` | `<>` (Flag) | Evaluates to `<->` on match, `<+>` otherwise (`!` adjacent to `[`) |
 | Headless choice fn | `[g1] b1 [g2] b2 | fb` | `T => U` | 1-parameter function `_ => _ [g1] b1 [g2] b2 | fb` (outside statement `@` body) |
@@ -106,10 +106,28 @@ io::out $ 7 ![4..10]     // <->
 | Position & Shape | Exhaustiveness Requirement | Implicit Fallback Synthesis | Result Type |
 |---|---|---|---|
 | Statement choice | Not required (`cond | side_effect`) | Unmatched path is a no-op | `()` |
-| Expression choice (general) | Required (`E3093` if inexhaustive) | None | Unified branch type (`E3084` on mismatch) |
+| Expression choice (general) | Required (`E3093` if inexhaustive) | None (never use dummy `| 0`) | Unified branch type (`E3084` on mismatch) |
 | Expression choice (`RamPN` `<T|>` branches) | Auto-completed | Appends implicit `| <-->` (absence) | `<T|>` |
 | Expression choice (`RamNP` `<|E>` branches) | Auto-completed | Appends implicit `| <++>` (success) | `<|E>` |
 | Expression choice (Enum scrutinee) | All variants covered or trailing `|` (`E3102`) | None | Unified branch type |
+
+```{.dva .run}
+#use io
+
+// Implicit | <--> fallback for RamPN (< String | >)
+lookup: Int => < String | >
+lookup =
+   [200] <+ "OK" +>
+   [404] <+ "Not Found" +>
+
+// Implicit | <++> fallback for RamNP (< | String >)
+guard_pos: Int => < | String >
+guard_pos = n =>
+   n < 0 | <- "negative" ->
+
+io::out $ lookup(200) | _ | "missing"
+io::out $ guard_pos(5) | "valid" | _
+```
 
 ## Range expressions (`..`, `...`, `..=`)
 
@@ -136,11 +154,11 @@ Cycles iterate at LBP 10, RBP 20 without keywords.
 | Bounded range | `a..b @ body`<br>`a...b @ body` | `i =>` (`Int`) | `_` (`Int`), `_i` (`Int`) | Iterates integer interval $[a, b)$ or $[a, b]$ |
 | Condition (`Flag` `<>` / `Ram`) | `(cond) @ body` / `cond @ body` | — | — | Re-evaluates `cond` before each iteration; repeats while positive (`<+>` / `<+ ... +>`) |
 | Infinite range | `0.. @ body` | `i =>` (`Int`) | `_` (`Int`), `_i` (`Int`) | Unbounded loop; terminate via `-->` or `--|` |
-| `String` | `s @ body` | `b =>` or `b, i =>` | `_` (`Int` byte), `_i` (`Int` index) | Iterates raw UTF-8 bytes; index `i` persists after `-->` break |
+| `String` | `s @ body` | `b =>` or `b, i =>` | `_` (`Int` byte), `_i` (`Int` index) | Iterates raw UTF-8 bytes; explicit `i` persists after `-->` break |
 | `T{}` / `T[]` / `(T * N)` | `xs @ body` | `elem =>` or `elem, i =>` | `_` (`T`), `_i` (`Int` index) | Iterates elements in index order `0..?xs` |
 | Map `K ^ V` | `m @ body` | `val =>` or `val, key =>` | `_` (`V` value), `_i` (`K` key) | Iterates live map entries (**value first, key second**) |
-| Record `Type` (`#!`) | `T @ f => body` | `f =>` (field descriptor) | — | Compile-time unrolled over `0..?T` (`f.name`, `f.type`, `f.index`) |
-| Enum `Type` (`#!`) | `T @ v => body` | `v =>` (variant descriptor) | — | Compile-time unrolled over `0..?T` (`v.name`, `v.type`, `v.index`) |
+| Record `Type` (`#!`) | `T @ f => body` | `f =>` (field descriptor) | — | Compile-time unrolled over `0..?T` (`f.name`, `f.type`, `f.idx`) |
+| Enum `Type` (`#!`) | `T @ v => body` | `v =>` (variant descriptor) | — | Compile-time unrolled over `0..?T` (`v.name`, `v.type`, `v.idx`) |
 
 ### Cycle jump and escape operators
 
@@ -149,6 +167,18 @@ Cycles iterate at LBP 10, RBP 20 without keywords.
 | Break | `-->` / `-->N` | Void (diverges) | Exits innermost cycle (or `N`-th enclosing cycle, `-->2`) |
 | Continue | `--^` / `--^N` | Void (diverges) | Advances innermost cycle (or `N`-th enclosing cycle, `--^2`) |
 | Escape branch | `iterable @ body >-- esc_body` | `< T | >` (`RamPN`) | Returns `<+ esc_body +>` if terminated by `-->`, or `<-->` on normal completion |
+
+```{.dva .run}
+#use io
+
+found = 1..10 @ r =>
+   1..10 @ c =>
+      r * c == 42 | -->2
+>--
+   "hit 42"
+
+io::out $ found | _ | "none"
+```
 
 ## Assignments and mutations
 
@@ -184,7 +214,7 @@ Assignments sit at LBP 60, RBP 50 (right-associative) and always evaluate to `()
 | Form | Operand Type | Result Type | Semantics |
 |---|---|---|---|
 | `!x` | `<>` (Flag) | `<>` | Logical flag negation (`E3008` on non-flag types) |
-| `+b` | `Builder` | `String` | Freezes `Builder` into `String` in-place (O(1) buffer transfer) |
+| `+b` | `Builder` | `String` | Freezes `Builder` into `String` in-place ($O(1)$ buffer transfer) |
 | `?x` | `String`, `Builder`, `T{}`, `T[]`, `(T * N)`, `K ^ V`, `Type` | `Int` | Byte, element, entry, field, or variant count |
 | `??s` | `String` | `Int` | UTF-8 Unicode codepoint count |
 | `&x` | `String`, `Builder`, composite, or call-arg scalar | `Addr` | Raw data pointer / buffer address (no space after `&`) |

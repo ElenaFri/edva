@@ -3,198 +3,83 @@ meta:
   audience: "Edva developers"
   status: "current reference"
   audited: "51081a6"
-  evidence: "`src/codegen/types.dva`, `src/codegen/expr.dva`, `GRAMMAR.md` §2.8"
+  evidence: "`src/codegen/types.dva`, `src/codegen/expr.dva`, `GRAMMAR.md`"
 ---
 
-# Functions and closures
+# Functions & Closures
 
-In Edva, functions are first-class values. Any function or closure expression can be assigned to variables, passed as arguments to higher-order routines, and returned from functions.
+Functions and closures in Edva are first-class values with uniform 16-byte representation and full static type inference.
 
-## Type signatures
+## Signatures, types, and runtime ABI
 
-A function type specifies parameter types and return type separated by `=>`:
+| Aspect | Syntax / Representation | Rules & Diagnostics |
+|---|---|---|
+| **Multi-arg signature** | `f: Int, String => <>` | Declared on the line preceding `f = a, b => body` (`E2009` if combined inline) |
+| **Zero-arg signature** | `f: () => Int` | Defined with `f = !=> body` and invoked with postfix `f!` |
+| **Void return signature** | `f: String => ()` | Returns `Unit` (`void` in LLVM IR) |
+| **Nested function type** | `#type Cb (Int => Int)`<br>`apply: (Int => Int), Int => Int` | Wrap function types in parentheses `(...)` when inside records, containers, or parameter lists |
+| **Runtime representation** | `{ ptr fn_ptr, ptr env_ptr }` (16 bytes) | `fn_ptr`: machine code pointer; `env_ptr`: arena-allocated capture struct pointer (`null` for non-capturing functions). Zero RTTI or vtables |
 
-```{.dva .partial}
-// Single parameter returning Int
-Int => Int
+## Function definition forms
 
-// Multiple parameters
-Int, Float => String
-
-// Zero parameters returning Unit
-() => ()
-```
-
-When a function type appears as a field in a record, inside an array, or in another function signature, wrap it in parentheses:
-
-```{.dva .run}
-#type Transform (Int => Int)
-#type Callback (name: String, run: (String => ()))
-```
-
-## Runtime representation
-
-At runtime, a function value is represented by a 16-byte fat pointer:
-
-```{.dva .partial}
-{ fn_ptr: ptr, env_ptr: ptr }
-```
-
-- `fn_ptr`: Points to the generated machine code of the function body.
-- `env_ptr`: Points to the heap-allocated closure environment containing captured variables, or `null` (`Addr(0)`) if the function does not capture state.
-
-There are no dynamic vtables, method tables, or RTTI headers attached to function values.
-
-## Defining functions
-
-Functions are defined with bare parameter lists followed by `=>` and an expression or indented block:
-
-```{.dva .partial}
-// Named top-level function definition with signature
-add: Int, Int => Int
-add = a, b =>
-   a + b
-
-// Inline function binding
-square = x => x * x
-```
-
-> [!NOTE]
-> Parameter lists are never parenthesized in Edva definitions (`a, b => ...`, not `(a, b) => ...`).
-
-> [!IMPORTANT]
-> The exact identifier `_` cannot be used as an explicit function parameter (`_ => ...`, `x, _ => ...`, `items @ _ => ...`, `r | _ => ...` emit `E2040`). Use a named parameter (e.g. `ignored`) or omit unused binders. Implicit uses of `_` (grouped lambdas `(_ * 2)`, sections `(* 2)`, implicit cycle item/`_i`, bare ram extraction `r | _`, pattern wildcards `(a, _)`) remain valid.
-
-### Implicit-parameter lambdas
-
-See [Underscore: implicit values and wildcards](../language/underscore.qmd)
-for `_` in lambdas, branches, cycles, and patterns, including scope limitations.
-
-A parenthesized expression containing the placeholder `_` desugars into an implicit single-parameter lambda:
+| Form | Syntax Example | Parameter Binding & Semantics | Diagnostic |
+|---|---|---|---|
+| **Explicit parameter fn** | `add = a, b => a + b` | Bare comma-separated names before `=>` (never parenthesize `(a, b) =>`) | `E2040`: explicit `_ =>` |
+| **Nullary function** | `tick = !=> count = count + 1` | 0-parameter function; called via `tick!` | — |
+| **Grouped implicit lambda** | `(_ * 2)`, `(10 - _)`, `((a = _, b = 1))` | Innermost `(...)` group with free `_` becomes a 1-arg function | — |
+| **Operator section** | `(* 2)`, `(+ "!")`, `(.<. 1)` | Space after operator required; RHS binds at RBP 130 (`* 2 + 3` $\equiv$ `_ => _ * (2 + 3)`) | `E2031`: missing space (`>3`) |
+| **Field-accessor section** | `(.name)`, `(.0)`, `(.a.b)` | Parenthesized leading dot projects field/index with a fresh internal parameter (never shadows outer `_`) | `E2064`: bare `(.)` |
+| **Headless choice fn** | `[< 0] "neg" [0] "zero" | "pos"` | Scrutinee-less guarded choice lowers to a 1-arg function over `_` | — |
+| **Headless guard fn** | `['a'...'z']`, `![' ', '\n']` | Scrutinee-less bracket guard lowers to a `T => <>` predicate | — |
 
 ```{.dva .run}
-double = (_ * 2)       // Anonymous single-parameter function: double(5) == 10
-invert = (100 - _)     // Anonymous single-parameter function: invert(20) == 80
+#use io
+
+#type Item (id: Int, label: String)
+
+apply: (Int => Int), Int => Int
+apply = f, x => f(x)
+
+classify = [< 0] "neg" [0] "zero" | "pos"
+get_label: Item => String
+get_label = (.label)
+
+io::out $ apply((* 3), 7)                  // 21
+io::out $ apply((100 - _), 30)             // 70
+io::out $ classify(-5)                     // neg
+io::out $ get_label(Item(1, "sensor"))     // sensor
 ```
 
-A scrutinee-less (headless) guarded choice (`[guard] ...`) also desugars directly into a single-parameter function over `_` without requiring enclosing parentheses:
+## Closures, lexical capture, and returns
+
+| Feature | Syntax / Mechanism | Behavior |
+|---|---|---|
+| **Lexical capture** | `make_adder = base => (n => base + n)` | Captures outer bindings into an arena-allocated environment struct (`env_ptr`) |
+| **Tail return** | Final expression in body | Evaluates as the function's return value |
+| **Valued early return** | `--| expr` | Immediately exits enclosing function with `expr` (`E3084` on return type mismatch) |
+| **Void early return** | Bare `--|` | Immediately exits a `() => ()` void function |
+| **Ram return sugars** | `c |->`, `c |+>`, `c |-->`, `c |++>` | When `c` is `<+>`, early-returns `<->`, `<+>`, `<-->`, or `<++>` |
 
 ```{.dva .run}
-classify = [> 5] "more" [< 0] "less" | "ok"
-res1 = classify(10)                      // "more"
-res2 = -3 $> classify                    // "less"
-is_vowel = ['a', 'e', 'i', 'o', 'u']     // Rune => <>
+#use io
+
+make_Downloads: Int => (Int => Int)
+make_Downloads = factor =>
+   x =>
+      x < 0 | --| 0
+      x * factor
+
+scale5 = make_Downloads(5)
+io::out $ (scale5(4), scale5(-2))   // (20, 0)
 ```
 
-### Operator sections
+## Invocation and pipeline operators
 
-See [Operator sections](../language/operator-sections.qmd) for the complete
-operator set, use contexts, and precedence and evaluation rules.
-
-An operator section `op rhs` consists of a binary operator followed by whitespace and a right-hand operand. It desugars into a single-parameter function over the implicit placeholder `_`:
-
-```{.dva .run}
-double = (* 2)          // Equivalent to: (_ * 2)
-inc = (+ 1)             // Equivalent to: (_ + 1)
-is_negative = (< 0)     // Equivalent to: (_ < 0)
-shl = (.<. 2)           // Equivalent to: (_ .<. 2), infers Int => Int
-```
-
-#### Syntax and typing rules:
-1. **Trailing whitespace is mandatory:** An operator section requires trailing whitespace immediately after the operator token (`* 2`, `+ 1`, `.<. 2`).
-   - `+ 2` (with whitespace) is an addition section.
-   - `+b` (without whitespace) is the Builder freeze operator.
-2. **Excluded binary operators:** The operators `||`, `&&`, `$`, `$>`, `$>>`, `!>`, `!<`, and `!=` never form operator sections. Logical short-circuit operators (`||`, `&&`), application/feed pipelines (`$`, `$>`, `$>>`), and relational negation/ordering (`!>`, `!<`, `!=`) carry non-standard evaluation or syntactic roles that exclude them from section synthesis.
-3. **Precedence and RHS binding power:** Operator sections parse their right-hand side operand with a binding power of 130. Operators with precedence higher than 130 (e.g. arithmetic `+`, `-`, `*`, `/`) bind tightly to the section's RHS operand. For example, `(* 2 + 3)` parses as `_ => _ * (2 + 3)` (`_ => _ * 5`).
-4. **Shift section type inference:** Shift sections (`.<. n` and `.>. n`) infer integerish operand and return types (`Int => Int`) when unannotated without requiring explicit signatures.
-5. **Usage in enum branch pattern matching:** When an operator section or function value is used in a variant branch of an enum with a payload, the payload value is bound to `_` (along with any named binders) and evaluated by the section:
-   ```{.dva .partial}
-   #type Box < Val(Int), Empty >
-   b = Box(Val, 3)
-   res1 = b [Val] (+ 2) | 0         // Evaluates to 5
-   res2 = b [Val v] (+ 2) | 0       // Evaluates to 5
-   add2 = (+ 2)
-   res3 = b [Val] add2 | 0          // Evaluates to 5
-   ```
-   Matching a unit variant without a payload against an operator section is rejected at compile time as a type mismatch without inventing zero operands.
-6. **Preserving function-valued ordinary branches:** In guarded value choices, branches returning operator sections or functions retain their functional value and are not automatically applied:
-   ```{.dva .partial}
-   choose: Int => (Int => Int)
-   choose = mode => mode [> 0] (* 2) | (+ 1)
-   ```
-   Evaluating `choose(1)` yields the function `(* 2)`.
-7. **Usage in choice predicate guards:** Operator sections are idiomatic as predicate guards in choice expressions without needing an explicit lambda:
-   ```{.dva .partial}
-   classify = n =>
-      n [< 0] "negative"
-      [> 0] "positive"
-      | "zero"
-   ```
-8. **Usage in pipelines:** Operator sections can be passed directly into feed (`$>`) and higher-order routines:
-   ```{.dva .partial}
-   res = 5 $> (* 2) $> (+ 10)    // (5 * 2) + 10 = 20
-   ```
-
-
-### Capturing lexical scope (closures)
-
-A function captures variables from its enclosing lexical environment:
-
-```{.dva .run}
-make_adder: Int => (Int => Int)
-make_adder = base =>
-   n => base + n
-
-add10 = make_adder(10)
-res = add10(5)    // 15
-```
-
-## Early return (`--|`)
-
-Functions evaluate to the result of their final expression or exit early using `--|`:
-
-- **Valued return**: `--| expr` returns `expr` immediately. The type of `expr` must match the function's declared return type.
-- **Void return**: Bare `--|` returns immediately from a void function (`() => ()`).
-- **Ram return sugar**: Choice branches can return unit ramifications directly using `|->` (`<->`), `|+>` (`<+>`), `|-->` (`<-->`), or `|++>` (`<++>`).
-
-```{.dva .run}
-find_first_negative: Int{} => <Int|>
-find_first_negative = arr =>
-   ?arr @ i =>
-      v = arr(i) | _ | 0
-      v < 0 | --| <+ v +>
-   <-->
-
-check_limit: Int => <>
-check_limit = x =>
-   x < 0 |->
-   <+>
-```
-
-## Invocation styles
-
-Edva provides three ways to call a function:
-
-### 1. Standard call
-```{.dva .partial}
-res = add(10, 20)
-```
-
-### 2. Feed operator (`$>`)
-The left-associative feed operator passes the left-hand operand as the first argument to the right-hand function:
-
-```{.dva .partial}
-// Equivalent to io::out("Done\n")
-"Done\n" $> io::out
-
-// Pipeline chain
-val = 5 $> square $> add10   // add10(square(5)) -> 35
-```
-
-### 3. Apply operator (`$`)
-The right-associative apply operator binds everything on its right as the argument to the function on its left:
-
-```{.dva .partial}
-// Equivalent to print_int(10 + 20)
-print_int $ 10 + 20
-```
+| Form | Syntax | Precedence / Associativity | Desugaring |
+|---|---|---|---|
+| **Direct call** | `f(a, b)` | Postfix (LBP 170, left) | Direct invocation (no space before `(`, `E2032`) |
+| **Nullary call** | `f!` | Postfix (LBP 170, left) | Invokes 0-argument function `f` |
+| **Feed pipeline** | `x $> f` / `x $> f(a)` | Feed (LBP 40, RBP 50, left) | Prepends `x` as first argument: `f(x)` / `f(x, a)` |
+| **Infix apply** | `f $ x` / `f(a) $ b` | Apply (LBP 30, RBP 30, right) | Appends `x` / `b` as last argument: `f(x)` / `f(a, b)` |
+| **Block apply** | `f $` + indented `k = v` block | Apply (LBP 30, RBP 30, right) | Passes indented key-value block as a single record argument |
+| **Monadic bind** | `ram $>> cont` | Feed (LBP 40, RBP 50, left) | Unwraps positive ram slot into ram-returning `cont`; short-circuits negative slot (`E3091`) |

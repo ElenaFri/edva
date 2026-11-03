@@ -3,14 +3,12 @@ meta:
   audience: "Edva users"
   status: "current reference"
   audited: "df88a80"
-  evidence: "`operators.yaml`, `GRAMMAR.md` §1.6 and §3.3, `src/operators.dva`"
+  evidence: "`operators.yaml`, `GRAMMAR.md`, `src/operators.dva`, `src/parser.dva`, `src/annotate.dva`, `tests/pass/027_operator_sections.dva`, `tests/pass/029_implicit_param_lambda.dva`, `tests/pass/347_underscore_implicit_uses.dva`, `tests/pass/363_accessor_sections.dva`"
 ---
 
-# Operators
+# Operators, Sections & Underscore
 
-Edva uses Pratt parsing to resolve operator precedence and associativity.
-The table below specifies all operator tiers, their Left Binding Power (LBP),
-Right Binding Power (RBP), associativity, and semantic groupings.
+Edva uses Pratt parsing to resolve operator precedence and associativity. This chapter specifies all operator tiers, comparison and range semantics, operator and field-accessor sections, and the scoping rules of the implicit placeholder `_` and cycle index `_i`.
 
 ## Precedence and binding power table
 
@@ -39,16 +37,16 @@ Right Binding Power (RBP), associativity, and semantic groupings.
 
 <!-- END operators.yaml -->
 
-| Rule | Behavior |
+| Parsing Rule | Behavior |
 |---|---|
 | Left-associative tiers (`RBP > LBP`) | Operator binds tightly on the left (`a - b - c` $\equiv$ `(a - b) - c`) |
 | Right-associative tiers (`RBP <= LBP`) | Operator extends rightward (`f $ g $ x` $\equiv$ `f(g(x))`) |
 | Choice absorption (`$` / `$>`) | `$` (LBP 30) and `$>` (LBP 40) sit below `choice` (LBP 50), absorbing unparenthesized RHS choices (`a $> b | c | d` $\equiv$ `a $> (b | c | d)`) |
-| Operator sections (`op rhs`) | Binary operators `+`, `-`, `*`, `/`, `%`, `<`, `>`, `==`, `.<.`, `.>.`, `.&.`, `.^.`, `.|.` with a leading operand omitted form a 1-arg function over `_` (RBP 130). See [Operator sections](operator-sections.qmd) |
+| Operator sections (`op rhs`) | 13 binary operators with a leading operand omitted and mandatory trailing space form a 1-arg function over `_` with RBP 130 |
 
 ## Relational, equality, and chained comparisons
 
-Comparisons sit at LBP 120, RBP 130 and return a bare flag `<>` (`<+>` or `<->`). Note that Edva writes greater-or-equal as `!<` ("not less") and less-or-equal as `!>` ("not greater"); `<=` and `>=` are not comparison operators (`=>` is function arrow).
+Comparisons sit at LBP 120, RBP 130 and return a bare flag `<>` (`<+>` or `<->`). Edva writes greater-or-equal as `!<` ("not less") and less-or-equal as `!>` ("not greater"); `<=` and `>=` are not comparison operators (`=>` is the function arrow).
 
 | Operator | Meaning | Valid Operand Types | Floating-Point / Special Semantics |
 |---|---|---|---|
@@ -61,14 +59,14 @@ Comparisons sit at LBP 120, RBP 130 and return a bare flag `<>` (`<+>` or `<->`)
 
 ### Chained comparisons
 
-Relational operators (`<`, `>`, `!<`, `!>`) on the **same source line** chain mathematically:
+Relational operators (`<`, `>`, `!<`, `!>`) on the **same source line** chain mathematically, evaluating interior operands at most once:
 
-| Chained Expression | Equivalent Short-Circuit Evaluation | Middle Operand Evaluation |
+| Chained Expression | Equivalent Short-Circuit Lowering | Middle Operand Evaluation |
 |---|---|---|
 | `a < x < b` | `t = x; (a < t) && (t < b)` | Evaluated **at most once** |
 | `a !> x < b` | `t = x; (a !> t) && (t < b)` | Evaluated **at most once** |
 | `a !> x !> b` | `t = x; (a !> t) && (t !> b)` | Evaluated **at most once** |
-| `b > f(x) > a` | `t = f(x); (b > t) && (t > a)` | `f(x)` called **at most once** (only if needed) |
+| `b > f(x) > a` | `t = f(x); (b > t) && (t > a)` | `f(x)` called **at most once** |
 
 ```{.dva .run}
 #use io
@@ -82,7 +80,7 @@ io::out $ in_half_open(10, 0, 10)  // <->
 
 ## Range operators (`..`, `...`, `..=`)
 
-Range operators sit at LBP 70, RBP 80. Endpoints must be adjacent to the operator without whitespace (`E2025`). Ranges are consumed by choice guards `[...]`, cycles `@`, and slice/substring calls `x(...)` (see [Expressions — Range expressions](expressions.qmd#range-expressions-..-..)):
+Range operators sit at LBP 70, RBP 80. Endpoints must be adjacent to the operator without whitespace (`E2025`). Ranges are consumed by choice guards `[...]`, cycles `@`, and slice/substring calls `x(...)`:
 
 | Operator | Interval Kind | Math Notation | Lower Bound `a` | Upper Bound `b` | Choice Guard `[...]` | Cycle `@` | Slice / View `x(...)` |
 |---|---|---|---|---|---|---|---|
@@ -93,29 +91,118 @@ Range operators sit at LBP 70, RBP 80. Endpoints must be adjacent to the operato
 | `...b` / `..=b` | Upper-bounded closed | $(-\infty, b]$ | Unbounded | Closed ($x \le b$) | `x !> b` | `0` through `b` | Elements `[0, b]` |
 | `..` | Unbounded | $(-\infty, \infty)$ | Unbounded | Unbounded | `<+>` | Unbounded from `0` | Full view `[0, ?x)` |
 
-## Arithmetic, bitwise, shift, and logical operators
+## Arithmetic, bitwise, shift, logical, and map operators
 
-| Category | Operators | Operand Types | Result Type & Notes |
+| Category | Operators | Operand Types | Result Type & Semantics |
 |---|---|---|---|
-| Arithmetic | `+` `-` `*` `/` `%` | Numeric (`Int`, `Float`, `i8`..`u64`, `f32`, SIMD vectors) | Same numeric type (`+` also concatenates `String` and `Rune`) |
+| Arithmetic | `+` `-` `*` `/` `%` | Numeric (`Int`, `Float`, `i8`..`u64`, `f32`, SIMD vectors) | Same numeric type (`+` also concatenates `String`, `Rune`, and `Builder`) |
 | Bitwise | `.|.` `.^.` `.&.` `.!.` | Integerish (`Int`, `i8`..`u64`, integer SIMD vectors) | Same integer type (`.!.` is unary bitwise NOT) |
-| Bit shift | `.<.` `.>.` | Integerish | Left shift (`.<.`) and zero-fill/logical or signed right shift (`.>.`); sections infer `Int => Int` |
+| Bit shift | `.<.` `.>.` | Integerish | Left shift (`.<.`) and right shift (`.>.`); sections infer `Int => Int` |
 | Logical | `&&` `||` | `<>` (Flag) or compatible heap ramifications | Short-circuiting AND / OR |
-| Map access | `m ^ k`<br>`m ^? k`<br>`m ^- k` | Map `K ^ V`, key `K` | `^`: `< V | >` lookup (`m ^ k = v` inserts)<br>`^?`: `<>` key existence check<br>`^-`: `<>` key removal |
+| Map access | `m ^ k`<br>`m ^? k`<br>`m ^- k` | Map `K ^ V`, key `K` | `^`: `< V | Error >` lookup (`m ^ k = v` inserts)<br>`^?`: `<>` key existence check<br>`^-`: `<>` key removal |
 
-## Type-directed and postfix operators
+## Operator sections and field-accessor sections
 
-| Form | Meaning |
-|---|---|
-| `!flag` | Flag negation (`<>` only; emits `E3008` on other types) |
-| `+builder` | Freeze a `Builder` into an immutable `String` in-place (no space after `+`) |
-| `&buffer` / `&string` | Adjacent unary buffer/data address (`Addr`) for FFI (no space after `&`) |
-| `?value` | Byte, element, entry, field, or variant count (`?s`, `?b`, `?a`, `?m`, `?T`) |
-| `??string` | UTF-8 Unicode codepoint count |
-| `++value` | Deep arena copy of `String`, `Builder`, record, slice, or growable array |
-| `result!!` | Unwrap positive ram payload or abort |
-| `result--!` | Unwrap positive ram payload or early-return negative ram from enclosing function |
-| `~~lvalue` | Two-way state binding lens record `(get = !=> ..., set = v => ...)` |
-| `expr {N}` | Repeat `expr` `N` times into a homogeneous record `(T * N)` |
-| `@[addr T]` | Volatile typed memory load (`@[addr] = val` for store; `@[addr T] = val` is an error) |
-| `#size Type` | Compile-time byte size of `Type` |
+An **operator section** writes a 1-argument function `value => value op rhs` by omitting the left operand of a supported binary operator. A **field-accessor section** writes a 1-argument projection `r => r.field` using a leading dot inside parentheses.
+
+### Section syntax and rules
+
+| Section Form | Syntax | Desugaring | Rules & Diagnostics |
+|---|---|---|---|
+| **Additive section** | `(+ rhs)`, `(- rhs)` | `_ => _ + rhs`, `_ => _ - rhs` | Mandatory space after operator (`-3` is negative literal; `+b` is Builder freeze) |
+| **Multiplicative section** | `(* rhs)`, `(/ rhs)`, `(% rhs)` | `_ => _ * rhs`, `_ => _ / rhs`, `_ => _ % rhs` | RHS binds with RBP 130 (`* 2 + 3` $\equiv$ `_ => _ * (2 + 3)`) |
+| **Comparison section** | `(< rhs)`, `(> rhs)`, `(== rhs)` | `_ => _ < rhs`, `_ => _ > rhs`, `_ => _ == rhs` | Missing space (`>3`) emits `E2031`. `!=`, `!<`, `!>` do **not** form sections; use `(_ != rhs)` |
+| **Shift section** | `(.<. rhs)`, `(.>. rhs)` | `_ => _ .<. rhs`, `_ => _ .>. rhs` | Automatically infers `Int => Int` when unannotated |
+| **Bitwise section** | `(.&. rhs)`, `(.^. rhs)`, `(.|. rhs)` | `_ => _ .&. rhs`, etc. | Since bitwise LBP < 130, parenthesize bitwise RHS inside arithmetic sections (`+ (3 .&. 1)`) |
+| **Excluded operators** | `||`, `&&`, `$`, `$>`, `$>>`, `!=`, `!<`, `!>` | — | Do not form sections; write `(_ != 0)` or `x => ...` |
+| **Field-accessor section** | `(.field)`<br>`(.0)`<br>`(.outer.inner)` | `r => r.field`<br>`r => r.0`<br>`r => r.outer.inner` | Must be parenthesized (`(.)` or bare `.field` emits `E2064`). Uses a fresh internal parameter, so it never shadows an enclosing `_` |
+
+```{.dva .run}
+#use io
+#use fp
+
+#type User (name: String, age: Int)
+
+double = * 2
+shl1 = .<. 1
+get_age: User => Int
+get_age = (.age)
+
+xs = Int{}
+xs += 3
+xs += 5
+mapped = fp::map(double, xs)
+
+io::out $ shl1(mapped(0)!!)                 // 12
+io::out $ get_age(User("Alice", 30))        // 30
+```
+
+```{.dva expected-error="E2031"}
+f = >3
+```
+
+```{.dva expected-error="E2064"}
+x = (.)
+```
+
+### Section evaluation by syntactic context
+
+| Context | Example | Behavior |
+|---|---|---|
+| **Direct binding / call / pipeline** | `f = * 2; 5 $> (* 2) $> (+ 1)` | Evaluates RHS each time the section is called |
+| **Choice predicate guard** | `x [< 0] "neg" [> 0] "pos" | "zero"` | Applies predicate section to scrutinee `x` |
+| **Bare ram payload branch** | `opt | (+ 2) | 0` / `opt | (.name) | ""` | Applies section directly to the unwrapped slot payload |
+| **Enum payload branch** | `box [Item] (+ 2) | 0` | Applies section directly to variant payload (`E3084` on payload-free variant) |
+| **Ordinary value/predicate branch** | `mode [> 0] (* 2) | (+ 1)` | Returns the section **as a function value** (`Int => Int`) without applying to `mode` |
+| **Ram bind (`$>>`)** | `opt $>> (x => <+ x + 1 +>)` | Continuation must return a ramification; `opt $>> (+ 1)` emits `E3091` |
+
+```{.dva expected-error="E3091"}
+#type Option < Int | >
+some = Option(<+ 7 +>)
+res = some $>> (+ 2)
+```
+
+## Implicit underscore (`_`) and cycle index (`_i`)
+
+The exact identifier `_` has context-dependent implicit roles, governed by strict static scoping rules:
+
+| Context | Syntax | Meaning of `_` / `_i` | Diagnostic on Misuse |
+|---|---|---|---|
+| **Grouped implicit lambda** | `(_ * 2)`, `(10 - _)`, `((a = _, b = 1))` | Innermost enclosing `(...)` group containing a free `_` becomes a 1-arg function (`_` repeated inside the same group refers to the same single parameter) | — |
+| **Operator section** | `(* 2)`, `(* _)` | Implicit left operand (`* _` $\equiv$ `(_ * _)`) | `E2031` if space omitted |
+| **Headless choice / guard** | `[< 0] -1 | 1`, `['a'...'z']` | Wraps choice/guard into a 1-arg function over `_` (outside statement `@` body) | `E3003` if omitted subject has no `_` |
+| **Implicit cycle body** | `10..12 @ io::out(_ + _i)` | `_` is current element/byte/map-value; `_i` is `0`-based index (or map key `K` in `m @`). Saved/restored across nested cycles; does not survive cycle exit | `E3004`: reading `_` or `_i` after cycle exit |
+| **Ram payload branch** | `r | _ + 1 | 0` | `_` is the selected slot's payload (`E4011` fatal abort if `_` extracts negative `Error` slot on failure) | `E3004`: `_` on unit/absence slot (`<Int|>` 2nd branch) |
+| **Enum payload branch** | `e [Item] _ + 1 | 0` | `_` is the matched variant's payload | `E3004`: `_` on unit variant (`[Empty] _`) |
+| **Ordinary guarded branch** | `x [> 0] x + 1 | 0` | Does **not** bind `_` in the branch body (preserves function-valued branches) | `E3004` on `7 [> 0] _ + 1 | 0` |
+| **Structured pattern wildcard** | `p [(a = _, b = 20)] ...` | Matches component without binding a variable (`[Item _]` is rejected) | `E2109`: redundant `_` in `[Item _]` |
+| **Explicit parameter** | `_ => expr` / `a, _ => expr` | **Forbidden** across all lambdas, functions, cycles, and `#!` params | `E2040`: explicit `_` parameter |
+| **Assignment target** | `_ = expr` / `_ := expr` | **Forbidden** | `E2044`: cannot assign to `_` |
+| **Unbound value reference** | `x = _` | **Forbidden** outside an active implicit binding scope | `E3004`: `Undefined: _` |
+
+```{.dva .run}
+#use io
+
+square = (_ * _)
+sub10 = (10 - _)
+io::out $ square(4) + sub10(3)   // 23
+
+#type Scores String ^ Int
+m = Scores()
+m ^ "alice" = 95
+m @
+   io::out $ (_i, _)                // ("alice", 95)
+```
+
+```{.dva expected-error="E2044"}
+_ = 7
+```
+
+```{.dva expected-error="E2040"}
+f = _ => 42
+```
+
+```{.dva expected-error="E3004"}
+x: Int
+x = _
+```

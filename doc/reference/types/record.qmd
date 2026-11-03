@@ -3,145 +3,99 @@ meta:
   audience: "Edva developers"
   status: "current reference"
   audited: "51081a6"
-  evidence: "`src/codegen/types.dva`, `src/codegen/expr.dva`, `GRAMMAR.md` §2.5"
+  evidence: "`src/parser.dva`, `src/annotate.dva`, `src/codegen/types.dva`, `src/codegen/match.dva`, `GRAMMAR.md`"
 ---
 
-# `Record`, tuples, and bitfields
+# Records, Tuples, Bitfields & Enums
 
-A `Record` in Edva is a product type grouping multiple values together. Records support named fields, positional fields (tuples), homogeneous repetitions, packed binary representations, and integer bitfields.
+Edva provides **records** for product types (structs, tuples, SIMD vectors, packed headers, and bitfields) and **enums** for nominal tagged unions with $\ge 2$ named variants.
 
-## Declaration styles
+## Product types: records, tuples, `#packed`, and bitfields
 
-Records are declared with `#type` followed by the field specifications:
+### Record declaration forms
 
-### 1. Named records
-```{.dva .run}
-#type Point (x: Int, y: Int)
+| Form | Syntax | Layout & Semantics | Diagnostic |
+|---|---|---|---|
+| **Named record** | `#type Point (x: Int, y: Int = 0)` | C-ABI aligned struct; fields may declare default values (`= expr`) | `E2015`: missing comma on same line |
+| **Multiline record** | `#type User`<br>`   id: Int`<br>`   name: String` | Indented or parenthesized multiline fields; newline separates aligned entries | — |
+| **Positional tuple** | `#type Pair (Int, String)`<br>`p = (10, "ok")` | Accessed via `.0`, `.1`, ... | — |
+| **Homogeneous / SIMD tuple** | `#type Vec4 (Float * 4)`<br>`v = 0.0 {4}` | Contiguous inline elements; supports `v(i)` indexing, `+`/`-`/`*`/`/` arithmetic, and `%` SIMD intrinsics | — |
+| **Packed record** | `#type Hdr #packed (a: u8, b: u32)` | Alignment `1`, zero interior or tail padding | — |
+| **Explicitly aligned record** | `#type Block #align 64 (data: u8 * 64)` | Power-of-two byte alignment `N`; `#size` tail-padded to multiple of `N` (combinable with `#packed`) | — |
+| **Bitfield record** | `#type Tcp #packed u16 (syn: <>, ack: <>, win: 14)` | Packs 1-bit `<>` flags (`<->` default) and integer bit widths into `u8`, `u16`, `u32`, or `u64` | `E2055`: bit sum exceeds backing width |
 
-// Multiline parenthesized form (aligned fields may omit commas)
-#type Foo (
-   bar: Int
-   baz: Float
-)
+### Record construction, access, and definite initialization
 
-// Multiline indentation form (without parentheses)
-#type User
-   id: Int
-   name: String
-   is_admin: <>
-```
-
-In multiline record, `#packed`, and bitfield declarations, a newline between entries aligned at the first entry's column acts as a separator (commas and trailing commas remain optional). Multiple entries on the same line always require commas (`E2015`), while deeper indentation continues the current field's type or default expression.
-
-### 2. Positional records (tuples)
-Positional records omit field names and are accessed by index:
-
-```{.dva .run}
-#type Pair (Int, String)
-#type Triple (Float, Float, Float)
-```
-
-### 3. Homogeneous repeated records
-Fixed-length arrays allocated inline as a single contiguous record:
+| Operation | Syntax | Semantics | Diagnostic |
+|---|---|---|---|
+| **Positional construction** | `Point(10, 20)` / `(10, 20)` | Initializes fields in declaration order | `E3084`: field type/count mismatch |
+| **Named construction** | `Point(y = 20, x = 10)` | Initializes by field name; omitted fields with defaults use their declared default value | — |
+| **Zero/default value** | `Point.zero` | Initializes all fields to `0` / `<->` / `""` or their declared `= default` expression | — |
+| **Forward declaration** | `p: Point` | Allocates uninitialized record storage; **every field must be written before being read** | `E3130`: reading uninitialized field |
+| **Field read / write** | `p.x`, `p.0`, `p.x = 5` | Reads or mutates named, positional, or bitfield slot in place | — |
+| **Field-accessor section** | `(.x)`, `(.0)`, `(.a.b)` | 1-argument projection function `r => r.x` | `E2064`: bare `(.)` |
+| **Structural equality** | `p1 == p2`, `p1 != p2` | Compares all fields recursively | `E3084`: if record contains fn field |
 
 ```{.dva .run}
-#type Matrix3x3 (Float * 9)   // 9 consecutive Floats
-#type MacAddress (u8 * 6)     // 6 consecutive bytes
-```
+#use io
 
-### 4. Packed and aligned records (`#packed`, `#align N`)
-Packed records disable interior and tail alignment padding, ensuring exact byte-level layout for binary network protocols, GPU vertex buffers, and file headers. Explicit power-of-two byte alignment can be specified with `#align N` (and combined with `#packed` in either order):
+#type Point (x: Int = 0, y: Int = 0)
+#type Flags #packed u8 (fin: <>, syn: <>, rest: 6)
 
-```{.dva .partial}
-#type EthernetHeader #packed (
-   dest_mac: u8 * 6,
-   src_mac:  u8 * 6,
-   ethertype: u16,
-)
-
-#type AlignedVec #align 16 (
-   x: f32, y: f32, z: f32, w: f32
-)
-
-#type CacheLineBlock #align 64 #packed (
-   flag: u8,
-   tag: u8
-)
-```
-
-### 5. Bitfields
-Bitfield records pack specific bit widths into a backing integer (`u8`, `u16`, `u32`, `u64`). The sum of all field widths must not exceed the backing integer's width (`E2055`). Fields specified with an integer width `N` have type `Int`; 1-bit boolean flag fields can be specified with `<>` (contributing 1 bit of width and having type `<>`, defaulting to `<->` when omitted in named construction):
-
-```{.dva .run}
-#type TcpFlags #packed u16 (
-   fin: <>, syn: <>, rst: <>, psh: <>,
-   ack: <>, urg: <>, ece: <>, cwr: <>,
-   ns:  <>, res: 7,
-)
-```
-
-## Construction and initialization
-
-Records can be instantiated via type constructors or positional literals:
-
-```{.dva .partial}
-// Named record instantiation
-pt = Point(10, 20)
-
-// Positional tuple literal
-entry = (42, "Status OK")
-
-// Homogeneous record
-mac = MacAddress(0x00, 0x1A, 0x2B, 0x3C, 0x4D, 0x5E)
-```
-
-### Strict field initialization
-When a record variable is declared with a forward annotation (`p: Point`), it is **not** zero-filled. Every field must be definitely written before any field is read:
-
-```{.dva .partial}
 p: Point
-p.x = 100
-// Reading p.y here would trigger compiler error E3130 (Uninitialized field)
-p.y = 200
-sum = p.x + p.y   // Valid: both fields definitely initialized
-```
+p.x = 10
+p.y = 20
 
-Attempting to read an uninitialized field produces a compile error:
+f' = Flags(fin = <->, syn = <+>, rest = 7)
+
+io::out $ (p.x + p.y, f'.syn, f'.rest, #size Flags)
+```
 
 ```{.dva expected-error="E3130"}
-// expected-error: E3130
 #type Point (x: Int, y: Int)
 p: Point
 p.x = 100
 bad = p.y
 ```
 
-## Operations
+## Sum types: nominal `Enum` (`< V1, V2(T) >`)
 
-### Field access
+Enums model nominal tagged unions of two or more uppercase variants, represented at runtime as a 16-byte `{ i64 tag, ptr payload }` pair (`#size Enum == 16`). Because payloads are arena pointers, recursive enums (`#type Expr < Lit(Int), Add(Expr, Expr) >`) have fixed 16-byte size without explicit box types.
 
-Fields are accessed using dot notation:
+### Enum declaration and construction rules
 
-```{.dva .partial}
-// Named access
-pt = Point(15, 30)
-x_coord = pt.x
+| Rule / Operation | Syntax | Specification | Diagnostic |
+|---|---|---|---|
+| **Declaration** | `#type Shape < Circle(Float), Rect(Float, Float), Dot >` | Requires $\ge 2$ unique uppercase variant labels separated by commas or aligned newlines | `E2070`: $< 2$ variants<br>`E2012`: lowercase label<br>`E2074`: duplicate label |
+| **Unit variant construction** | `Shape(Dot)`, `Dot`, `Shape::Dot` | Bare `Dot` is bound in scope if unambiguous; use `Shape::Dot` when two enums share a label | `E3105`: ambiguous unqualified label<br>`E3098`: payload given to unit variant |
+| **Payload construction** | `Shape(Circle, 5.0)`<br>`Shape(Rect, (3.0, 4.0))` | Type name called with variant label first, followed by payload argument(s) | `E3096`: unknown variant<br>`E3097`: missing payload<br>`E3099`: wrong payload type |
+| **Structural equality** | `a == b`, `a != b` | Compares variant tags first, then payloads recursively (`<`, `>` ordering rejected) | `E3084` if fn payload<br>`E3127` on `<` / `>` |
 
-// Positional access
-pair = (10, "Alpha")
-num = pair.0
-str = pair.1
+### Enum pattern matching and reflection
 
-// Bitfield access (automatically generates shift and mask operations)
-flags: TcpFlags
-flags.syn = 1
-is_ack = flags.ack
+| Pattern / Operation | Syntax | Semantics | Diagnostic |
+|---|---|---|---|
+| **Unit / ignore-payload guard** | `[Dot]` / `[Dot, Circle]` | Matches tag(s); ignores any payload (`[Circle _]` is forbidden; write `[Circle]`) | `E2109`: redundant `_` in `[V _]` |
+| **Payload binder guard** | `[Circle r]` | Matches `Circle` and binds payload to `r` (and implicit `_` in branch body) | — |
+| **Deep nested pattern** | `[Add (Lit a, Neg (Lit b))]` | Recursively destructures nested enum and tuple/record payloads in a single guard | — |
+| **Exhaustiveness** | All variants covered or trailing `|` | Required when choice result is used as a value | `E3102`: uncovered variants |
+| **Compile-time count & label** | `?T`, `T.(i)` (with `#! T: Type`) | `?T` yields variant count; `T.(i)` yields `i`-th variant name (`String`) | `E3170`: non-constant `i` |
+
+```{.dva .run}
+#use io
+
+#type Expr < Lit(Int), Neg(Expr), Add(Expr, Expr) >
+
+eval: Expr => Int
+eval = e =>
+   e
+      [Lit n]              n
+      [Neg (Lit n)]        0 - n
+      [Neg x]              0 - eval(x)
+      [Add (Lit 0, rhs)]   eval(rhs)
+      [Add (lhs, rhs)]     eval(lhs) + eval(rhs)
+      |                    0
+
+e = Expr(Add, (Expr(Lit, 10), Expr(Neg, Expr(Lit, 3))))
+io::out $ eval(e)   // 7
 ```
-
-## Memory layout and ABI
-
-- **Standard records**: Follow the platform C ABI struct layout (fields aligned to natural boundaries, tail-padded to struct alignment). They map 1:1 to C `struct` types across `#foreign` functions.
-- **Homogeneous named-field records**: Records whose fields all share the same numeric type (e.g., `(r: Float, g: Float, b: Float, a: Float)` or `(x: Float, y: Float, z: Float)`) also support positional indexing (`v(i)`) and native SIMD vector operations (`+`, `-`, `*`, `/`, `%dot`).
-- **Packed records (`#packed`)**: Have alignment 1 (unless overridden by `#align N`), with zero padding between fields.
-- **Explicit alignment (`#align N`)**: Forces minimum power-of-two alignment `N` bytes and tail-pads `#size T` to a multiple of `N`. Query a type's alignment at compile time with `#align T` or `#align T`.
-- **Bitfields**: Occupy exactly the width of the backing integer type.

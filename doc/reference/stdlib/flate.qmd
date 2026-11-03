@@ -31,8 +31,8 @@ io::out $ (flate::zlib_decompress(z) | s => s | "")
 | Symbol / Function | Signature | Description |
 |---|---|---|
 | `flate::deflate_raw(data)` | `String => String` | Compresses `data` into a raw RFC 1951 DEFLATE bitstream |
-| `flate::inflate_raw(data)` | `String => < String \| Error >` | Decompresses a raw RFC 1951 DEFLATE bitstream (`BTYPE=00/01/10`) |
+| `flate::inflate_raw(data)` | `String => < String | Error >` | Decompresses a raw RFC 1951 DEFLATE bitstream (`BTYPE=00/01/10`) |
 | `flate::zlib_compress(data)` | `String => String` | Compresses `data` into an RFC 1950 Zlib stream (header + DEFLATE + Adler-32) |
-| `flate::zlib_decompress(data)` | `String => < String \| Error >` | Decompresses an RFC 1950 Zlib stream and verifies its Adler-32 trailer |
+| `flate::zlib_decompress(data)` | `String => < String | Error >` | Decompresses an RFC 1950 Zlib stream and verifies its Adler-32 trailer |
 | `flate::gzip_compress(data)` | `String => String` | Compresses `data` into an RFC 1952 Gzip stream (10B header + DEFLATE + CRC-32 + ISIZE) |
-| `flate::gzip_decompress(data)` | `String => < String \| Error >` | Decompresses an RFC 1952 Gzip stream and verifies its CRC-32 and ISIZE trailers |
+| `flate::gzip_decompress(data)` | `String => < String | Error >` | Decompresses an RFC 1952 Gzip stream and verifies its CRC-32 and ISIZE trailers |

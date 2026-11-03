@@ -13,49 +13,23 @@ book:
     collapse-level: 1
   chapters:
     - index.qmd
-    - part: "Getting Started"
-      chapters:
-        - start/install.qmd
-        - start/quickstart.qmd
-        - start/tour.qmd
-    - part: reference/language/index.qmd
-      chapters:
-        - reference/language/lexical.qmd
-        - reference/language/declarations.qmd
-        - reference/language/expressions.qmd
-        - reference/language/operators.qmd
-        - reference/language/operator-sections.qmd
-        - reference/language/underscore.qmd
-        - reference/language/intrinsics.qmd
-        - reference/language/runtime.qmd
-    - part: reference/types/index.qmd
-      chapters:
-        - reference/types/int.qmd
-        - reference/types/float.qmd
-        - reference/types/rune.qmd
-        - reference/types/string.qmd
-        - reference/types/builder.qmd
-        - reference/types/ram.qmd
-        - reference/types/enum.qmd
-        - reference/types/record.qmd
-        - reference/types/array.qmd
-        - reference/types/map.qmd
-        - reference/types/addr.qmd
-        - reference/types/functions.qmd
-        - reference/types/error.qmd
-        - reference/types/type.qmd
-        - reference/types/unit.qmd
-    - part: "Guides"
-      chapters:
-        - guide/bindings-and-modules.qmd
-        - guide/functions-and-closures.qmd
-        - guide/choices-and-cycles.qmd
-        - guide/ramifications.qmd
-        - guide/data-and-memory.qmd
-        - guide/errors-and-io.qmd
-        - guide/ffi-and-targets.qmd
-        - guide/metaprogramming.qmd
-        - guide/packages.qmd
+    - start/quickstart.qmd
+    - reference/language/lexical.qmd
+    - reference/language/declarations.qmd
+    - reference/language/expressions.qmd
+    - reference/language/operators.qmd
+    - reference/language/intrinsics.qmd
+    - reference/types/index.qmd
+    - reference/types/string.qmd
+    - reference/types/ram.qmd
+    - reference/types/record.qmd
+    - reference/types/array.qmd
+    - reference/types/functions.qmd
+    - reference/types/type.qmd
+    - reference/types/addr.qmd
+    - reference/edva-cli.qmd
+    - reference/diagnostics.qmd
+    - compiler/architecture.qmd
     - part: reference/stdlib/index.qmd
       chapters:
         - reference/stdlib/ascii.qmd
@@ -102,19 +76,6 @@ book:
         - reference/stdlib/uring.qmd
         - reference/stdlib/url.qmd
         - reference/stdlib/utf.qmd
-    - part: "Tooling & Diagnostics"
-      chapters:
-        - reference/edva-cli.qmd
-        - reference/diagnostics.qmd
-    - part: "Compiler Internals"
-      chapters:
-        - compiler/architecture.qmd
-        - compiler/testing.qmd
-        - compiler/bootstrap.qmd
-        - compiler/targets.qmd
-    - part: "Contributing"
-      chapters:
-        - contributing/documentation.qmd
 
 format:
   html:
@@ -130,4 +91,3 @@ format:
       - page-meta.lua
     syntax-definitions:
       - dva.xml
-

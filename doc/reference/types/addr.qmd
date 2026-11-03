@@ -3,154 +3,81 @@ meta:
   audience: "Edva systems developers"
   status: "current reference"
   audited: "51081a6"
-  evidence: "`src/codegen/types.dva`, `src/codegen/expr.dva`, `src/layout.dva`, `GRAMMAR.md` §3.1"
+  evidence: "`src/codegen/types.dva`, `src/codegen/expr.dva`, `src/codegen/runtime.dva`, `src/layout.dva`, `std/mem.dva`, `std/libc.dva`"
 ---
 
-# `Addr` and raw pointers
+# Memory, Arenas, `Addr` & FFI
 
-The `Addr` type (also recognized as `ptr`) represents an untyped, raw memory address.
-`Addr` is architecture-dependent: it is an 8-byte value on 64-bit systems and a 4-byte value on
-32-bit targets (such as `wasm32`), mapping directly to LLVM's unified `ptr` type.
+Edva executes without a garbage collector or runtime type headers. Memory is managed deterministically through stack values, scoped bump arenas, explicit `Builder` buffers, and raw `Addr` pointers for low-level systems and C FFI interoperability.
 
-## Declaration and bindings
+## Runtime value and memory model
 
-Local bindings in Edva are inferred directly from their right-hand side. Inline type annotations (`p: Addr = ...`) are **illegal syntax**. When an explicit type signature is desired, it must be declared on a separate preceding line:
-
-```{.dva .run}
-// Inferred binding (standard idiom)
-p = Addr(0)                  // Null pointer
-handle = Addr(0x7fff0000)
-
-// Explicit signature preceding binding
-p_explicit: Addr
-p_explicit = Addr(0)
-```
-
-## Obtaining pointers (`&`)
-
-The unary prefix address-of operator `&` extracts the underlying memory pointer of a value:
+| Category | Types | Allocation & Passing Model |
+|---|---|---|
+| **Immediate register values** | `Int`, `i8`..`u64`, `Float`, `f32`, `Rune`, `<>`, `Addr`, `()` | Held directly in CPU/SIMD registers and stack slots; zero heap allocation |
+| **Unboxed descriptors / pairs** | `String` (16B), `T[]` (16B), `A => B` (16B), `RamPP` `{ i1, i64 }` (16B), `Enum` `{ i64, ptr }` (16B) | Descriptors pass by value in registers; pointed-to payload bytes live in the active arena |
+| **Growable arena containers** | `Builder` (24B), `T{}` (24B), `K ^ V` (`ptr`) | Backing buffers allocate and double in the active arena |
+| **Deep copy (`++x`)** | `String`, `Builder`, `Record`, `T{}`, `T[]` | Allocates a fresh copy in the current arena (use before arena scope exit to promote values) |
+| **State binding lens (`~~lvalue`)** | Mutable variable `x'`, field `r.f`, array slot `xs(i)`, map slot `m ^ k` | Constructs a two-way accessor record `(get: () => T, set: T => ())` |
 
 ```{.dva .run}
-// String data pointer
-str = "Static data"
-raw_str_ptr = &str
+#use io
 
-// Builder writable buffer address
-b = {64}
-b += "Bytes"
-raw_buf_ptr = &b
+probe: () => Int
+probe = !=>
+   count' = 10
+   lens = ~~count'
+   lens.set(lens.get! + 5)
+   count'
 
-// Record and tuple memory address
-pt = (x = 10, y = 20)
-raw_pt_ptr = &pt
+io::out $ probe!   // 15
 ```
 
-### Scalar out-parameters in call arguments
+## Raw pointers (`Addr`), `&`, and volatile memory (`@[...]`)
 
-Unary `&` on scalar local variables (`Int`, `Float`, `i8`..`u64`, `Rune`, `Flag`) is permitted strictly in **downward call-argument position** to support C FFI out-parameters and native pointer arguments:
+`Addr` (alias `ptr`) is an untyped raw memory address (8 bytes on 64-bit targets, 4 bytes on 32-bit targets, lowered to LLVM `ptr`).
 
-```{.dva .partial}
-// Valid: passing scalar address as a function/FFI call argument
-len' = 16i32
-libc::getsockname(fd, &addr, &len')
-
-// Forbidden: escaping scalar stack addresses outside call arguments is rejected at compile time (E3078)
-// p = &len'  // E3078: Unary '&' on scalar variable is only valid in function call argument position.
-```
-
-## Conversions and casting
-
-Conversions between `Addr` and integerish types are explicit and bidirectional. `Addr(...)` casts are **strictly restricted to integerish types** (`Int`, `i8`..`i64`, `u8`..`u64`) and pointers. Casting records, arrays, slices, builders, or functions to `Addr(...)` is rejected with `E3084`: use `&` to obtain their addresses instead.
+| Operation | Syntax | Operand / Result Types | Rules & Diagnostics |
+|---|---|---|---|
+| **Null / integer cast** | `Addr(0)`, `Addr(0x1000)`, `Int(p)` | `Int` (`i8`..`u64`) $\leftrightarrow$ `Addr` | Bidirectional between integerish scalars and `Addr`. Casting records/arrays/functions via `Addr(rec)` emits `E3084` (use `&rec`) |
+| **String / Builder data ptr** | `&s`, `&b` | `String` / `Builder` $\to$ `Addr` | No space after `&`. `&s` points to NUL-terminated UTF-8 bytes; `&b` points to writable buffer |
+| **Composite address** | `&rec` | `Record` / tuple $\to$ `Addr` | Pointer to record storage |
+| **Scalar out-parameter** | `libc::fn(fd, &len')` | Scalar variable $\to$ `Addr` | Permitted **strictly in downward call-argument position**; storing `p = &len'` emits `E3078` |
+| **Pointer arithmetic** | `p + offset`, `p - offset` | `Addr`, `Int` $\to$ `Addr` | Byte-offset pointer arithmetic |
+| **Pointer comparison** | `p1 == p2`, `p1 < p2`, `p1 !< p2` | `Addr`, `Addr` $\to$ `<>` | Unsigned address comparison |
+| **Provenance bitmask** | `%ptrmask(p, mask)` | `Addr`, `Int` $\to$ `Addr` | Masks pointer bits (e.g. `0b1{48}`) while preserving LLVM pointer provenance |
+| **Volatile typed load** | `@[addr T]` | `Addr`, `Type` $\to$ `T` | Reads value of type `T` from `addr` (or zero-copy record view when `T` is a `#packed` record) |
+| **Volatile untyped store** | `@[addr] = val` | `Addr`, `val: T` $\to$ `()` | Stores `val` at `addr` using the width of `val`. Writing `@[addr T] = val` emits `E2093` |
 
 ```{.dva .run}
-// Integer to pointer (allowed)
-base_addr = Addr(0x1000)
-null_ptr = Addr(0)
+#use io
 
-// Pointer to integer (allowed)
-numeric_val = Int(base_addr)
-
-// Composites to pointer: use '&', not Addr(...)
-rec = (x = 1, y = 2)
-rec_ptr = &rec    // OK
-// Addr(rec)      // E3084: Cannot cast '(x: Int, y: Int)' to 'Addr'
+b = {16}
+@[&b] = 69u8
+@[&b + 1] = 100u8
+@[&b + 2] = 118u8
+@[&b + 3] = 97u8
+?b = 4
+io::out $ +b   // Edva
 ```
 
-## Operations
+## C FFI (`#foreign`, `#export`) and ABI conventions
 
-### Pointer arithmetic
+| FFI Feature | Syntax & Convention | Specification |
+|---|---|---|
+| **Import C symbol** | `#foreign "c" open: Addr, i32, i32 => i32`<br>`#foreign "m" hypot: Float, Float => Float` | Links against `libc`, `libm`, or native libraries declared in `edva.ccl` (`native.libs` / `native.pkg-config`); explicit type signature required (`E2060`) |
+| **Export C symbol** | `#export compute: i32, i32 => i32` | Emits unmangled symbol with platform C calling convention |
+| **C string passing** | `libc::puts(&s)` | Whole `String` values guarantee `data[len] == '\0'`; slices `s(a..b)` share interior bytes and must be copied (`++sub`) if a trailing `\0` is required by C |
+| **C buffer reads** | `n = libc::read(fd, &b, 1024); ?b = n` | Pass `&b` for writable buffer pointer, then update `?b = n` (`0 <= n <= cap`, `E4008`) |
+| **C struct layout** | `#type Stat (...)` / `#type Hdr #packed (...)` | Named records match platform C `struct` ABI layout; `#packed` and `#align N` match `__attribute__((packed, aligned(N)))` |
 
-Raw offsets can be added or subtracted directly:
+## Supported target triples and architecture rules
 
-```{.dva .run}
-start = Addr(0x2000)
-offset = 16
+Pass `-t <triple>` (or `--target <triple>`) on the CLI or set `target = <triple>` under `targets =` in `edva.ccl`:
 
-next_page = start + offset    // Addr(0x2010)
-```
-
-### Pointer comparison
-
-Pointers can be compared for equality and ordering:
-
-```{.dva .run}
-p1 = Addr(0x100)
-p2 = Addr(0x200)
-
-is_null = p1 == Addr(0)       // <->
-is_less = p1 < p2             // <+>
-```
-
-### Pointer masking (`%ptrmask`)
-
-To mask off low-order alignment bits or high-order generational tags while preserving LLVM pointer provenance and alias analysis metadata, use the `%ptrmask(ptr, mask)` intrinsic:
-
-```{.dva .run}
-p = Addr(0x7fff0040)
-
-// Clear top 16 tag bits before passing an address to OS syscalls:
-canonical_ptr = %ptrmask(p, 0b1{48})
-
-// Align pointer down to 64-byte boundary:
-aligned_ptr = %ptrmask(p, 0 - 64)
-```
-
-### Volatile memory load and store (`@[...]`)
-
-Direct memory reading and writing is performed using volatile bracket expressions:
-
-- **Typed load (`@[addr T]`)**: Reads a volatile value of type `T` from `addr`:
-  ```dva partial
-  val = @[ptr Int]
-  byte = @[ptr u8]
-  ```
-- **Untyped store (`@[addr] = val`)**: Stores `val` into memory at `addr`. The LHS derives its target type and write width directly from the RHS:
-  ```dva partial
-  @[ptr] = 42                 // Stores 64-bit Int
-  @[ptr] = u8(255)            // Stores 8-bit unsigned byte
-  @[ptr] = 1i32               // Stores 32-bit integer
-  ```
-
-> [!IMPORTANT]
-> Writing `@[addr T] = val` is a compile-time error (`E2093: Cannot assign to a typed load; write through the untyped '@[addr]' form instead`).
-> The LHS of an assignment must always be the untyped form `@[addr] = val`, deriving its storage type and width from the RHS value.
-
-## Interacting with C FFI and standard library
-
-`Addr` is commonly used when declaring external foreign functions (`#foreign`) and interacting with low-level runtime modules like `#use @libc` or `#use @mem`:
-
-```{.dva .partial}
-#use @libc
-#use @mem
-
-// Allocate raw bytes via standard allocator
-size = 256
-raw_mem = libc::malloc(size)
-
-// Free allocated memory
-libc::free(raw_mem)
-```
-
-## Safety considerations
-
-`Addr` bypasses Edva's compile-time memory safety checks. Dereferencing an arbitrary address or performing unchecked pointer arithmetic can lead to segmentation faults or memory corruption. In general application logic, prefer type-safe containers such as [`Record`](record.qmd), [`Array`](array.qmd), or [`Builder`](builder.qmd).
+| Target Triple | Architecture | `Int` Width | `Addr` Width | Runtime Notes |
+|---|---|---|---|---|
+| `x86_64-unknown-linux-gnu` | x86-64 Linux (default host) | 64-bit (`i64`) | 64-bit (8B) | Full POSIX / `libc` / `io_uring` support |
+| `aarch64-linux-gnu` | ARM64 Linux | 64-bit (`i64`) | 64-bit (8B) | Requires AArch64 sysroot/linker when cross-linking |
+| `wasm32-unknown-unknown` | WebAssembly (freestanding) | 64-bit (`i64`) | 32-bit (4B) | Exports `#export` functions directly; `--cflag -msimd128` enables SIMD128 |
+| `wasm32-wasi` | WebAssembly System Interface | 64-bit (`i64`) | 32-bit (4B) | Hosted WASI I/O and filesystem |

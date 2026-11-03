@@ -3,68 +3,90 @@ meta:
   audience: "Edva users"
   status: "current reference"
   audited: "8b8cb19"
-  evidence: "`GRAMMAR.md` §1, `src/lexer.dva`, `tests/pass/`"
+  evidence: "`src/lexer.dva`, `src/parser.dva`, `GRAMMAR.md`, `tests/pass/104_builder_literal.dva`"
 ---
 
-# Lexical structure
+# Lexical Structure & Literals
 
-Edva source is UTF-8 text with the official `.dva` file extension.
-Identifiers follow UAX31: they begin with an alphabetic Unicode character or
-`_`, then may contain identifier characters and `_`. The language has no
-reserved words; control flow and declarations are formed with operators and
-`#` directives.
+## Source encoding, comments, and layout
 
-## Lines and indentation
+| Lexical Element | Specification | Diagnostic |
+|---|---|---|
+| **File suffix & encoding** | UTF-8 text in `.dva` source files | — |
+| **Comments** | `//` to end of line; discarded before token stream construction | — |
+| **Significant indentation** | Spaces only (no tabs). Indentation deeper than the current block margin opens a block or continues an expression; returning to an outer column closes open blocks | `E1011`: tab in indentation<br>`E2017`: dedent to unaligned column |
+| **Line continuation** | Lines inside `(...)`, `[...]`, `{...}`, or `<...>`, or following a trailing binary operator / `,` / `=>` / `|`, continue the current expression without emitting statement breaks | — |
+| **Multiline column alignment** | Aligned items in multiline `#type` record/enum blocks are separated by newlines; multiple items on a single line require commas | `E2015`: missing comma on same line |
+| **Same-line sequence (`;`)** | `a; b` sequences statements on a single line (LBP 20, RBP 30) and yields the last expression's value | — |
 
-Indentation starts and ends blocks. Use either spaces everywhere or tabs
-everywhere within a source file; mixing them is a syntax error. An indented
-block is equivalent to semicolon-separated statements, but a semicolon at the
-end of a source line is invalid. Keep lines to 100 characters or fewer.
+## Identifiers, primes, and directives
+
+Edva has **no reserved keywords**. Identifiers, types, and directives are distinguished by lexical form:
+
+| Category | Lexical Form | Rules & Semantics | Diagnostic |
+|---|---|---|---|
+| **Value / function identifier** | `[a-z_][a-zA-Z0-9_]*` | Lowercase or `_`-prefixed ASCII/Unicode name | — |
+| **Primed identifier** | `name'`, `name''`, ... | Declares a mutable/rebindable variable or stepped SSA version (`x' = x + 1`). Once primed, reassignments may write `x' = v` or `x = v` | `E3033`: reassigning unprimed `x` |
+| **Exact underscore (`_`)** | `_` | Implicit lambda parameter `(_ * 2)`, operator section parameter `(* 2)`, implicit cycle item, bare ram/variant payload, or pattern wildcard `(a, _)` | `E2040`: explicit `_ =>`<br>`E2044`: `_ = expr`<br>`E3004`: unbound `_` |
+| **Cycle index (`_i`)** | `_i` | Implicit `0`-based index in count/range/string/array cycles, or key in map cycles (`m @` block); scoped strictly to the cycle body | `E3004`: reading `_i` after cycle exit |
+| **Nominal type / variant** | `[A-Z][a-zA-Z0-9_]*` | Built-in types (`Int`, `Float`, `Rune`, `String`, `Builder`, `Addr`, `Error`, `Type`), `#type` names, and enum variant labels | `E2012`: lowercase enum variant |
+| **Custom operator name** | `(op_chars)` | Symbolic operator function declared/referenced in parentheses, e.g. `(+++): Int, Int => Int` | — |
+| **Compiler directive** | `#name` / `#!` | `#type`, `#use`, `#public` (`#pub`), `#private` (`#priv`), `#foreign`, `#export`, `#packed`, `#align`, `#size`, `#!` | `E1015`: unknown directive |
+| **Compiler intrinsic** | `%name(...)` | Direct LLVM-lowered operation (`%min`, `%sqrt`, `%popcount`, `%memcpy`, `%to_str`, etc.); must be called with `(...)` | `E3100`: bare `%name` without call |
 
 ```{.dva .run}
-check = value =>
-   value > 0
-      | "positive"
-      | "not positive"
-```
+#use io
 
-Line comments begin with `//`; block comments use `/*` and `*/`.
+total = 10
+total' = total + 5
+total'' = total' * 2
+io::out $ total''
+```
 
 ## Literals
 
-| Kind | Examples | Notes |
-|---|---|---|
-| integer | `42`, `0xFF`, `0b101`, `0b1{4}`, `10{6}`, `5i16` | repeating syntax `{N}`, explicit widths use suffix |
-| float | `0.5`, `1.0`, `3.0e4` | digits are required on both sides of `.` |
-| rune | `'a'`, `'λ'`, `'\n'` | one Unicode scalar value |
-| string | `"text\n"`, `"\n  text\n"` | escaped UTF-8 string with `${expr}` interpolation; multiline when starting with `"\n` |
+### Numeric, rune, and builder literals
 
-`.5`, `1.`, and `3.e4` are not float literals. Unsuffixed integer literals
-default to `Int` unless constrained by static type context or an explicit
-suffix (`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`).
-`#pragma integer <type>` and `#pragma float <type>` change the default integer
-or float literal type for the rest of the file; `#pragma integer default` and
-`#pragma float default` restore standard `Int` and `Float` default modes.
+| Literal Kind | Syntax Examples | Type | Lexical & Semantic Rules | Diagnostic |
+|---|---|---|---|---|
+| **Decimal integer** | `0`, `42`, `-7`, `10{6}` | `Int` (`i64`) | Signed 64-bit integer. `{N}` repeats preceding digit `N` times (`10{6}` $\equiv$ `1000000`). Underscore separators (`1_000`) are forbidden | `E1019`: `_` in numeric literal |
+| **Radix integer** | `0xDEAD`, `0b1011`, `0o755`, `0b1{48}` | `Int` (`i64`) | Hexadecimal (`0x`), binary (`0b`), octal (`0o`), with optional `{N}` bit/digit repetition | `E1004` / `E1005`: invalid radix digit |
+| **Sized integer** | `127i8`, `8080u16`, `1u32`, `9i64`, `9u64` | `i8`..`i64`, `u8`..`u64` | Explicit fixed-width signed or unsigned integer literal | — |
+| **Floating-point** | `3.14`, `1.0e-9`, `-2.5`, `1.25f32` | `Float` (`f64`) or `f32` | Requires decimal point or exponent (`e`/`E`); `f32` suffix yields 32-bit float | `E1019`: `_` in float literal |
+| **Rune** | `'a'`, `'λ'`, `'🦀'`, `'\n'`, `'\x1b'`, `'\u{1F600}'` | `Rune` (`i32`) | Single Unicode scalar value (`U+0000`..`U+10FFFF`). Supports `\n`, `\r`, `\t`, `\0`, `\e`, `\\`, `\'`, `\xHH`, `\u{HEX}` | `E1001` / `E1002`: invalid or unclosed rune |
+| **Builder capacity** | `{16}`, `{1024}` | `Builder` | Allocates a mutable arena byte buffer with initial capacity `N` bytes | — |
 
-### Unified Strings and Multiline Blocks (`"..."`)
+### String literals (`"..."`)
 
-Edva uses unified double-quoted strings `"..."` for both single-line and multiline text:
-- **Interpolation**: `${expr}` evaluates scalar primitives (`Int`, `Float`, `Rune`, `String`, sized int/float types) directly into the text (desugaring to the `%to_str(expr)` compiler intrinsic). Bare `$` is literal. `\$` and `\${` escape interpolation.
-- **Multiline Blocks**: When a string literal begins immediately with a newline (`"\n`), it enters multiline mode.
-  - The first line sets the baseline margin indentation.
-  - Subsequent lines must not be indented less than the first line (raises `E1017`).
-  - The closing quote `"` can close the last line directly (no trailing newline is emitted), or sit on its own line aligned with the content or dedented one level.
-  - Line continuation with trailing `\` suppresses newlines.
-- **Retired Syntax**: Triple-double-quoted `"""..."""` heredocs are retired. Use unified `"..."` strings instead.
+Edva unifies single-line and multi-line strings under double quotes `"..."`:
 
-## Tokens and whitespace-sensitive forms
+| Feature | Syntax | Behavior | Diagnostic |
+|---|---|---|---|
+| **Single-line string** | `"hello\nworld"` | Immutable `{ len, data }` UTF-8 string with NUL-reserved tail (`data[len] == 0`) | `E1003`: unclosed string |
+| **Escape sequences** | `\n` `\t` `\r` `\0` `\a` `\b` `\f` `\v` `\e` `\"` `\'` `\\` `\$` `\xHH` `\u{HEX}` | Standard C/Unicode escapes; `\$` escapes `${...}` interpolation | `E1006`: invalid escape |
+| **Expression interpolation** | `"count = ${n + 1}"` | Evaluates scalar/string `expr` via `%to_str(expr)` (or streams directly into `b += "..."` without intermediate allocation) | `E3105`: non-scalar in `${...}` |
+| **Multi-line string** | `"` followed immediately by `\n` | Strips opening newline and strips the first content line's leading whitespace (**baseline margin**) from all subsequent lines | `E1017`: line indented less than baseline margin |
+| **Multi-line closing quote** | Closing `"` on its own line vs end of content line | Own line preserves final `\n`; end of content line omits final `\n`; trailing `\` before `\n` joins lines without `\n` | — |
 
-The lexer consumes operators greedily. Keep operator operands separated by
-whitespace unless the syntax requires adjacency. In particular, `&builder` is
-the unary buffer-address operator, whereas `* value` begins a multiplication
-section. Ramification payloads close with `+>` or `->`; a bare `>` is a
-comparison operator, not a delimiter.
+```{.dva .run}
+#use io
 
-See [the generated operator table](../../../GRAMMAR.md#16-operators--precedence)
-for the complete token inventory and precedence.
+mask = 0b1{8}
+name = "Edva"
+msg = "
+   Language: ${name}
+   Mask:     ${mask}
+   "
+io::out $ msg
+```
 
+### Ramification and container literals
+
+| Construct | Syntax | Type | Semantics |
+|---|---|---|---|
+| **Flag literals** | `<+>`, `<->` | `<>` (`RamNN`) | Unboxed `i1` boolean true (`1`) and false (`0`) |
+| **Unit ram literals** | `<++>`, `<-->` | `< | E >` / `< T | >` | Positive success unit (`<++>`) and negative absence unit (`<-->`); never implicitly coerced from `<+>` / `<->` |
+| **Single-payload ram** | `<+ val +>`, `<- err ->` | `< T | >`, `< | E >` | Positive payload of `RamPN` (`<+ val +>`) or negative payload of `RamNP` (`<- err ->`) |
+| **Two-payload ram** | `<+ val ->`, `<- err +>` | `< T | E >` (`RamPP`) | Positive (`<+ val ->`) or negative (`<- err +>`) payload of a two-payload result |
+| **Record / tuple literal** | `(10, 20)`, `(x = 1, y = 2)` | Positional or named record | Single-element tuple is not distinct from grouping; homogeneous repetition `val {N}` produces `(T * N)` |
+| **Map literal** | `("a" ^= 1, "b" ^= 2)` | `K ^ V` | Constructs and populates an arena hash map from `key ^= value` pairs (`K` in `String`, `Int`, `Addr`) |

@@ -2,85 +2,96 @@
 meta:
   audience: "Edva users"
   status: "current reference"
-  audited: "8b8cb19"
-  evidence: "`src/annotate.dva`, `src/parser.dva`"
+  audited: "df88a80"
+  evidence: "`src/parser.dva`, `src/annotate.dva`, `src/unify.dva`, `GRAMMAR.md`, `tests/pass/121_fn_signatures.dva`"
 ---
 
-# Declarations and directives
+# Declarations, Bindings & Modules
 
-An ordinary `=` binding is immutable. A trailing prime makes the identifier
-rebindable. Interior mutation—such as appending to a Builder or writing a map
-entry—does not require a primed binding.
+This chapter specifies value bindings, mutability rules, separate function signatures, `#type` declarations, and module/visibility directives.
 
-```{.dva .run}
-total' = 0
-total' = total' + 1
+## Value bindings and mutability
 
-buffer = {32}
-buffer += "ok"
-```
-
-Function parameters are always immutable and cannot be primed. A signature is
-separate from its body and fixes parameter and result types:
+| Binding Form | Syntax | Scope & Mutability | Rules & Diagnostics |
+|---|---|---|---|
+| **Immutable binding** | `x = expr` | Local or module constant | Immutable after binding; reassigning `x = v` emits `E3033` |
+| **Primed local rebinding** | `x' = expr`<br>`x'' = expr` | Local mutable / stepped SSA binding | Once primed (`x' = 0`), subsequent updates in the same scope may write `x' = v`, `x = v`, or `x'' = v` |
+| **Mutable module global** | `::g = expr` | Module-wide mutable state | Readable as `g` or `::g`; writable inside functions as `g = v`, `::g = v`, or `g ::= v` (`E3033` if `g` was not declared with `::`) |
+| **Forward type annotation** | `x: Type` (own line) | Local or module declaration | Declares the static type of `x` before assignment; allocates no zeroed storage (`E3045` if read before write; `E3130` on partial record init) |
+| **Inline type + value** | `x: Type = expr` | **Forbidden** | Rejected with `E2009`; place `x: Type` on the line preceding `x = expr` |
+| **Discard assignment** | `_ = expr` | **Forbidden** | Rejected with `E2044`; invoke side-effecting calls directly as statements |
 
 ```{.dva .run}
-add: Int, Int => Int
-add = left, right => left + right
+#use io
+
+::counter = 0
+
+bump: Int => Int
+bump = delta =>
+   counter = counter + delta
+   acc' = counter
+   acc' = acc' * 2
+   acc'
+
+io::out $ bump(5)   // 10
 ```
 
-## Types and module boundaries
+## Function signatures and definitions
 
-`#type` declares a named record, enum, ramification, growable array, or map
-shape. Type names are registered before their bodies parse, which permits
-recursive and mutually recursive declarations.
+Function types and parameter names are separated onto consecutive declarations:
+
+| Form | Syntax | Semantics | Diagnostic |
+|---|---|---|---|
+| **Multi-parameter signature** | `f: T1, T2 => R` | Declares positional parameter types and return type `R` | `E3084`: body type mismatch |
+| **Nullary signature** | `f: () => R` | Declares a 0-argument function returning `R` | — |
+| **Void return signature** | `f: T1 => ()` | Declares a side-effecting function returning `Unit` (`void`) | `E2104`: `()` used as value expr |
+| **Compile-time parameter** | `f: #! T: Type, T => R`<br>`f: #! N: Int => R` | Declares compile-time `Type` or constant parameter specialized per call site | `E3129`: `Type` lowered at runtime |
+| **Function definition** | `f = a, b => body` | Bare parameter names (never parenthesized `(a, b) =>`) followed by `=>` and expression or indented block | `E2040`: explicit `_` parameter |
+| **Nullary definition** | `f = !=> body` | 0-argument function body; invoked with postfix `!` (`f!`) | — |
+| **Unannotated function** | `f = a, b => a + b` | Inferred via static unification across body and call sites; **never defaults unknown types to `Int`** | `E3103` / `E3128`: ambiguous or underconstrained type |
 
 ```{.dva .run}
-#type Point (x: Int, y: Int)
-#type MaybePoint < Point | >
+#use io
+
+clamp_low: Int, Int => Int
+clamp_low = val, floor =>
+   val < floor | floor | val
+
+banner: () => String
+banner = !=> "ready"
+
+io::out $ clamp_low(-3, 0)
+io::out $ banner!
 ```
 
-`#use module` imports a sibling or standard-library module; `#use path/module`
-imports a path, whose final segment is its namespace. The resolver looks
-beside the importing source first, then in `std/`; it prefers `<name>.dva`
-over a same-named directory module.
+## Type declarations (`#type`)
 
-## Module visibility
+`#type` registers a nominal or structural type in the current module scope:
 
-Modules are **private by default**: any module without `#public` exports nothing; all its
-declarations remain private to the module. To export declarations, use `#public` (or `#pub`).
+| Type Category | Syntax | Representation & Semantics |
+|---|---|---|
+| **Scalar / type alias** | `#type UserId Int` | Alias for an existing primitive or composite type |
+| **Named record** | `#type Point (x: Int, y: Int = 0)` | C-ABI aligned product type; fields may specify default values (`= expr`) used by `Point(...)` and `Point.zero` |
+| **Multiline record** | `#type Point`<br>`   x: Int`<br>`   y: Int` | Indented or parenthesized multiline field list; newline separates aligned fields |
+| **Positional tuple** | `#type Pair (Int, String)` | Positional fields accessed via `.0`, `.1`, ... |
+| **Homogeneous tuple / SIMD** | `#type Vec4 (Float * 4)` | Contiguous inline repetition of `N` elements; supports SIMD arithmetic and intrinsics |
+| **Packed / aligned record** | `#type Hdr #packed #align 4 (...)` | `#packed` removes padding; `#align N` enforces power-of-two byte alignment `N` |
+| **Bitfield record** | `#type Flags #packed u16 (syn: <>, ack: <>, res: 14)` | Packs 1-bit `<>` flags and integer bit widths into `u8`, `u16`, `u32`, or `u64` (`E2055` if sum exceeds backing width) |
+| **Growable array** | `#type Ints Int{}` / `#type Buf u8{256}` | 24-byte `{ len, data, cap }` arena-backed dynamic array (optional default capacity `{cap}`) |
+| **Slice** | `#type View Int[]` | 16-byte `{ len, data }` non-owning contiguous view |
+| **Hash map** | `#type Dict String ^ Int` | Arena-backed open-addressed hash table (`Key` in `String`, `Int`, `Addr`) |
+| **Ramification** | `#type Opt < Int | >`<br>`#type Res < Int | Error >` | Two-slot positional sum type (`RamPN`, `RamNP`, or `RamPP`) |
+| **Nominal enum** | `#type Expr < Lit(Int), Add(Expr, Expr), Nop >` | 16-byte `{ i64 tag, ptr payload }` tagged union with $\ge 2$ uppercase variants (`E2070`, `E2012`, `E2074`) |
+| **Type generator (`#!`)** | `Box: #! T: Type => (val: T)`<br>`#type IntBox Box(Int)` | Compile-time function returning a `Type`, instantiated via `#type` |
 
-- `#public` (or `#pub`):
-  - **Standing directive**: `#public` on its own line (with no indented block) makes all subsequent
-    declarations in the module public. Indentation is not required.
-  - **Scoped block**: `#public` followed by an indented block exports only the declarations inside
-    that block, reverting to the enclosing visibility upon dedent.
-  - **Inline**: `#public decl` exports a single declaration on the same line.
-- `#private`:
-  - **Standing directive**: `#private` on its own line makes all subsequent declarations in the
-    module private.
-  - **Scoped block**: `#private` followed by an indented block hides declarations inside that
-    block, reverting to the enclosing visibility upon dedent.
-  - **Inline**: `#private decl` hides a single declaration on the same line.
+## Modules, visibility, and FFI directives
 
-The private name remains available unqualified inside its module, but an importer attempting
-qualified access (`module::name`) receives compile error `E3004`.
-
-## Globals and foreign declarations
-
-`::name = value` and `::name: Type` declare marked globals. Within a function,
-`name = value` (or `::name = value`) writes the marked global without creating a
-local shadow. The target must already exist.
-
-Use `#foreign` to declare C ABI bindings and `#export` to expose Edva functions
-as C ABI symbols. Like `#public` and `#private`, `#export` supports all three
-scoping forms:
-
-- **Inline**: `#export add = a, b => a + b` (or with an alias: `#export "c_add" add = a, b => a + b`).
-- **Scoped block**: `#export` followed by an indented block of function declarations.
-- **Standing directive**: `#export` on its own line (with no indented block) exports all subsequent function declarations until `#public` or `#private`.
-
-Foreign signatures use Edva types; buffer addresses use `Addr` and the unary
-`&builder` or `&string` forms. See the
-[FFI and targets guide](../../guide/ffi-and-targets.qmd) for all foreign
-directives and linkage rules.
-
+| Directive | Syntax | Scope & Semantics | Diagnostic |
+|---|---|---|---|
+| **Standard / local import** | `#use io`<br>`#use "lexer"`<br>`#use net/http` | Resolves relative `.dva` files first, then `std/<name>.dva`. Binds module under its last path segment (`io::out`, `http::get`) | `E5001`: module not found<br>`E5002`: circular import |
+| **Package import** | `#use @pkg`<br>`#use @pkg/sub` | Resolves external dependency declared in `edva.ccl` via `.edva/imports.ccl` | `E7001`–`E7021`: package errors |
+| **Public visibility** | `#public` / `#pub`<br>`#public f: Int => Int` | Alone on a line: sets default visibility to public for subsequent declarations. Prefixing a declaration: exports that single symbol/type | `E3005`: private symbol access |
+| **Private visibility** | `#private` / `#priv`<br>`#private helper = ...` | Alone on a line: resets default visibility to module-private. Prefixing a declaration: marks that single symbol private | — |
+| **Foreign C import** | `#foreign "c" puts: Addr => i32`<br>`#foreign "m" cos: Float => Float` | Declares an external C ABI symbol from library `"c"`, `"m"`, or a library path; requires an explicit type signature | `E2060`: missing foreign signature |
+| **C ABI export** | `#export add: Int, Int => Int` | Emits an unmangled C-callable symbol with platform C calling convention | — |
+| **Compile-time size / align** | `#size Type`<br>`#align Type` | Evaluates to the target ABI byte size or byte alignment of `Type` as a compile-time `Int` | — |

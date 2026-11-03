@@ -1,20 +1,25 @@
 ---
 meta:
-  audience: "new Edva users"
-  status: "current introductory path"
-  audited: "df88a80"
-  evidence: "`tests/pass/004_choice_inline.dva`, `tests/pass/012_cycle_break.dva`, `tests/pass/121_fn_signatures.dva`, `tests/pass/104_builder_literal.dva`"
+  audience: "new Edva users and contributors"
+  status: "current reference"
+  audited: "8b8cb19"
+  evidence: "`Makefile`, `build.sh`, `src/edva.dva`, `tests/pass/004_choice_inline.dva`, `tests/pass/012_cycle_break.dva`, `tests/pass/104_builder_literal.dva`, `tests/pass/121_fn_signatures.dva`"
 ---
 
-# Quickstart
+# Quickstart, Build & Tour
 
-Edva is a statically typed, expression-oriented systems language with significant
-indentation and **no reserved keywords**. Control flow, error handling, function
-calls, and iteration are expressed through symbolic operators and expressions.
+## Host requirements and compiler build
 
-## Hello, Edva
+Edva targets Linux hosts and cross-compiles to AArch64 and WebAssembly (`wasm32`). Building the compiler requires `libLLVM-18`, `clang`, and Nushell (`nu`) on `PATH`.
 
-Create a file named `hello.dva` (Edva source files use the official `.dva` file extension):
+| Task | Command | Behavior |
+|---|---|---|
+| Build compiler | `make edva` | Incrementally builds `./edva` (bootstraps from `seed/ir/` via `clang` if `./edva` is absent) |
+| Full build + test suite | `./build.sh` | Verifies generated tables, builds `./edva`, and runs the complete test suite |
+| 2-stage self-host verify | `make fixed-point` | Compiles Stage 1 and Stage 2 IR, asserts byte-identical fixed point, and promotes `edva_stage1` to `./edva` |
+| Compile and run | `./edva main.dva -r` | Compiles `main.dva` to a temporary binary, executes it immediately, and removes the binary |
+| Compile executable | `./edva main.dva -o app` | Compiles and links `main.dva` into `./app` |
+| Cross-compile | `./edva main.dva -t aarch64-linux-gnu` | Emits code and links for the specified LLVM target triple |
 
 ```{.dva .run}
 #use io
@@ -23,187 +28,143 @@ message = 10 > 5 | "greater" | "smaller"
 io::out $ message
 ```
 
-Compile and run it directly:
+## Conventional keyword to Edva symbolic mapping
 
-```sh
-./edva hello.dva -r
-```
+Edva has **no reserved keywords**. Every control-flow, declaration, and error-handling construct is expressed through operators and `#` directives:
 
-It prints `greater`. In this snippet:
-- `#use io` imports the standard input/output module.
-- `=` declares an immutable local variable `message`.
-- `10 > 5 | "greater" | "smaller"` is a **choice expression**: when the condition is
-  true, it yields `"greater"`; otherwise it evaluates the fallback `"smaller"`.
-- `io::out $ message` uses the apply operator `$` to call `io::out(message)`.
+| Construct | Conventional Keyword | Edva Syntax | Example |
+|---|---|---|---|
+| Immutable binding | `let` / `const` | `=` | `x = 42` |
+| Rebinding / local mutation | `let mut` / `var` | Trailing prime `'` | `x' = 0; x' = x' + 1` |
+| Mutable module global | `static mut` | `::` prefix | `::count = 0` |
+| Function signature | `fn f(a: T) -> R` | `:` and `=>` | `add: Int, Int => Int` |
+| Function definition | `fn` / `def` / `lambda` | `=>` (or `!=>` for 0-arg) | `add = a, b => a + b` |
+| Conditional branch | `if ... else` | Choice `|` | `x > 0 | "pos" | "non-pos"` |
+| Pattern match / switch | `match` / `switch` | Guarded choice `[...]` | `x [0] "zero" [> 0] "pos" | "neg"` |
+| Loop / iteration | `for` / `while` | Cycle `@` | `0..10 @ i => io::out(i)` |
+| Loop break | `break` / `break 'lbl` | `-->` / `-->N` | `done | -->` / `done | -->2` |
+| Loop continue | `continue` | `--^` / `--^N` | `skip | --^` |
+| Loop value escape | `loop { break val; }` | `>--` (returns `<T|>`) | `xs @ x => ok(x) | --> >-- x` |
+| Function return | `return val;` / `return;` | Tail expr or `--|` | `--| 0` / bare `--|` |
+| Ram unit early return | `if c { return false; }` | `|->` `|+>` `|-->` `|++>` | `x < 0 |-->` (returns `<-->`) |
+| Boolean true / false | `true` / `false` | `<+>` / `<->` (type `<>`) | `active = <+>` |
+| Option / Result values | `Some(v)` / `None` / `Ok` / `Err` | `<+ v +>` / `<-->` / `<+ v ->` / `<- e +>` | `res = <+ 42 ->` |
+| Unwrap or abort | `.unwrap()` | Postfix `!!` | `val = res!!` |
+| Unwrap or propagate | `?` (Rust) | Postfix `--!` or `$>>` | `fd = open(p)--!` |
+| Type definition | `type` / `struct` / `enum` | `#type` | `#type Point (x: Int, y: Int)` |
+| Module import / export | `import` / `pub` / `extern` | `#use` / `#public` / `#foreign` / `#export` | `#use io` |
 
-## Essential syntax cheat sheet
+## Language tour by subsystem
 
-| Concept | Edva Syntax | Equivalent in C / Rust / Python |
-|---|---|---|
-| Immutable binding | `x = 42` | `const x = 42;` / `let x = 42;` |
-| Rebinding sequence | `x' = x + 1` | `let x = x + 1;` (shadowing) |
-| Mutable global | `::count = 0` / `count = 1` | `static mut COUNT: i64 = 0;` |
-| Function definition | `add = a, b => a + b` | `fn add(a: i64, b: i64) -> i64 { a + b }` |
-| Function signature | `add: Int, Int => Int` | `fn add(i64, i64) -> i64;` |
-| Choice (ternary / if-else) | `cond | "yes" | "no"` | `if cond { "yes" } else { "no" }` |
-| Multi-branch choice | `x [1] "one" [2] "two" | "other"` | `match x { 1 => "one", 2 => "two", _ => "other" }` |
-| Cycle (loop / iteration) | `0..10 @ i => io::out(i)` | `for i in 0..10 { ... }` |
-| Cycle break | `i == 5 | -->` | `if i == 5 { break; }` |
-| Cycle continue | `i % 2 == 0 | --^` | `if i % 2 == 0 { continue; }` |
-| Early return | `--| expr` / bare `--|` | `return expr;` / `return;` |
-| Ram branch return | `|->` / `|+>` / `|-->` / `|++>` | `if cond { return false/None; }` |
-| String builder | `b = {32}; b += "hi"; s = +b` | `let mut b = String::with_capacity(32); ...` |
-| Ramification (Result) | `<+ 42 ->` / `<- err +>` | `Ok(42)` / `Err(err)` |
-| Unwrap or abort | `res!!` | `res.unwrap()` |
-| Module import | `#use str` | `use str;` / `import str` |
+### 1. Bindings, primes, and separate signatures
 
-## Core concepts
-
-### Variables and rebinding
-
-All bindings created with `=` are immutable by default. To represent step-by-step
-transformations without naming collisions, append prime symbols (`'`):
+Bindings created with `=` are immutable (`E3033` on reassignment). Step-by-step updates or mutable accumulators append prime marks (`'`). Function parameter types are written on a separate signature line above the definition; unannotated functions infer types via static unification without ever defaulting unknown types to `Int`.
 
 ```{.dva .run}
 #use io
 
-total = 10
-total' = total + 5
-total'' = total' * 2
-
-io::out $ total'' // prints 30
-```
-
-Variables declared with `=` are immutable unless declared with trailing primes
-(`x' = 10; x' = 20`) to allow reassignment. Composite types also support
-forward type annotation followed by definite field initialization before reads.
-
-### Separate function signatures
-
-In Edva, function parameter types are never written inline in the parameter list.
-Types are declared in an independent signature preceding the body:
-
-```{.dva .run}
-#use io
-
-// 1. Signature: positional parameter types, '=>', return type
 greet: String, Int => String
-
-// 2. Definition: parameter names, '=>', body expression
 greet = name, count =>
-   count > 0 | "Hello, " + name | "Nobody"
+   total' = count
+   total'' = total' * 2
+   total'' > 0 | "Hello, ${name} (${total''})" | "Nobody"
 
 io::out $ greet("Alice", 3)
 ```
 
-If no signature is provided, the compiler infers parameter and return types via
-full static unification. Edva **never defaults unknown types to `Int`**—if a type
-cannot be deduced, a compilation error (`E3103` / `E3128`) is reported.
+### 2. Pipelines and application (`$`, `$>`, `$>>`)
 
-### Choices (Decision making)
+| Operator | Associativity | Tier | Lowering |
+|---|---|---|---|
+| `f(a, b)` | Left | Postfix (LBP 170) | Direct call (no whitespace before `(`, `E2032`) |
+| `f!` | Left | Postfix (LBP 170) | Invokes 0-argument function defined with `!=>` |
+| `x $> f(y)` | Left | Feed (LBP 40) | Prepends `x` as first argument: `f(x, y)` |
+| `f(x) $ y` | Right | Apply (LBP 30) | Appends `y` as final argument: `f(x, y)` |
+| `m $>> cont` | Left | Feed (LBP 40) | Unpacks positive ram payload into ram-returning `cont` |
 
-Choices replace `if`, `else`, `switch`, and pattern matching. A choice begins
-with a condition or a scrutinee value, followed by ordered guarded branches, and
-an optional fallback branch introduced by `|`:
+```{.dva .run}
+#use io
+
+add = a, b => a + b
+mul = a, b => a * b
+
+io::out $ 5 $> add(3) $> mul(2)   // 16
+io::out $ add(10) $ 20            // 30
+```
+
+### 3. Choices and cycles (`|`, `[...]`, `@`, `-->`, `--^`, `>--`)
+
+Choices evaluate guarded branches `[...]` in order, with `|` providing the fallback or positional ram branch. Cycles iterate over counts, ranges, conditions, or collections with `@` and can yield `< T | >` via `>--`.
 
 ```{.dva .run}
 #use io
 
 classify: Int => String
-classify = n =>
-   n [< 0] "negative"
-   [0] "zero"
-   [1, 2, 3] "small positive"
-   | "large positive"
+classify =
+   [< 0]     "negative"
+   [0]       "zero"
+   [1..4]    "small"
+   |         "large"
 
-io::out $ classify(2)  // prints "small positive"
-```
+io::out $ classify(2)
 
-A choice used in expression position must be exhaustive (every possible path produces
-a compatible value); for optional ramifications (`<T | >`), an unhandled absent branch
-synthesizes the absent variant automatically. A single-branch choice (`cond | action`)
-is a statement and evaluates to Unit (`()`). Dummy `| 0` fallbacks are strictly forbidden.
-
-### Cycles and iteration
-
-The `@` operator iterates over counts, numeric ranges, or collections:
-
-```{.dva .run}
-#use io
-
-// Iterate 5 times (0 to 4)
-5 @ i =>
-   io::out(i)
-
-// Iterate with early break and continue
-0..10 @ i =>
-   i % 2 == 0 | --^   // skip even numbers
-   i > 7 | -->        // stop when greater than 7
-   io::out(i)
-```
-
-Cycles can produce values via the **cycle-escape operator** `>--`, which returns
-`RamPN` (`< T | >`):
-
-```{.dva .run}
-#use io
-
-// Search for a target value in a range (returns < Int | >)
-target = 56
 found = 50..100 @ n =>
-   n == target | -->
+   n == 56 | -->
 >--
-   target
+   n
 
-found
-   | n => io::out(n)       // prints 56
-   | io::out("not found")
+io::out $ found | _ | -1
 ```
 
-### String building and memory
+### 4. Strings and `Builder` (`{cap}`, `+=`, `+b`)
 
-Strings in Edva are immutable fat pointers `{ len, data }`. To construct strings
-efficiently without intermediate allocations, use a `Builder`:
+`String` values are immutable `{ len, data }` descriptors. `Builder` (`{cap}`) accumulates bytes, runes, strings, and interpolated blocks in place before freezing into a `String` in $O(1)$ with unary `+`:
 
-```{.dva .run}
-#use io
-
-build_greeting: String => String
-build_greeting = name =>
-   b = {64}             // Allocate buffer with capacity 64
-   b += "Welcome, "     // In-place append
-   b += name
-   b += "!"
-   +b                   // Freeze into an immutable String in-place
-
-io::out $ build_greeting("Edva Developer")
-```
-
-| Operator | Usage | Meaning |
+| Operator | Syntax | Semantics |
 |---|---|---|
-| `{N}` | `b = {32}` | Create Builder with capacity `N` |
-| `+=` | `b += "text"` | In-place append string or byte |
-| `+` (unary) | `+b` | Freeze Builder into immutable String (buffer transfer) |
-| `?` | `?s`, `?b` | Measure byte length of String or Builder |
-| `&` (unary) | `&s`, `&b` | Buffer address pointer (`Addr`) for FFI calls |
-
-### Standard library and output
-
-Import standard library modules using `#use <name>`:
+| `{cap}` | `b = {64}` | Allocate mutable `Builder` with capacity `cap` |
+| `+=` | `b += "text"` / `b += 'λ'` / `b += 65` | Append string, UTF-8 rune, byte, or tuple `(a, b)` in place |
+| `+` (unary) | `s = +b` | Freeze `Builder` into `String` in $O(1)$ and reset `b` |
+| `?` / `??` | `?s`, `??s`, `?b` | Byte length (`?`) or UTF-8 codepoint count (`??`) |
+| `&` (unary) | `&s`, `&b` | Raw buffer `Addr` pointer (`&s` is guaranteed NUL-terminated) |
 
 ```{.dva .run}
-#use str
 #use io
 
-io::out("=== System Report ===")
-io::outf(128, "Processed items: {}")
+b = {64}
+b += ("Welcome, ", "Edva", '!')
+s = +b
+io::out $ "${s} (${?s} bytes)"
 ```
 
-To compile and link into an executable without running:
+### 5. Composite types, containers, and ramifications
 
-```sh
-./edva hello.dva -o hello
-./hello
+| Shape | Type Syntax | Construction | Access / Matching |
+|---|---|---|---|
+| **Record / Tuple** | `#type R (x: Int, y: Int)` | `R(10, 20)` or `(10, 20)` | `r.x`, `r.0` (definite init enforced, `E3130`) |
+| **Growable Array** | `#type A Int{}` | `xs = A(); xs += 10` | `xs(i)` $\to$ `< Int | Error >`; `?xs` length |
+| **Slice** | `Int[]` | `view = xs(0..2)` | `view(i)` $\to$ `Int`; non-owning `{ len, data }` |
+| **Map** | `#type M String ^ Int` | `m = M(); m ^ "k" = 1` | `m ^ "k"` $\to$ `< Int | Error >`; `m ^? "k"` $\to$ `<>` |
+| **Ramification** | `<>`, `<T|>`, `<|E>`, `<T|E>` | `<+>`, `<+ v +>`, `<+ v ->` | `r | pos | neg`, `r!!`, `r--!` |
+| **Enum** | `#type E < A(Int), B >` | `E(A, 5)`, `E(B)` / `B` | `e [A x] x [B] 0` (exhaustiveness enforced, `E3102`) |
+
+```{.dva .run}
+#use io
+
+#type Shape < Circle(Float), Point >
+#type Ints Int{}
+#type Config String ^ Int
+
+area: Shape => Float
+area = [Circle r] 3.14159 * r * r [Point] 0.0
+
+xs = Ints()
+xs += 10
+xs += 20
+
+cfg = Config()
+cfg ^ "port" = 8080
+
+io::out $ area(Shape(Circle, 2.0))
+io::out $ xs(0)!! + (cfg ^ "port" | _ | 0)
 ```
-
-

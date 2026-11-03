@@ -3,205 +3,108 @@ meta:
   audience: "Edva developers"
   status: "current reference"
   audited: "51081a6"
-  evidence: "`src/codegen/types.dva`, `src/codegen/expr.dva`, `tests/pass/345_implicit_ram_fallback.dva`, `GRAMMAR.md` §2.12, §3.1"
+  evidence: "`src/codegen/types.dva`, `src/codegen/expr.dva`, `tests/pass/345_implicit_ram_fallback.dva`, `GRAMMAR.md`"
 ---
 
-# `Flag` and ramifications
+# Flags, Ramifications & `Error`
 
-Edva replaces booleans, optionals, and exceptions with a single unified construct: the **ramification** (abbreviated *ram*). A ramification has exactly two positional branches: a positive (left) slot and a negative (right) slot.
+Edva unifies booleans, optional values, fallible statuses, and result types into a single two-slot algebraic construct: the **ramification** (*ram*). Every ramification has a **positive (first) slot** and a **negative (second) slot**.
 
-## The four ramification layouts
+## The four ramification layouts and ABI
 
-The four static layouts of ramifications are distinguished by whether each slot holds a payload type or an empty polarity constant:
+| Layout | Type Syntax | Positive (1st Slot) | Negative (2nd Slot) | Runtime ABI & Niche Lowering | Role |
+|---|---|---|---|---|---|
+| **`RamNN`** | `<>` | `<+>` (unit) | `<->` (unit) | Unboxed `i1` (`1` = `<+>`, `0` = `<->`) | Boolean `Flag` (built-in, no `#type` needed) |
+| **`RamPN`** | `< T | >` | `<+ val +>` (`T`) | `<-->` (unit) | Null-pointer niche (`ptr`, `null` = `<-->`) for `String`/`Record`; otherwise `{ i1, T }` | `Option` (value or absence) |
+| **`RamNP`** | `< | E >` | `<++>` (unit) | `<- err ->` (`E`) | Null-pointer niche (`ptr`, `null` = `<++>`) for `String`/`Record`/`Error`; otherwise `{ i1, E }` | `Fallible` (void success or error) |
+| **`RamPP`** | `< T | E >` | `<+ val ->` (`T`) | `<- err +>` (`E`) | Unboxed register aggregate `{ i1, i64 }` (`i1` = polarity tag, `0` heap wrapper cost) | `Result` (value or error) |
 
-| Layout | Syntax | Positive (1st) | Negative (2nd) | LLVM Type | Role |
-|:---|:---|:---|:---|:---|:---|
-| **RamNN** | `<>` | `<+>` | `<->` | `i1` | `Flag` |
-| **RamPN** | `< T | >` | `T` | `<-->` | `ptr` (niche) / `{ i1, T }` | `Option` |
-| **RamNP** | `< | E >` | `<++>` | `E` | `ptr` (niche) / `{ i1, E }` | `Fallible` |
-| **RamPP** | `< T | E >` | `T` | `E` | `{ i1, i64 }` unboxed | `Result` |
+### Constructor delimiter matrix
 
-The `Flag` (`<>`) is a native built-in type and does not require a `#type` declaration. The payload forms are defined via `#type`:
+All payload constructors close with `+>` or `->` (never bare `>`), ensuring relational comparisons inside payloads (`<+ a > b ->`) are unambiguous:
+
+| Target Shape | Positive Slot Constructor | Negative Slot Constructor | Coercion Rule |
+|---|---|---|---|
+| `<>` (`RamNN`) | `<+>` | `<->` | Never implicitly coerces to `<++>` or `<-->` |
+| `< T | >` (`RamPN`) | `<+ val +>` | `<-->` | Implicit `| <-->` synthesized in non-exhaustive expression choices |
+| `< | E >` (`RamNP`) | `<++>` | `<- err ->` | Implicit `| <++>` synthesized in non-exhaustive expression choices |
+| `< T | E >` (`RamPP`) | `<+ val ->` | `<- err +>` | Both slots carry typed payloads |
 
 ```{.dva .run}
-// Built-in flag
-active = <+>
+#use io
 
-// User-declared ram shapes
 #type MaybeInt < Int | >
-#type FallibleWrite < | Error >
-#type FileResult < Int | Error >
+#type Status < | String >
+#type Outcome < Int | String >
+
+flag = <+>
+opt = MaybeInt(<+ 42 +>)
+stat = Status(<++>)
+res = Outcome(<+ 100 ->)
+
+io::out $ (flag, opt | _ | 0, stat | "ok" | _, res!!)
 ```
 
-## Literals and constants
+## Operations on flags and ramifications
 
-### Flag constants
-The built-in flag `<>` has two literal values:
+| Operation | Syntax | Input Type | Result Type | Semantics & Diagnostics |
+|---|---|---|---|---|
+| **Logical NOT** | `!f` | `<>` | `<>` | Inverts `<+>` $\leftrightarrow$ `<->` (`E3008` on non-flag types) |
+| **Logical AND / OR** | `a && b`, `a || b` | `<>` or compatible ram | Same | Short-circuiting conjunction / disjunction |
+| **Flag extraction** | `<>(r)` / `!<>(r)` | Any ram `r` | `<>` | Discards payloads and returns `<+>` if `r` is positive (`!<>(r)` negates) |
+| **Positional choice** | `r | pos | neg` | Any ram `r` | Unified branch type | 1st `|` matches positive slot; 2nd `|` matches negative slot (`_` or `x =>` binds payload) |
+| **Skip-first choice** | `r !| neg_body` | `< | E >` / `<>` | Unified type | Sugar for `r | (void) | neg_body` (e.g. `arr(i) = v !| _` panics on OOB write) |
+| **Unwrap or abort** | `r!!` | `< T | E >` or `< T | >` | `T` | Extracts positive payload `T` or aborts on negative slot (`E3091` on `<|E>` / `<>`) |
+| **Unwrap or propagate** | `r--!` | `< T | E >`, `< T | >`, `< | E >`, `<>` | `T` or `()` | Extracts positive slot or early-returns the negative ram from the enclosing function |
+| **Monadic bind** | `r $>> cont` | `< T | E >` or `< T | >` | Ram returned by `cont` | Calls `cont(val)` on positive slot; propagates negative slot unchanged (`E3091` if `cont` non-ram) |
+| **Early return sugar** | `c |->` `c |+>` `c |-->` `c |++>` | `c: <>` | `()` (returns from fn) | Early-returns `<->`, `<+>`, `<-->`, or `<++>` when `c` is `<+>` |
 
 ```{.dva .run}
-truthy = <+>    // Positive (true, 1)
-falsy  = <->    // Negative (false, 0)
+#use io
+
+parse_pos: Int => < Int | String >
+parse_pos = n =>
+   n !> 0 | --| <- "non-positive" +>
+   <+ n * 10 ->
+
+double_pos: Int => < Int | String >
+double_pos = n =>
+   v = parse_pos(n)--!
+   <+ v * 2 ->
+
+io::out $ double_pos(3) | _ | -1     // 60
+io::out $ double_pos(-1) | _ | -1    // -1
 ```
 
-### Unit heap ram constants
-When an API requires a heap-allocated ram with unit branches (rather than a bare `i1`), use double-bracketed unit constants:
+## The `Error` type and I/O conventions
 
-```{.dva .run}
-heap_true  = <++>   // Heap positive unit (void success slot)
-heap_false = <-->   // Heap negative unit (absence slot)
-```
+`Error` is the built-in structured diagnostic record used in `< T | Error >` and `< | Error >`:
 
-> [!NOTE]
-> A bare Flag `<+>` or `<->` **never implicitly coerces** to a heap ram unit `<++>` or `<-->`.
-
-### Payload constructors
-Payload branches are constructed using:
-- `<+ val +>`: Positive slot of `RamPN` (`< T | >`)
-- `<-->`: Absence unit constant for `RamPN` (`< T | >`)
-- `<++>`: Success unit constant for `RamNP` (`< | E >`)
-- `<- err ->`: Negative slot of `RamNP` (`< | E >`)
-- `<+ val ->`: Positive slot of `RamPP` (`< T | E >`)
-- `<- err +>`: Negative slot of `RamPP` (`< T | E >`)
-
-All payload constructors close with `+>` or `->` (never bare `>`). Delimiters
-`<+`/`+>` and `<-`/`->` ensure comparisons inside payloads remain unambiguous: `<+ a > b ->`.
-
-```{.dva .run}
-// Constructing an Option (RamPN)
-opt_val = <+ 42 +>
-none_val = <-->
-
-// Constructing a Fallible status (RamNP)
-ok_val = <++>
-err_status = <- "disk full" ->
-
-// Constructing a Result (RamPP)
-success = <+ 100 ->
-failure = <- "out of memory" +>
-```
-
-## Operations
-
-### Logical operators on flags
-
-Flags support standard boolean logic:
-
-```{.dva .run}
-a = <+>
-b = <->
-
-c = a && b     // <-> (Logical AND)
-d = a || b     // <+> (Logical OR)
-e = !a         // <-> (Logical NOT)
-```
-
-### Choice pattern matching
-
-Ramifications are inspected and unpacked using vertical bar `|` choice expressions:
-
-```{.dva .partial}
-res = FileResult(<+ 100 ->)
-
-status = res |
-   [fd] "File opened successfully on descriptor " + fd |
-   [err] "Failed to open file: " + err.msg
-```
-
-For non-payload slots, omission of payload bindings matches the branch:
-
-```{.dva .partial}
-opt = MaybeInt(<-->)
-
-val = opt |
-   [x] x |
-   -1          // Absence branch fallback
-```
-
-### Unwrapping (`!!`) and fallible discard (`!|`)
-
-- **Postfix unwrap `r!!`**: Unwraps the positive payload. If the ram holds the negative slot, execution halts with a panic displaying the negative payload.
-- **Fallible discard `!|`**: Fallible discard executes the fallback branch on failure, skipping the void success branch.
-
-```{.dva .partial}
-// Unwrap or panic
-fd = res!!
-
-// Fallible discard on assignment
-arr(0) = 42 !| _
-```
-
-### Flag extraction (`<>(r)` and `!<>(r)`)
-
-The constructor `<>(r)` discards any payload and extracts a pure boolean `Flag`. The spaceless negation `!<>(r)` negates the resulting flag directly:
-
-```{.dva .partial}
-res = FileResult(<+ 10 ->)
-is_ok = <>(res)     // <+>
-is_err = !<>(res)   // <->
-```
-
-### Postfix propagate (`--!`)
-
-The `--!` operator unwraps the positive payload inline, or early-returns the negative ramification from the enclosing function:
-
-```{.dva .partial}
-read_data: String => <String | Error>
-read_data = path =>
-   fd = open_file(path)--!    // Returns early if open_file fails
-   <+ read_all(fd) ->
-```
-
-### Early return ram sugar
-
-Choices can early return unit ramifications using compact branch shortcuts:
-
-| Shortcut | Desugars to | Target Return Type |
+| Field / Form | Type / Syntax | Semantics |
 |---|---|---|
-| `cond |->` | `cond | --| <->` | `RamNN` (`<>`) negative flag |
-| `cond |+>` | `cond | --| <+>` | `RamNN` (`<>`) positive flag |
-| `cond |-->` | `cond | --| <-->` | `RamPN` (`< T | >`) absence unit |
-| `cond |++>` | `cond | --| <++>` | `RamNP` (`< | E >`) success unit |
+| `err.code` | `Int` | Numeric error code (POSIX `errno`, HTTP status, or application code) |
+| `err.msg` | `String` | Human-readable diagnostic message |
+| `err.file`, `err.line`, `err.col` | `String`, `Int`, `Int` | Source location automatically captured by `Error(code, msg)` at the call site |
+| `err.context` | `(Int, Int)` | Auxiliary context tuple (defaults to `(0, 0)`) |
+| `Error(code, msg)` | Constructor | Captures caller `file`, `line`, `col` automatically |
+| `r | _ | _` on `< T | Error >` | Fatal negative `_` | Extracting a negative `Error` slot with bare `_` aborts execution with `E4011` (like `r!!`); bind a named parameter (`| err => ...`) to handle recoverably |
+| **EOF vs Failure in I/O** | `< String | >` vs `< T | Error >` | Line/stream readers (`in::line`) return `< String | >` (`<-->` = normal EOF); filesystem/network calls (`fs::read_file`) return `< String | Error >` |
 
 ```{.dva .run}
-check_limit: Int => <>
-check_limit = n =>
-   n < 0 |->
-   <+>
+#use io
+
+#type ReadResult < String | Error >
+
+load_item: Int => ReadResult
+load_item = id =>
+   id < 0
+      | ReadResult(<- Error(404, "item not found") +>)
+      | ReadResult(<+ "payload" ->)
+
+res = load_item(-1)
+msg = res
+   | data => data
+   | err => "E${err.code}: ${err.msg}"
+
+io::out $ msg
 ```
-
-### Implicit fallback in choice expressions
-
-In expression position, an inexhaustive choice expression whose non-jump branches all produce
-`RamPN` (`< T | >`) or `RamNP` (`< | E >`) automatically synthesizes an implicit fallback branch:
-
-- **`RamPN` (`< T | >`)**: synthesizes an implicit trailing `| <-->` (absence unit).
-- **`RamNP` (`< | E >`)**: synthesizes an implicit trailing `| <++>` (success unit).
-
-```{.dva .run}
-// Returns < String | > with implicit | <--> fallback
-find_name: Int => < String | >
-find_name = id =>
-   id == 1 | <+ "Alice" +>
-
-// Returns < | String > with implicit | <++> fallback
-validate: Int => < | String >
-validate = x =>
-   x < 0 | <- "must be non-negative" ->
-```
-
-## Memory layout and ABI
-
-- **`Flag` (`<>`)**: Compiles to an unboxed `i1` in LLVM IR (passed directly in integer registers).
-- **Single-payload Niche Rams (`RamPN`, `RamNP`)**: When the payload is a pointer type
-  (`String` fat pointer or `Record` pointer), the ram compiles directly to a single pointer (`ptr`)
-  using **null-pointer niche optimization**: `null` represents the unit slot (`<-->` or `<++>`),
-  while a non-null pointer carries the payload. This requires zero extra tag bits.
-- **Two-payload Rams (`RamPP`)**: Lowered in typed compilation as unboxed register aggregates
-  `{ i1, i64 }`. The `i1` field is a runtime polarity tag discriminant (1 = positive slot,
-  0 = negative slot), NOT an RTTI descriptor.
-- **Allocation Guarantees**: Returning or inspecting an unboxed `RamPP` value incurs zero heap
-  allocation for the wrapper itself. Constructing an error record on failure (such as `Error` on
-  out-of-bounds indexing or missing map key) allocates the Error struct fields.
-- **Buffer vs Descriptor Allocation**: Freezing a Builder (`+b`) transfers its allocated buffer
-  in place into the String without copying bytes, allocating only the 16-byte String descriptor
-  `{ len, ptr }` in the active arena.

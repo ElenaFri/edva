@@ -1,46 +1,48 @@
 ---
 meta:
-  audience: "readers learning or using Edva"
-  status: "current front door"
+  audience: "Edva users and compiler contributors"
+  status: "current specification index"
   audited: "8b8cb19"
-  evidence: "`src/`, `tests/pass/`"
+  evidence: "`GRAMMAR.md`, `src/edva.dva`, `std/`"
 ---
 
-# Edva {.unnumbered}
+# Edva
 
-Edva is a statically typed, expression-oriented systems language. It uses
-significant indentation, symbolic control flow, and no reserved keywords. The
-`edva` compiler emits LLVM IR and uses `clang` to link native programs.
+Edva (`.dva`) is a statically typed, expression-oriented systems language with significant indentation, **zero reserved keywords**, unboxed two-slot ramifications, arena-backed memory management, and a self-hosted LLVM 18 compiler.
 
-## Choose a path
+## Core language invariants
 
-- **Learn Edva:** start with [installation](start/install.qmd), then the
-  [quickstart](start/quickstart.qmd) and [tour](start/tour.qmd).
-- **Read the language reference:** use the
-  [Edva language reference](reference/language/index.qmd).
-- **Use the compiler:** see the [`edva` CLI reference](reference/edva-cli.qmd).
-- **Work on the compiler:** follow the [documentation policy](contributing/documentation.qmd)
-  and explore the compiler architecture.
+| Invariant | Formal Specification |
+|---|---|
+| **Source suffix & encoding** | UTF-8 text in `.dva` files; space-only indentation (`E1011` on tabs) |
+| **No reserved keywords** | All control flow, branching, iteration, and returns use symbolic operators (`|`, `[...]`, `@`, `-->`, `--^`, `>--`, `--|`); directives use `#` (`#type`, `#use`, `#public`, `#private`, `#foreign`, `#export`, `#packed`, `#align`, `#size`, `#!`) |
+| **Bindings & mutability** | Immutable by default (`x = v`); explicit mutability/rebinding via trailing primes (`x' = v`) or marked module globals (`::g = v`). Inline `x: T = v` is forbidden (`E2009`) |
+| **Separate signatures** | Function types are declared on a separate line (`f: A, B => R`) preceding `f = a, b => body`. Unannotated functions use Hindley-Milner-style unification and **never default unknown types to `Int`** (`E3103` / `E3128`) |
+| **Fixed 64-bit `Int`** | `Int` is strictly 64-bit signed (`i64`) on all targets (including 32-bit `wasm32`); only `Addr` scales with target pointer width |
+| **Strings vs Builders** | `String` is an immutable 16-byte `{ i64 len, ptr data }` fat pointer with NUL-reserved tail (`data[len] == 0`) and 16-bit arena generation tag (`E4010` on stale read); `Builder` (`{cap}`) is a 24-byte mutable buffer frozen in $O(1)$ via `+b` |
+| **Ramifications (Rams)** | Four static two-slot algebraic layouts replace booleans, options, and exceptions: `<>` (`i1` flag), `<T|>` (option), `<|E>` (fallible), `<T|E>` (unboxed `{ i1, i64 }` result) |
+| **Definite initialization** | Forward-declared records (`r: Rec`) are never zero-filled implicitly; every field must be written before reading (`E3130`) |
+| **No GC, no RTTI** | Memory uses scoped bump arenas and stack values; closures are `{ ptr fn_ptr, ptr env_ptr }`; `Type` exists strictly at compile time (`#!`) and is erased before codegen |
 
-## Reference and guides
+## Specification map
 
-- [Language reference](reference/language/index.qmd)
-- [Bindings and modules](guide/bindings-and-modules.qmd)
-- [Functions and closures](guide/functions-and-closures.qmd)
-- [Choices and cycles](guide/choices-and-cycles.qmd)
-- [Ramifications](guide/ramifications.qmd)
-- [Data and memory](guide/data-and-memory.qmd)
-- [Errors and I/O](guide/errors-and-io.qmd)
-- [FFI and targets](guide/ffi-and-targets.qmd)
-- [Metaprogramming](guide/metaprogramming.qmd)
-- [Standard library inventory](reference/stdlib/index.qmd)
-- [Diagnostics](reference/diagnostics.qmd)
-- [Compiler architecture](compiler/architecture.qmd)
-- [Compiler testing](compiler/testing.qmd)
-- [Bootstrap and fixed-point checks](compiler/bootstrap.qmd)
-
-This book is reader-facing documentation, not a source of normative behavior.
-For a full rule, consult the corresponding current topic specification; for a
-compact syntax supplement, use `GRAMMAR.md`. Every page names the commit and
-evidence used for its claims.
-
+| Ch. | Chapter | Scope |
+|---|---|---|
+| 1 | [Quickstart, Build & Tour](start/quickstart.qmd) | Compiler build (`make edva`), CLI execution, symbolic syntax comparison, and end-to-end language tour |
+| 2 | [Lexical Structure & Literals](reference/language/lexical.qmd) | Indentation, continuation, comments, identifiers, primes, numeric/rune/string/builder/ram literals |
+| 3 | [Declarations, Bindings & Modules](reference/language/declarations.qmd) | `=`, `'`, `::`, forward annotations, function signatures, `#type`, `#use`, visibility, `#foreign`, `#export` |
+| 4 | [Expressions, Choices & Cycles](reference/language/expressions.qmd) | Calls (`$`, `$>`, `$>>`), choice guards (`[...]`), ranges (`..`, `...`), cycles (`@`, `-->`, `--^`, `>--`), assignments, `--|` |
+| 5 | [Operators, Sections & Underscore](reference/language/operators.qmd) | Pratt binding powers (`operators.yaml`), chained comparisons, operator sections (`* 2`), accessor sections (`(.f)`), and `_` / `_i` rules |
+| 6 | [Compiler Intrinsics (`%`)](reference/language/intrinsics.qmd) | Zero-overhead LLVM scalar, SIMD vector, horizontal reduction, math, bit manipulation, memory, and `%to_str` intrinsics |
+| 7 | [Type System, Scalars & `Unit`](reference/types/index.qmd) | Complete type taxonomy, `Int` (`i8`..`u64`), `Float` (`f32`, `f64`), `Rune`, and `Unit` (`()`) |
+| 8 | [`String` & `Builder`](reference/types/string.qmd) | Single/multi-line strings, `${expr}` interpolation, generation tags, `Builder` growth, mass-append, and `+b` freeze |
+| 9 | [Flags, Ramifications & `Error`](reference/types/ram.qmd) | `RamNN`/`RamPN`/`RamNP`/`RamPP` layouts, niche optimization, `|`, `!|`, `!!`, `--!`, return sugars, and structured `Error` |
+| 10 | [Records, Tuples, Bitfields & Enums](reference/types/record.qmd) | Product types, `#packed`, `#align N`, bitfields, SIMD tuples, and nominal tagged union enums (`< V1, V2(T) >`) |
+| 11 | [Arrays, Slices & Maps](reference/types/array.qmd) | Growable arrays (`T{}`), non-owning slices (`T[]`), associative hash tables (`K ^ V`), and snapshot iteration |
+| 12 | [Functions & Closures](reference/types/functions.qmd) | Arrow types (`A => B`), `{ fn_ptr, env_ptr }` ABI, lambdas, headless choices, closure capture, and pipelines |
+| 13 | [Compile-Time (`#!`) & `Type` Reflection](reference/types/type.qmd) | `#!` CTFE, generic `Type` parameters, `#size`/`#align`, `T.name`/`T.zero`/`?T`, shape guards, and `T @ f =>` unrolling |
+| 14 | [Memory, Arenas, `Addr` & FFI](reference/types/addr.qmd) | Arena lifecycle, `++` deep copy, `~~` lenses, `Addr` pointers, `&`, volatile `@[addr]`, C ABI, and target triples |
+| 15 | [CLI & Package Manager (`edva.ccl`)](reference/edva-cli.qmd) | `edva` compiler flags, `edva pkg` commands, `edva.ccl` manifest schema, multi-target builds, and vendoring |
+| 16 | [Compiler & Runtime Diagnostics](reference/diagnostics.qmd) | Complete `E1xxx`–`E7xxx` lexer, parser, typechecker, runtime, codegen, and package error reference |
+| 17 | [Compiler Architecture, Bootstrap & Testing](compiler/architecture.qmd) | Self-hosted compiler pipeline, 3-stage fixed-point bootstrap, test suites, and documentation verification |
+| Ref | [Standard Library](reference/stdlib/index.qmd) | 43 standard library modules (`io`, `fs`, `net`, `json`, `ccl`, `regex`, `crypto`, `flate`, `img`, `kv`, `math`, `str`, `uring`, etc.) |

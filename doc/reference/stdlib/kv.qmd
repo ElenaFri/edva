@@ -34,15 +34,15 @@ libc::unlink(path)
 | Symbol / Function | Signature | Description |
 |---|---|---|
 | `kv::Store` | `(path: String, fd: Int, pos: Int, keydir: KeyDir)` | Handle to an open log-structured key-value store |
-| `kv::open(path)` | `String => < Store \| Error >` | Opens or creates a persistent KV store at `path` and replays its log |
+| `kv::open(path)` | `String => < Store | Error >` | Opens or creates a persistent KV store at `path` and replays its log |
 | `kv::close(db)` | `Store => <>` | Closes the underlying file descriptor of `db` |
 | `kv::len(db)` | `Store => Int` | Number of live keys currently in `db` |
 | `kv::has(db, key)` | `Store, String => <>` | Returns `<+>` if `key` is present in `db` |
-| `kv::put(db, key, val)` | `Store, String, String => < <> \| Error >` | Appends a CRC-32-verified `key -> val` record and updates `keydir` |
-| `kv::get(db, key)` | `Store, String => < String \| Error >` | Reads the value for `key` (`Error` if missing or on I/O failure) |
-| `kv::get_opt(db, key)` | `Store, String => < String \| >` | Reads the value for `key` if present (`<-->` if missing) |
-| `kv::delete(db, key)` | `Store, String => < <> \| Error >` | Appends a deletion tombstone for `key` and removes it from `keydir` |
+| `kv::put(db, key, val)` | `Store, String, String => < <> | Error >` | Appends a CRC-32-verified `key -> val` record and updates `keydir` |
+| `kv::get(db, key)` | `Store, String => < String | Error >` | Reads the value for `key` (`Error` if missing or on I/O failure) |
+| `kv::get_opt(db, key)` | `Store, String => < String | >` | Reads the value for `key` if present (`<-->` if missing) |
+| `kv::delete(db, key)` | `Store, String => < <> | Error >` | Appends a deletion tombstone for `key` and removes it from `keydir` |
 | `kv::keys(db)` | `Store => String{}` | Returns all live keys in sorted lexicographical order |
-| `kv::compact(db)` | `Store => < <> \| Error >` | Rewrites only live entries to a new log file and atomically replaces `db.path` |
-| `kv::put_val(db, key, val)` | `#! T: Type, Store, String, T => < <> \| Error >` | Encodes `val` via `binary::encode_le` and stores it under `key` |
-| `kv::get_val(T, db, key)` | `#! T: Type, Store, String => < T \| Error >` | Reads and decodes a value of type `T` stored under `key` |
+| `kv::compact(db)` | `Store => < <> | Error >` | Rewrites only live entries to a new log file and atomically replaces `db.path` |
+| `kv::put_val(db, key, val)` | `#! T: Type, Store, String, T => < <> | Error >` | Encodes `val` via `binary::encode_le` and stores it under `key` |
+| `kv::get_val(T, db, key)` | `#! T: Type, Store, String => < T | Error >` | Reads and decodes a value of type `T` stored under `key` |

@@ -3,160 +3,114 @@ meta:
   audience: "Edva metaprogramming and library authors"
   status: "current reference"
   audited: "fb4fbc2"
-  evidence: >-
-    `src/parser.dva`, `src/codegen/types.dva`, `src/codegen/expr.dva`,
-    `src/codegen/match.dva`, `src/codegen/stmt.dva`,
-    `tests/pass/393_structural_introspection.dva`, `GRAMMAR.md` §2.14, §3.1
+  evidence: "`src/parser.dva`, `src/codegen/types.dva`, `src/codegen/expr.dva`, `src/codegen/match.dva`, `src/codegen/stmt.dva`, `tests/pass/393_structural_introspection.dva`, `GRAMMAR.md`"
 ---
 
-# `Type` and compile-time reflection
+# Compile-Time (`#!`) & `Type` Reflection
 
-The `Type` primitive represents a compile-time value naming a type. It exists exclusively during parsing, type-checking, and constant folding; it is strictly **erased** before code generation and has zero runtime memory footprint (`E2018` / `E3129`).
+Edva uses a unified compile-time evaluation and structural reflection model introduced by `#!` and the `Type` primitive. `Type` values, field cursors (`f`), and variant cursors (`v`) exist strictly at compile time and are erased before LLVM code generation with zero runtime footprint (`E2018` / `E3129`).
 
-## Declaration and compile-time functions
+## Compile-time evaluation (`#!`) forms
 
-Functions that accept or return `Type` values declare compile-time parameters with `#!`:
-
-```{.dva .run}
-size_of: #! T: Type => Int
-size_of = #! T => #size T
-
-int_sz = size_of(Int)
-```
-
-When a function takes a runtime value of type `T`, `T` is automatically inferred at the call site:
+| Construct | Syntax | Semantics | Diagnostic |
+|---|---|---|---|
+| **Compile-time expression** | `val = #! expr` | Evaluates pure expression `expr` during compilation and embeds the constant result | `E3129`: runtime-only op in `#!` |
+| **Explicit `Type` parameter** | `f: #! T: Type => Int`<br>`f = #! T => #size T` | Specializes `f` per concrete `Type` passed at the call site (`f(Int)`) | `E2018`: `Type` used as runtime value |
+| **Inferred `Type` parameter** | `f: #! T: Type, T => String`<br>`f = #! T, x => T.name` | Deduces `T` automatically from the runtime argument `x` (`f(42)` $\Rightarrow$ `T = Int`) | — |
+| **Compile-time constant param** | `f: #! N: Int, Int => Int` | Specializes `f` on compile-time constant `N` | — |
+| **Type generator** | `Pair: #! T: Type => (a: T, b: T)`<br>`#type IntPair Pair(Int)` | Compile-time function returning a composite `Type`, registered via `#type` | — |
 
 ```{.dva .run}
 #use io
 
-type_label: #! T: Type, T => String
-type_label = #! T, x => "${T.name} (${#size T}B)"
+Pair: #! T: Type => (first: T, second: T)
+#type IntPair Pair(Int)
 
-io::out $ type_label(42)
+fact: Int => Int
+fact = n => n !> 1 | 1 | n * fact(n - 1)
+
+f5 = #! fact(5)
+p = IntPair(10, f5)
+io::out $ (p.first, p.second)   // (10, 120)
 ```
 
-## Type properties and intrinsics
+## `Type` properties and compile-time intrinsics
 
-Given `T: Type`, the compiler evaluates the following properties as compile-time constants:
+Given `T: Type`, the compiler resolves the following properties as compile-time constants:
 
-| Expression | Result Type | Description |
+| Expression | Result Type | Specification |
 |---|---|---|
-| `#size T` | `Int` | ABI byte size of `T` on the target architecture |
-| `#align T` | `Int` | ABI byte alignment of `T` on the target architecture |
+| `#size T` | `Int` | Target ABI byte size of `T` |
+| `#align T` | `Int` | Target ABI byte alignment of `T` |
 | `T.name` | `String` | Declared `#type` alias name (if nominal) or canonical type name (`"Int"`, `"String"`, etc.) |
-| `T.zero` | `T` | Zero/default-initialized value of `T` (uses `f.default` on record fields where declared) |
-| `?T` | `Int` | Field count for records, element count `N` for `(E * N)`, variant count for enums, `0` for `()` |
+| `T.zero` | `T` | Default/zero-initialized value of `T` (respects `field: Type = default` on records) |
+| `?T` | `Int` | Field count for records, lane count `N` for `(E * N)`, variant count for enums, `0` for `()` |
+| `T.(i)` | `String` | Variant name of the `i`-th enum variant (`0 <= i < ?T`; `i` must be compile-time constant, `E3170`) |
 
 ```{.dva .run}
 #use io
 
-#type Config (host: String = "localhost", port: Int = 8080, tls: <>)
-#type Color < Red, Green, Blue >
+#type ServerCfg (host: String = "127.0.0.1", port: Int = 8080, tls: <>)
+#type Mode < Fast, Safe >
 
-cfg = Config.zero
-io::out $ (Config.name, ?Config, cfg.host, cfg.port, cfg.tls)
-io::out $ (Color.name, ?Color, #size Int, #align Int)
+cfg = ServerCfg.zero
+io::out $ (ServerCfg.name, ?ServerCfg, cfg.host, cfg.port, Mode.(0), #size Int, #align Int)
 ```
 
-## Structural type-shape patterns (`T [...]`)
+## Structural type-shape guards (`T [...]`)
 
-When the scrutinee of a choice is `T: Type`, branches are resolved at compile time and only the matching branch is type-checked and lowered. In addition to concrete types (`[Int, i32]`) and `type::*` predicates (`[type::is_numeric]`), guards can match structural type shapes and bind inner component types to fresh compile-time `Type` variables:
+When the scrutinee of a choice is `T: Type`, the compiler resolves the matching branch at compile time, prunes all untaken branches before type-checking/codegen, and binds inner component types in the taken branch scope:
 
-| Pattern | Matches | Bound `Type` Variables |
+| Guard Pattern | Matched Type Shape | Bound `Type` Variables in Branch Scope |
 |---|---|---|
-| `[()]` | Unit (`()`) | — |
-| `[<>]` or `[<|>]` | Flag (`<>`, both slots unit) | — |
-| `[<P|>]` | Option ramification (`<P | >`) | `P`: positive payload `Type` |
-| `[<|N>]` | Fallible ramification (`< | N>`) | `N`: negative payload `Type` |
-| `[<P | N>]` | Either ramification (`<P | N>`) | `P`: positive `Type`, `N`: negative `Type` |
+| `[Int, i32]` | Exact type equality (comma OR-list) | — |
+| `[type::is_numeric]` | Compile-time `Type => <>` predicate (`#use type`) | — |
+| `[()]` | `Unit` (`()`) | — |
+| `[<>]` or `[<|>]` | `Flag` (`<>`) | — |
+| `[<P|>]` | `RamPN` option (`< P | >`) | `P`: positive payload `Type` |
+| `[<|N>]` | `RamNP` fallible (`< | N >`) | `N`: negative payload `Type` |
+| `[<P | N>]` | `RamPP` result (`< P | N >`) | `P`: positive `Type`, `N`: negative `Type` |
 | `[E{}]` | Growable array (`E{}`) | `E`: element `Type` |
 | `[E[]]` | Slice (`E[]`) | `E`: element `Type` |
-| `[(E * ..)]` | Any fixed-size homogeneous tuple (`(E * N)`) | `E`: element `Type` |
-| `[(E * 4)]` | Fixed-size homogeneous tuple of exact length `4` | `E`: element `Type` |
-| `[K ^ V]` | Any map (`K ^ V`) | `K`: key `Type`, `V`: value `Type` |
-| `[String ^ V]` | Map with concrete key `String` | `V`: value `Type` |
-| `[(..)]` | Any record type | — |
-| `[<..>]` | Any nominal enum type | — |
+| `[(E * ..)]` | Any homogeneous tuple (`(E * N)`) | `E`: element `Type` (`?T` gives length `N`) |
+| `[(E * 4)]` | Homogeneous tuple of exact length `4` | `E`: element `Type` |
+| `[K ^ V]` / `[String ^ V]` | Hash map (`K ^ V`) | `K`: key `Type`, `V`: value `Type` |
+| `[(..)]` | Any record type | — (unroll fields with `T @ f =>`) |
+| `[<..>]` | Any nominal enum type | — (unroll variants with `T @ v =>`) |
+
+## Compile-time record field (`T @ f =>`) and enum variant (`T @ v =>`) unrolling
+
+Inside a `#!` generic function, iterating over a record `Type` (`[(..)]`) or enum `Type` (`[<..>]`) with `@` unrolls the loop body at compile time across `0..?T`:
+
+| Cursor Expression | Record Field Cursor (`T @ f =>`) | Enum Variant Cursor (`T @ v =>`) |
+|---|---|---|
+| `cursor.idx` | `Int`: `0`-based field index | `Int`: `0`-based variant tag index |
+| `cursor.name` | `String`: field name (or `"0"`, `"1"` for tuples) | `String`: declared variant label (`"Red"`, etc.) |
+| `cursor.type` | `Type`: static type of the field (`FT = f.type`) | `Type`: payload type, or `()` for unit variants |
+| `f.default` | `< f.type | >`: `<+ default_val +>` if declared, else `<-->` | — |
+| `val.(cursor)` | Reads field `f` from runtime record `val` (type `f.type`) | Returns `< v.type | >` (`<+ payload +>` / `<++>` if active tag is `v.idx`, else `<-->`) |
+| `val'.(f) = expr` | Writes `expr` to field `f` of `val'` (tracks definite init) | — |
+| `T(v)` / `T(v, p)` | — | Constructs runtime enum `T` for variant `v` |
 
 ```{.dva .run}
 #use io
 #use type
 
-describe: #! T: Type, T => String
-describe = #! T, val =>
-   T
-      [()]           "unit"
-      [<>]           (val | "true" | "false")
-      [type::is_int] "int:${val}"
-      [String]       "str:${val}"
-      [<P|>]         (val | p => "some(" + describe(p) + ")" | "none(${P.name})")
-      [<P | N>]      (val | p => "ok(" + describe(p) + ")" | n => "err(" + describe(n) + ")")
-      [E{}]          "array<${E.name}>[${?val}]"
-      [(E * ..)]     "tuple<${E.name}*${?T}>"
-      [K ^ V]        "map<${K.name}^${V.name}>[${?val}]"
-      [(..)]         "record:${T.name}(${?T})"
-      [<..>]         "enum:${T.name}(${?T})"
-      |              "other"
-
-opt_ok: <Int|>
-opt_ok = <+ 7 +>
-xs = Int{}
-xs += 10
-xs += 20
-
-io::out $ describe(opt_ok)
-io::out $ describe(xs)
-io::out $ describe((1, 2, 3, 4))
-```
-
-## Compile-time record field unrolling (`T @ f =>`)
-
-When `T` is a record type (`[(..)]`), `T @ f =>` unrolls the loop body at compile time for each field `0..?T`. Each iteration binds a compile-time field cursor `f` with:
-
-- `f.idx` (`Int`): `0`-based field index.
-- `f.name` (`String`): declared field name (or `"0"`, `"1"`, ... for positional records).
-- `f.type` (`Type`): static `Type` of the field (can be bound via `FT = f.type` and passed to recursive `#!` functions).
-- `f.default` (`<f.type|>`): `<+ default_val +>` if the `#type` declaration specified a default value (`field: Type = expr`), or `<-->` otherwise.
-- `val.(f)`: reads the field from runtime record `val` with static type `f.type`.
-- `val.(f) = expr`: writes `expr` (of type `f.type`) to field `f.idx` of mutable record `val'` (and marks the field initialized for definite-assignment analysis).
-
-```{.dva .run}
-#use io
-
 #type Point (x: Int = 1, y: Int = 2)
+#type Shape < Dot, Circle(Int), Box(Int) >
 
 inspect_record: #! T: Type, T => String
 inspect_record = #! T, rec =>
    T
       [(..)]
          b = {64}
-         b += T.name + "{"
+         b += T.name + "("
          T @ f =>
-            f.idx > 0 | b += ", "
+            f.idx > 0 | b += ","
             b += f.name + "=" + "${rec.(f)}"
-         b += "}"
+         b += ")"
          +b
       | ""
-
-p' = Point.zero
-p'.x = 10
-io::out $ inspect_record(p')
-```
-
-## Compile-time enum variant unrolling (`T @ v =>`)
-
-When `T` is a nominal enum type (`[<..>]`), `T @ v =>` unrolls at compile time over each variant `0..?T`. Each iteration binds a compile-time variant cursor `v` with:
-
-- `v.idx` (`Int`): `0`-based variant tag index.
-- `v.name` (`String`): declared variant name (`"Red"`, `"Circle"`, etc.).
-- `v.type` (`Type`): payload `Type` of the variant, or `()` (`Unit`) for unit variants.
-- `val.(v)` (`<v.type|>`): tests whether runtime enum `val` has active tag `v.idx`, returning `<+ payload +>` (or `<++>` for unit variants when `v.type [()]`) on match and `<-->` otherwise.
-- `T(v)` / `T(v, payload)` (`T`): constructs the runtime enum value for variant `v`.
-
-```{.dva .run}
-#use io
-
-#type Shape < Dot, Circle(Int), Box(Int) >
 
 enum_tag_name: #! T: Type, T => String
 enum_tag_name = #! T, val =>
@@ -169,25 +123,7 @@ enum_tag_name = #! T, val =>
          +b
       | ""
 
+p = Point(10, 20)
 s = Shape(Circle, 5)
-io::out $ enum_tag_name(s)
+io::out $ (inspect_record(p), enum_tag_name(s))
 ```
-
-## Type generators
-
-Type generators are compile-time functions that take `Type` arguments and return a composite `Type`. When evaluated with `#type`, they register concrete types:
-
-```{.dva .run}
-Pair: #! T: Type => (first: T, second: T)
-
-#type IntPair Pair(Int)
-#type FloatPair Pair(Float)
-
-ip = IntPair(10, 20)
-fp = FloatPair(1.5, 2.5)
-```
-
-## Compilation guarantees
-
-1. **Zero runtime cost**: `Type`, field cursors (`f`), and variant cursors (`v`) never exist at runtime. Attempting to lower a `Type` value to runtime produces compile error `E2018` / `E3129`.
-2. **Deterministic monomorphization**: Each distinct combination of type arguments produces a specialized function with zero dynamic dispatch or boxing overhead.
