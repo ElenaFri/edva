@@ -6,7 +6,7 @@ meta:
   evidence: "`src/codegen/types.dva`, `src/codegen/expr.dva`, `src/layout.dva`, `GRAMMAR.md`"
 ---
 
-# Type System, Scalars & `Unit`
+# Type System, Scalars and `Unit`
 
 Edva is statically typed with zero runtime type information (RTTI). All types are checked and unified at compile time and lowered directly to machine registers or arena-backed layouts.
 

@@ -6,7 +6,7 @@ meta:
   evidence: "`std/http.dva`, `tests/pass/405_std_http_ws_sse.dva`"
 ---
 
-# `http`
+# `http` standard library
 
 `#use http` provides an outbound HTTP/1.1 client with keep-alive connection
 pooling, `Transfer-Encoding: chunked` decoding, transparent `https://` support,

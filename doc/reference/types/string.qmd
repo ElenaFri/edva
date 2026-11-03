@@ -6,7 +6,7 @@ meta:
   evidence: "`src/codegen/types.dva`, `src/codegen/expr.dva`, `src/codegen/main.dva`, `GRAMMAR.md`"
 ---
 
-# `String` & `Builder`
+# `String` and `Builder`
 
 Edva separates text and byte buffers into two paired types:
 - **`String`**: Immutable, NUL-reserved 16-byte fat pointer `{ i64 len, ptr data }` with arena generation-tag safety.

@@ -6,7 +6,7 @@ meta:
   evidence: "`src/parser.dva`, `src/codegen/types.dva`, `src/codegen/expr.dva`, `src/codegen/match.dva`, `src/codegen/stmt.dva`, `tests/pass/393_structural_introspection.dva`, `GRAMMAR.md`"
 ---
 
-# Compile-Time (`#!`) & `Type` Reflection
+# Compile-Time (`#!`) and `Type` Reflection
 
 Edva uses a unified compile-time evaluation and structural reflection model introduced by `#!` and the `Type` primitive. `Type` values, field cursors (`f`), and variant cursors (`v`) exist strictly at compile time and are erased before LLVM code generation with zero runtime footprint (`E2018` / `E3129`).
 

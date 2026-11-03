@@ -6,7 +6,7 @@ meta:
   evidence: "`src/codegen/types.dva`, `src/codegen/expr.dva`, `src/codegen/runtime.dva`, `src/layout.dva`, `std/mem.dva`, `std/libc.dva`"
 ---
 
-# Memory, Arenas, `Addr` & FFI
+# Memory, Arenas, `Addr` and FFI
 
 Edva executes without a garbage collector or runtime type headers. Memory is managed deterministically through stack values, scoped bump arenas, explicit `Builder` buffers, and raw `Addr` pointers for low-level systems and C FFI interoperability.
 

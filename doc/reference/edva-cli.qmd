@@ -6,7 +6,7 @@ meta:
   evidence: "`src/edva.dva`, `src/pkg.dva`, `std/ccl.dva`, `std/cli.dva`, `test_driver.sh`"
 ---
 
-# CLI & Package Manager (`edva.ccl`)
+# CLI and Package Manager (`edva.ccl`)
 
 The `edva` binary provides single-file / modular compilation, interactive REPL and inline evaluation (`-i`, `-e`), AST/type inspection, canonical code formatting (`edva fmt`), Language Server Protocol support (`edva lsp`), and the integrated `edva pkg` package and build system.
 

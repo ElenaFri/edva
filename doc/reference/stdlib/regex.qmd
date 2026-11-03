@@ -6,7 +6,7 @@ meta:
   evidence: "`std/regex.dva`, `tests/pass/402_std_regex.dva`"
 ---
 
-# `regex`
+# `regex` standard library
 
 The `regex` module (`#use regex`) implements a linear-time regular expression engine based on Russ Cox's **Thompson NFA / PikeVM** virtual machine. Because active NFA states are deduplicated at every byte position, matching runs in guaranteed $O(N \times M)$ time with zero catastrophic backtracking (ReDoS-immune), zero external C dependencies, and full compatibility across Linux, macOS, Windows, and `wasm32-unknown-unknown`.
 

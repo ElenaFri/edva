@@ -6,7 +6,7 @@ meta:
   evidence: "`src/codegen/types.dva`, `src/codegen/expr.dva`, `tests/pass/345_implicit_ram_fallback.dva`, `GRAMMAR.md`"
 ---
 
-# Flags, Ramifications & `Error`
+# Flags, Ramifications and `Error`
 
 Edva unifies booleans, optional values, fallible statuses, and result types into a single two-slot algebraic construct: the **ramification** (*ram*). Every ramification has a **positive (first) slot** and a **negative (second) slot**.
 
