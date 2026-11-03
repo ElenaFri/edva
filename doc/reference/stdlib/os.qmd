@@ -108,3 +108,17 @@ res
    | r => io::out $ r.stdout
    | io::out $ "failed"
 ```
+
+### Working directory, environment overrides, and parallel process multiplexing
+
+```{.dva .run}
+#use io
+#use os
+
+opts = os::with_env(os::with_cwd(os::spawn_opts!, "/tmp"), "EDVA_MODE", "fast")
+c0 = os::spawn_piped_opts("sh", os::Args("-c", "printf '%s' \"$EDVA_MODE\""), opts)!!
+c1 = os::spawn_piped("printf", os::Args("parallel-ok"))!!
+
+results = os::multiplex_children(os::Children(c0, c1), 2000)
+io::out $ (results(0)!!).stdout + ":" + (results(1)!!).stdout
+```

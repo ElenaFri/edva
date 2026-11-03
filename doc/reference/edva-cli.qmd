@@ -78,8 +78,17 @@ All package commands may be invoked at top level (`edva build`) or under `edva p
 
 | Command | Arguments & Options | Behavior |
 |---|---|---|
-| `edva fmt` | `[--check] [--stdout] [--stdin] [path...]` | Canonical Edva source formatter. Normalizes block indentation (`+3` spaces for standard blocks and lambda arms `| x =>`; `+2` spaces for inline choice arm bodies `| first_line` and expression continuation lines), delimiter spacing, blank lines, and trailing whitespace while preserving intentional horizontal alignment and verifying AST equivalence via `show::show_expr`. Formats `.` recursively when no paths are given. `--check` exits `1` if any file differs; `--stdin` formats stdin to stdout |
+| `edva fmt` | `[--check] [--stdout] [--stdin] [path...]` | Canonical Edva source formatter. Normalizes block indentation, delimiter spacing, blank lines, and trailing whitespace while preserving intentional horizontal alignment and verifying AST equivalence via `show::show_expr`. Formats `.` recursively when no paths are given. `--check` exits `1` if any file differs; `--stdin` formats stdin to stdout |
 | `edva lsp` | — | JSON-RPC 2.0 Language Server Protocol server over stdio (`Content-Length` framing). Provides live diagnostics (`textDocument/publishDiagnostics`), inferred-type hover (`textDocument/hover`), same-file and cross-module go-to-definition (`textDocument/definition`), document symbols (`textDocument/documentSymbol`), completion (`textDocument/completion`), and canonical formatting (`textDocument/formatting`) |
+
+### `edva fmt` formatting rules
+
+| Rule | Construct | Indentation / Behavior |
+|---|---|---|
+| **Standard blocks (`+3` spaces)** | Function/lambda bodies (`=>`, `!=>`, `| x =>`), cycle bodies (`@`, `@@`, `>--`), `[guard]` arm bodies, choice arms relative to the choice head, and `#type` / `#foreign` / `#public` / `#private` blocks | Indented by **`+3` spaces** relative to the enclosing statement or inline-started block opener (`my_fn = a, b => first_line` followed by `second_line` at `+3` spaces) |
+| **Inline choice arm bodies (`+2` spaces)** | Choice arm starting on the same line as `|` or `!|` (`| first_line`) | Subsequent statements of the arm block indent by **`+2` spaces** relative to `|`, aligning directly under `first_line` |
+| **Expression continuations (`+2` spaces)** | Multi-line expressions wrapped after a trailing binary or continuation operator (`+`, `-`, `*`, `/`, `&&`, `||`, `,`, `$`, etc.) | Indented by **`+2` spaces** relative to the statement's starting column |
+| **Horizontal alignment** | Multi-space column alignment in `[guard]` tables, `#type` / `#foreign` declarations, and inline comments | Preserved intact |
 
 ## Package directory layout and `edva.ccl` manifest schema
 

@@ -3,7 +3,7 @@ meta:
   audience: "Edva users"
   status: "current reference"
   audited: "8b8cb19"
-  evidence: "`src/lexer.dva`, `src/parser.dva`, `GRAMMAR.md`, `tests/pass/104_builder_literal.dva`"
+  evidence: "`src/lexer.dva`, `src/parser.dva`, `src/formatter.dva`, `GRAMMAR.md`, `tests/pass/104_builder_literal.dva`, `tests/pass/403_inline_started_blocks.dva`"
 ---
 
 # Lexical Structure & Literals
@@ -14,8 +14,9 @@ meta:
 |---|---|---|
 | **File suffix & encoding** | UTF-8 text in `.dva` source files | — |
 | **Comments** | `//` to end of line; discarded before token stream construction | — |
-| **Significant indentation** | Spaces only (no tabs). Indentation deeper than the current block margin opens a block or continues an expression; returning to an outer column closes open blocks | `E1011`: tab in indentation<br>`E2017`: dedent to unaligned column |
-| **Line continuation** | Lines inside `(...)`, `[...]`, `{...}`, or `<...>`, or following a trailing binary operator / `,` / `=>` / `|`, continue the current expression without emitting statement breaks | — |
+| **Significant indentation** | Spaces only (no tabs). Indentation deeper than the current block margin opens a block or continues an expression; returning to an outer column closes open blocks | `E1011`: tab in indentation<br>`E1004` / `E2017`: dedent to unaligned column |
+| **Inline-started blocks** | Any block or branch body (`|`, `!|`, `[guard]`, `=>`, `!=>`, `@`, `@@`, `>--`) is a block whether its first statement starts on the next line or on the **same line** as the opener (`| first_line` followed by subsequent statements at `+2` spaces; `fn = a, b => first_line` or `[Guard] first_line` followed by subsequent statements at `+3` spaces) | — |
+| **Line continuation** | Lines inside `(...)`, `[...]`, `{...}`, or `<...>`, or following a trailing binary/continuation operator (indented `+2` spaces), continue the current expression without emitting statement breaks | — |
 | **Multiline column alignment** | Aligned items in multiline `#type` record/enum blocks are separated by newlines; multiple items on a single line require commas | `E2015`: missing comma on same line |
 | **Same-line sequence (`;`)** | `a; b` sequences statements on a single line (LBP 20, RBP 30) and yields the last expression's value | — |
 
