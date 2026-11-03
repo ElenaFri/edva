@@ -20,6 +20,8 @@
 #use "mem"
 #use "ccl"
 #use "pkg"
+#use "formatter"
+#use "lsp"
 #use "version"
 #use "poll"
 #use "cli"
@@ -402,7 +404,13 @@ prefix_stmt_to_acc = e, prefix, publics, privates, acc, is_interface =>
                      acc += e
 
 file_exists: String => <>
-file_exists = path => fs::exists(path) && !fs::is_dir(path)
+file_exists = path => lsp::has_override(path) || (fs::exists(path) && !fs::is_dir(path))
+
+loader_error: Int, String, String => ()
+loader_error = code, path, msg =>
+   diag::is_capturing!
+      | diag::record_diag(code, path, 1, 1, msg, <->)
+      | log::error(msg)
 
 dir_exists: String => <>
 dir_exists = path => fs::is_dir(path)
@@ -776,20 +784,23 @@ read_fd_bytes_loop = fd, b, off, rem =>
 
 read_file_text: String => < String | >
 read_file_text = path =>
-   fd = libc::open(path, 0)
-   fd < 0 | --| <-->
-   sz = libc::lseek(fd, 0, 2)
-   sz < 0 | libc::close(fd); --| <-->
-   sz == 0 | libc::close(fd); --| <+ "" +>
-   libc::lseek(fd, 0, 0)
-   b = {sz}
-   read_res = read_fd_bytes_loop(fd, b, 0, sz)
-   libc::close(fd)
-   read_res
-      | total =>
-         ?b = total
-         <+ +b +>
-      | <-->
+   lsp::get_override_text(path)
+      | txt => <+ txt +>
+      |
+         fd = libc::open(path, 0)
+         fd < 0 | --| <-->
+         sz = libc::lseek(fd, 0, 2)
+         sz < 0 | libc::close(fd); --| <-->
+         sz == 0 | libc::close(fd); --| <+ "" +>
+         libc::lseek(fd, 0, 0)
+         b = {sz}
+         read_res = read_fd_bytes_loop(fd, b, 0, sz)
+         libc::close(fd)
+         read_res
+            | total =>
+               ?b = total
+               <+ +b +>
+            | <-->
 
 collect_module_exports: ast::Exprs, String, String, <>, ImportMap, ImportMap => <>
 collect_module_exports = exprs, bound_name, canonical_id, is_import, table, sources =>
@@ -1152,9 +1163,9 @@ load_stmts = stmts, base, prefix, publics, privates, ldr, path, lines, cols =>
                [None]
                   !starts_with(imp.module_path, "@")
                      |
-                        log::error $ "E5006: Imported module '" + imp.module_name +
+                        loader_error(5006, path, "E5006: Imported module '" + imp.module_name +
                            "' not found at '" + imp.module_path +
-                           "' or in stdlib"
+                           "' or in stdlib")
                   ok' = <->
                |
                   cid = get_resolved_cid(resolved)
@@ -2935,6 +2946,25 @@ run_eval = opts =>
          eval_cleanup(eval_dir, eval_file, "", "")
          sys::exit(0)
 
+lsp_typecheck_doc: String => ()
+lsp_typecheck_doc = path =>
+   ast::cell_var_reset!
+   eff_triple = get_default_target_triple(0)
+   parser::set_target_triple(eff_triple)
+   annotate::set_target_triple(eff_triple)
+   res = load_all(path, "", <+>, "")
+   res.ok
+      |
+         annotate::set_source_file(path)
+         annotate::set_program_locs(res.out_files, res.out_lines, res.out_cols)
+         prog = ast::Expr(Block, res.exprs)
+         el_res = annotate::annotate_program(prog)
+         el_res
+            | succ =>
+               lsp::record_typecheck_ok(succ.ctx, succ.prog)
+            | errs =>
+               lsp::record_typecheck_errs(path, errs)
+
 run_driver: Int => ()
 run_driver = ignored =>
    log::set_fd(1)
@@ -2948,6 +2978,14 @@ run_driver = ignored =>
          rc = pkg::main(1)
          sys::exit(rc)
    init_compiler_paths!
+   sys::argc > 1 && sys::argv_string(1) == "fmt"
+      |
+         rc = formatter::main(2)
+         sys::exit(rc)
+   sys::argc > 1 && sys::argv_string(1) == "lsp"
+      |
+         rc = lsp::main(compiler_std_dir, lsp_typecheck_doc)
+         sys::exit(rc)
    ast::cell_var_reset!
    opts = parse_cli_opts!
    eff_triple = opts.triple != "" | opts.triple | get_default_target_triple(0)

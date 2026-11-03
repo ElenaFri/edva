@@ -228,9 +228,12 @@ parser_skip_layout = p =>
 parser_error: Parser, Int, String => ()
 parser_error = p, code, msg =>
    p.recovered_errors = p.recovered_errors + 1
-   fn = p.source_file != "" | p.source_file + ":" | ""
-   log::error $ fn + str::from_int(p.curr.line) + ":" + str::from_int(p.curr.col) +
-      ": E" + str::from_int(code) + ": " + msg
+   diag::is_capturing!
+      | diag::record_diag(code, p.source_file, p.curr.line, p.curr.col, msg, <->)
+      |
+         fn = p.source_file != "" | p.source_file + ":" | ""
+         log::error $ fn + str::from_int(p.curr.line) + ":" + str::from_int(p.curr.col) +
+            ": E" + str::from_int(code) + ": " + msg
 
 // --- precedence (binary operators) ----------------------------------------
 
@@ -2624,7 +2627,7 @@ parse_program = p =>
    r = prog_loop(p, ast::Exprs())
    r
       | stmts =>
-         p.recovered_errors > 0
+         p.recovered_errors > 0 || lexer::lex_failed!
             | <-->
             |
                resolve_refs(p)
@@ -2645,13 +2648,19 @@ resolve_refs = p =>
          |
             has_mod
             |
-               log::error $ fn + str::from_int(fr.tok.line) + ":" +
-                  str::from_int(fr.tok.col) + ": E3120: Unresolved type name '" +
-                  fr.name + "'"
+               diag::is_capturing!
+                  | diag::record_diag(3120, p.source_file, fr.tok.line, fr.tok.col,
+                       "Unresolved type name '" + fr.name + "'", <->)
+                  | log::error $ fn + str::from_int(fr.tok.line) + ":" +
+                       str::from_int(fr.tok.col) + ": E3120: Unresolved type name '" +
+                       fr.name + "'"
             |
-               log::error $ fn + str::from_int(fr.tok.line) + ":" +
-                  str::from_int(fr.tok.col) + ": E2014: Unknown type name '" +
-                  fr.name + "'"
+               diag::is_capturing!
+                  | diag::record_diag(2014, p.source_file, fr.tok.line, fr.tok.col,
+                       "Unknown type name '" + fr.name + "'", <->)
+                  | log::error $ fn + str::from_int(fr.tok.line) + ":" +
+                       str::from_int(fr.tok.col) + ": E2014: Unknown type name '" +
+                       fr.name + "'"
             ok' = <->
    ok'
 

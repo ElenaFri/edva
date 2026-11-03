@@ -71,8 +71,8 @@ endif
 POLL_BACKEND ?= poll
 
 # --- Modules and Objects -----------------------------------------------------
-STD_MODULES      := const ascii utf str mem sys libc unicode io ccl uring event path fs cli time log
-COMPILER_MODULES := poll diag ast llvm operators dep_graph layout tast lexer unify type_env show parser annotate version pkg \
+STD_MODULES      := const ascii utf str mem sys libc unicode io ccl json uring event path fs cli time log
+COMPILER_MODULES := poll diag ast llvm operators dep_graph layout tast lexer unify type_env show parser annotate version pkg formatter lsp \
                     codegen/types codegen/runtime codegen/expr codegen/match codegen/stmt codegen/main codegen
 ENTRY_MODULE     := edva
 

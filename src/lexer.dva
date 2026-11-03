@@ -145,6 +145,7 @@
 
 lex_init: String => Lx
 lex_init = src => 
+   cur_lex_failed ::= <->
    lx = Lx(src, 0, 1, 1, 1, 0, IntArr(), 1, TokArr(), 0, <->, "", "", 0, 0)
    st = lx.stack
    st += 0
@@ -219,25 +220,36 @@ mktok = lx, kind, start, len, line, col, text =>
 
 // --- errors ---------------------------------------------------------------
 cur_lex_file = ""
+cur_lex_failed = <->
 
 #public
 
 lex_set_file: String => ()
 lex_set_file = file =>
    cur_lex_file ::= file
+   cur_lex_failed ::= <->
 
 lex_get_file: () => String
 lex_get_file = !=> cur_lex_file
 
+lex_failed: () => <>
+lex_failed = !=> cur_lex_failed
+
 fail: Int, Int, Int, String => Int
 fail = code, line, col, msg =>
-   b = {128}
-   fn = cur_lex_file != "" | cur_lex_file + ":" | ""
-   b += (fn, str::from_int(line), ":", str::from_int(col), ": E",
-      str::from_int(code), ": ", msg)
-   log::error(+b)
-   #exit 1
-   0
+   diag::is_capturing!
+      |
+         cur_lex_failed ::= <+>
+         diag::record_diag(code, cur_lex_file, line, col, msg, <->)
+         0
+      |
+         b = {128}
+         fn = cur_lex_file != "" | cur_lex_file + ":" | ""
+         b += (fn, str::from_int(line), ":", str::from_int(col), ": E",
+            str::from_int(code), ": ", msg)
+         log::error(+b)
+         #exit 1
+         0
 
 // --- escapes --------------------------------------------------------------
 
@@ -1346,7 +1358,12 @@ comment_line = lx, q =>
 // eof_tok here would make every token an Eof (the original port bug).
 next_tok: Lx, Int => Tok
 next_tok = lx, q => 
-   lx.qfront < ?lx.queue | take_queued(lx, 0) | dispatch_bol(lx, q)
+   cur_lex_failed
+      |
+         lx.pos = ?lx.src
+         Tok(TokKind(Eof), lx.pos, 0, lx.line, lx.col, <->, <->, "")
+      |
+         lx.qfront < ?lx.queue | take_queued(lx, 0) | dispatch_bol(lx, q)
 
 count_leading_indent: String => Int
 count_leading_indent = s =>
@@ -1379,6 +1396,7 @@ scan_str_expr = lx, is_multiline =>
             !is_multiline |
                fail(1018, lx.line, lx.col,
                   "Unterminated string literal -- missing closing '}' in interpolation")
+               -->
             --^
          [Indent, Dedent] --^
          [LBrace]

@@ -1,0 +1,1013 @@
+// src/lsp.dva — Edva Language Server Protocol (`edva lsp`) implementation.
+//
+// Speaks JSON-RPC 2.0 over stdin/stdout (`Content-Length` framing) and
+// provides live diagnostics (`textDocument/publishDiagnostics`), type hover
+// (`textDocument/hover`), go-to-definition (`textDocument/definition`),
+// document symbols (`textDocument/documentSymbol`), completion
+// (`textDocument/completion`), and canonical formatting
+// (`textDocument/formatting`) powered by Edva's self-hosted frontend.
+
+#use "lexer"
+#use "parser"
+#use "ast"
+#use "tast"
+#use "unify"
+#use "annotate"
+#use "show"
+#use "diag"
+#use "formatter"
+#use "str"
+#use "path"
+#use "log"
+#use "version"
+#use fs
+#use json
+#use libc
+#use sys
+
+#public
+
+// LSP SymbolKind constants
+SYM_FUNCTION = 12
+SYM_VARIABLE = 13
+SYM_CONSTANT = 14
+SYM_STRUCT   = 23
+SYM_ENUM     = 10
+
+#type SymEntry (
+   name: String,
+   detail: String,
+   kind: Int,
+   line: Int,
+   col: Int,
+   end_line: Int,
+   end_col: Int
+)
+#type SymEntries SymEntry{}
+
+#type DocState (
+   uri: String,
+   path: String,
+   text: String,
+   syms: SymEntries
+)
+#type DocStates DocState{}
+
+open_docs = DocStates()
+stdlib_dir_path = ""
+pending_syms = SymEntries()
+pending_diags = diag::DiagEntries()
+
+set_stdlib_dir: String => ()
+set_stdlib_dir = dir =>
+   stdlib_dir_path ::= dir
+
+has_override: String => <>
+has_override = fpath =>
+   docs = open_docs
+   found' = <->
+   ?docs @ i =>
+      d = docs(i)!!
+      d.path == fpath
+         |
+            found' = <+>
+            -->
+   found'
+
+get_override_text: String => < String | >
+get_override_text = fpath =>
+   docs = open_docs
+   res' = <-->
+   ?docs @ i =>
+      d = docs(i)!!
+      d.path == fpath
+         |
+            res' = <+ d.text +>
+            -->
+   res'
+
+record_typecheck_ok: unify::Ctx, tast::TypedProgram => ()
+record_typecheck_ok = ctx, tprog =>
+   enrich_symbols_with_tast(pending_syms, ctx, tprog)
+
+record_typecheck_errs: String, unify::TypeErrors => ()
+record_typecheck_errs = fpath, errs =>
+   errs @ e =>
+      (e.file == "" || e.file == fpath)
+         | add_unique_diag(pending_diags, diag::DiagEntry(e.code, fpath, e.line, e.col, e.msg, <->))
+
+// --- Low-level JSON-RPC 2.0 Framing over fd 0 / fd 1 -----------------------
+
+read_byte: () => Int
+read_byte = !=>
+   buf = {4}
+   n = libc::read(0, &buf, 1)
+   n !> 0
+      | -1
+      |
+         ?buf = 1
+         buf(0) .&. 0xFF
+
+read_header_line: () => < String | >
+read_header_line = !=>
+   b = {128}
+   eof' = <->
+   0.. @
+      c = read_byte!
+      c < 0
+         |
+            ?b == 0 | eof' = <+>
+            -->
+      c == '\n' | -->
+      c != '\r' | b += c
+   eof' | <--> | <+ +b +>
+
+parse_content_length: String => Int
+parse_content_length = line =>
+   lower = str::lower(line)
+   prefix = "content-length:"
+   ?lower !< ?prefix && lower(0..?prefix) == prefix
+      |
+         rest = str::trim(line(?prefix..?line))
+         str::to_int(rest) | (.0) | -1
+      | -1
+
+read_exact_bytes: Int => < String | >
+read_exact_bytes = count =>
+   count !> 0 | --| <+ "" +>
+   out = {count}
+   rem' = count
+   chunk = {4096}
+   err' = <->
+   0.. @
+      rem' !> 0 | -->
+      want = rem' < 4096 | rem' | 4096
+      n = libc::read(0, &chunk, want)
+      n !> 0
+         |
+            err' = <+>
+            -->
+      ?chunk = n
+      out += +chunk
+      rem' = rem' - n
+   err' | <--> | <+ +out +>
+
+read_rpc_message: () => < String | >
+read_rpc_message = !=>
+   content_len' = -1
+   eof' = <->
+   0.. @
+      line_opt = read_header_line!
+      line_opt
+         | line =>
+            ?line == 0
+               |
+                  content_len' !< 0 | -->
+               |
+                  cl = parse_content_length(line)
+                  cl !< 0 | content_len' = cl
+         |
+            eof' = <+>
+            -->
+   eof' || content_len' < 0
+      | <-->
+      | read_exact_bytes(content_len')
+
+send_rpc_payload: String => ()
+send_rpc_payload = body =>
+   hdr = "Content-Length: " + str::from_int(?body) + "\r\n\r\n"
+   msg = hdr + body
+   len = ?msg
+   off' = 0
+   0.. @
+      off' !< len | -->
+      slice = msg(off'..len)
+      w = libc::write(1, slice, ?slice)
+      w !> 0 | -->
+      off' = off' + w
+
+// --- URI <-> Filesystem Path Conversion ------------------------------------
+
+hex_val: Int => Int
+hex_val = c =>
+   c ['0'...'9'] c - '0'
+   c ['a'...'f'] c - 'a' + 10
+   c ['A'...'F'] c - 'A' + 10
+   | -1
+
+uri_to_path: String => String
+uri_to_path = uri =>
+   prefix = "file://"
+   raw = ?uri !< ?prefix && uri(0..?prefix) == prefix
+      | uri(?prefix..?uri)
+      | uri
+   b = {?raw}
+   i' = 0
+   n = ?raw
+   0.. @
+      i' !< n | -->
+      c = raw(i')
+      c == '%' && i' + 2 < n
+         |
+            hi = hex_val(raw(i' + 1))
+            lo = hex_val(raw(i' + 2))
+            hi !< 0 && lo !< 0
+               |
+                  b += (hi * 16 + lo)
+                  i' = i' + 3
+               |
+                  b += c
+                  i' = i' + 1
+         |
+            b += c
+            i' = i' + 1
+   +b
+
+path_to_uri: String => String
+path_to_uri = p =>
+   ?p !< 7 && p(0..7) == "file://"
+      | p
+      | "file://" + p
+
+// --- AST & Type Inspection Helpers -----------------------------------------
+
+format_value_type: ast::ValueType => String
+format_value_type =
+   [Int] "Int"
+   [I8] "i8"
+   [I16] "i16"
+   [I32] "i32"
+   [I64] "i64"
+   [U8] "u8"
+   [U16] "u16"
+   [U32] "u32"
+   [U64] "u64"
+   [Float] "Float"
+   [F32] "f32"
+   [Str] "String"
+   [Rune] "Rune"
+   [Flag] "<>"
+   [Unit] "()"
+   [RawPtr] "Addr"
+   [Builder] "Builder"
+   [Error] "Error"
+   [Type] "Type"
+   | "_"
+
+format_type_info: ast::TypeInfo => String
+format_type_info = ti =>
+   ti
+      [Prim vt] format_value_type(vt)
+      [TypeVar name] name
+      [Rec r]
+         fs = r.0
+         is_sl = r.1
+         is_sl
+            |
+               ?fs > 0
+                  |
+                     f0 = fs(0)!!
+                     format_type_info(f0.rec_type) + "[]"
+                  | "_[]"
+            |
+               b = {64}
+               b += "("
+               fs @ f, idx =>
+                  idx > 0 | b += ", "
+                  f.name != "" | b += (f.name, ": ")
+                  ft = format_type_info(f.rec_type)
+                  b += (ft != "_" | ft | format_value_type(f.val_type))
+               b += ")"
+               +b
+      [Bitfield bf]
+         "#packed " + format_value_type(bf.backing_type)
+      [Ram rm]
+         pos = rm.0
+         neg = rm.1
+         ps = pos.has_payload
+            |
+               pt = format_type_info(pos.payload_record)
+               pt != "_" | pt | format_value_type(pos.payload_type)
+            | ""
+         ns = neg.has_payload
+            |
+               nt = format_type_info(neg.payload_record)
+               nt != "_" | nt | format_value_type(neg.payload_type)
+            | ""
+         "< " + ps + " | " + ns + " >"
+      [Enum slots]
+         b = {64}
+         b += "< "
+         slots @ s, idx =>
+            idx > 0 | b += ", "
+            b += s.label
+            s.has_payload
+               |
+                  pt = format_type_info(s.payload_record)
+                  b += "(" + (pt != "_" | pt | format_value_type(s.payload_type)) + ")"
+         b += " >"
+         +b
+      [Array a]
+         et = format_type_info(a.1)
+         base = et != "_" | et | format_value_type(a.0)
+         base + "{" + (a.2 > 0 | str::from_int(a.2) | "") + "}"
+      [Map m]
+         kt = format_value_type(m.0)
+         vt = format_type_info(m.2)
+         v_str = vt != "_" | vt | format_value_type(m.1)
+         kt + " ^ " + v_str
+      [Fn f]
+         p_vts = f.0
+         p_tis = f.1
+         r_vt = f.2
+         r_ti = f.3
+         b = {64}
+         ?p_vts == 0
+            | b += "()"
+            |
+               ?p_vts @ idx =>
+                  idx > 0 | b += ", "
+                  pti = idx < ?p_tis | format_type_info(p_tis(idx)!!) | "_"
+                  b += (pti != "_" | pti | format_value_type(p_vts(idx)!!))
+         b += " => "
+         rti = format_type_info(r_ti)
+         b += (rti != "_" | rti | format_value_type(r_vt))
+         +b
+      [Align a]
+         "#align " + str::from_int(a.0) + " " + format_type_info(a.1)
+      | "_"
+
+is_fwd_marker: ast::Expr => <>
+is_fwd_marker = e =>
+   e
+      [Var v] ?v !< 5 && v(0..5) == "<fwd>"
+      | <->
+
+// Extract top-level symbols from parsed AST and optional solved TypedProgram.
+extract_symbols: ast::Exprs, ast::Ints, ast::Ints => SymEntries
+extract_symbols = stmts, lines, cols =>
+   syms = SymEntries()
+   stmts @ st, idx =>
+      ln = idx < ?lines | (lines(idx) | _ | 1) | 1
+      cl = idx < ?cols | (cols(idx) | _ | 1) | 1
+      st
+         [TypeDecl td]
+            k = td.type_info [Enum] SYM_ENUM | SYM_STRUCT
+            detail = "#type " + td.name + " " + format_type_info(td.type_info)
+            syms += SymEntry(td.name, detail, k, ln, cl, ln, cl + ?td.name)
+         [Foreign fd]
+            b = {64}
+            b += ("#foreign ", fd.dva_name, ": ")
+            ?fd.params == 0
+               | b += "()"
+               |
+                  fd.params @ p, pi =>
+                     pi > 0 | b += ", "
+                     pti = format_type_info(p.record_info)
+                     b += (pti != "_" | pti | format_value_type(p.param_type))
+            b += " => "
+            rti = format_type_info(fd.ret_record_info)
+            b += (rti != "_" | rti | format_value_type(fd.return_type))
+            syms += SymEntry(fd.dva_name, +b, SYM_FUNCTION, ln, cl, ln, cl + ?fd.dva_name)
+         [Assign a]
+            name = a.0
+            rhs = a.5
+            annot_ti = a.8
+            is_fwd = is_fwd_marker(rhs)
+            is_fn = rhs [Fn] || annot_ti [Fn]
+            kind = is_fn | SYM_FUNCTION | (a.1 | SYM_VARIABLE | SYM_CONSTANT)
+            ti_str = format_type_info(annot_ti)
+            detail = ti_str != "_"
+               | name + ": " + ti_str
+               |
+                  rhs
+                     [Fn fn_e]
+                        pb = {32}
+                        ?fn_e.params == 0
+                           | pb += "()"
+                           |
+                              fn_e.params @ pn, pi =>
+                                 pi > 0 | pb += ", "
+                                 pb += pn
+                        name + " = " + (+pb) + " => ..."
+                     | name
+            // If a forward signature `f: T` was already recorded, update its detail or skip duplicate
+            updated' = <->
+            !is_fwd
+               |
+                  ?syms @ si =>
+                     prev = syms(si)!!
+                     prev.name == name
+                        |
+                           new_det = prev.detail != name | prev.detail | detail
+                           syms(si) = SymEntry(name, new_det, is_fn | SYM_FUNCTION | prev.kind,
+                              prev.line, prev.col, ln, cl + ?name) !| _
+                           updated' = <+>
+            !updated'
+               | syms += SymEntry(name, detail, kind, ln, cl, ln, cl + ?name)
+   syms
+
+update_sym_type: SymEntries, String, String => ()
+update_sym_type = syms, b_name, ut_str =>
+   ut_str != "" && ut_str != "?"
+      |
+         ?syms @ i =>
+            s = syms(i)!!
+            s.name == b_name && (s.detail == b_name || s.detail(?s.detail - 3..) == "...")
+               |
+                  syms(i) = SymEntry(s.name, b_name + ": " + ut_str,
+                     s.kind, s.line, s.col, s.end_line, s.end_col) !| _
+
+// Enrich symbol details with inferred types from `annotate::annotate_program` when available.
+enrich_symbols_with_tast: SymEntries, unify::Ctx, tast::TypedProgram => ()
+enrich_symbols_with_tast = syms, ctx, tprog =>
+   tprog @ tst =>
+      tst
+         [Expr te]
+            te.kind
+               [Assign a]
+                  a_name = a.0
+                  a_val = a.5
+                  ut_str = unify::show_utype(ctx, a_val.ut)
+                  update_sym_type(syms, a_name, ut_str)
+         [Binding b]
+            b_name = b.0
+            b_te = b.2
+            ut_str = unify::show_utype(ctx, b_te.ut)
+            update_sym_type(syms, b_name, ut_str)
+         [GlobalBinding gb]
+            gb_name = gb.0
+            gb_te = gb.2
+            ut_str = unify::show_utype(ctx, gb_te.ut)
+            update_sym_type(syms, gb_name, ut_str)
+
+has_use_imports: ast::Exprs => <>
+has_use_imports = stmts =>
+   found' = <->
+   stmts @ st =>
+      st [Import]
+         |
+            found' = <+>
+            -->
+   found'
+
+// --- JSON Builders for LSP Responses & Notifications -----------------------
+
+lsp_range_json: Int, Int, Int, Int => String
+lsp_range_json = sl, sc, el, ec =>
+   s_line = sl > 0 | sl - 1 | 0
+   s_col  = sc > 0 | sc - 1 | 0
+   e_line = el > 0 | el - 1 | s_line
+   e_col  = ec > 0 | ec - 1 | s_col + 1
+   "{\"start\":{\"line\":" + str::from_int(s_line) +
+      ",\"character\":" + str::from_int(s_col) +
+      "},\"end\":{\"line\":" + str::from_int(e_line) +
+      ",\"character\":" + str::from_int(e_col) + "}}"
+
+lsp_diag_json: Int, Int, Int, String, <> => String
+lsp_diag_json = code, line, col, msg, is_warn =>
+   sev = is_warn | 2 | 1
+   rng = lsp_range_json(line, col, line, col + 1)
+   code_pfx = "E" + str::from_int(code) + ": "
+   has_pfx = ?msg !< ?code_pfx && msg(0..?code_pfx) == code_pfx
+   full_msg = has_pfx | msg | code_pfx + msg
+   "{\"range\":" + rng +
+      ",\"severity\":" + str::from_int(sev) +
+      ",\"code\":\"E" + str::from_int(code) + "\"" +
+      ",\"source\":\"edva\"" +
+      ",\"message\":" + json::escape_string(full_msg) + "}"
+
+publish_diagnostics: String, diag::DiagEntries => ()
+publish_diagnostics = uri, diags =>
+   b = {512}
+   b += "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":"
+   b += json::escape_string(uri)
+   b += ",\"diagnostics\":["
+   diags @ d, idx =>
+      idx > 0 | b += ","
+      b += lsp_diag_json(d.code, d.line, d.col, d.msg, d.is_warn)
+   b += "]}}"
+   send_rpc_payload(+b)
+
+// --- Document Analysis & Caching -------------------------------------------
+
+upsert_doc: String, String, String, SymEntries => ()
+upsert_doc = uri, fpath, text, syms =>
+   docs = open_docs
+   found' = <->
+   ?docs @ i =>
+      d = docs(i)!!
+      d.uri == uri
+         |
+            docs(i) = DocState(uri, fpath, text, syms) !| _
+            found' = <+>
+            -->
+   !found'
+      |
+         docs += DocState(uri, fpath, text, syms)
+         open_docs ::= docs
+
+get_doc: String => < DocState | >
+get_doc = uri =>
+   docs = open_docs
+   res' = <-->
+   ?docs @ i =>
+      d = docs(i)!!
+      d.uri == uri
+         |
+            res' = <+ d +>
+            -->
+   res'
+
+remove_doc: String => ()
+remove_doc = uri =>
+   docs = open_docs
+   next = DocStates()
+   docs @ d =>
+      d.uri != uri | next += d
+   open_docs ::= next
+
+has_diag: diag::DiagEntries, diag::DiagEntry => <>
+has_diag = list, item =>
+   found' = <->
+   list @ d =>
+      d.code == item.code && d.line == item.line && d.col == item.col && d.msg == item.msg
+         |
+            found' = <+>
+            -->
+   found'
+
+add_unique_diag: diag::DiagEntries, diag::DiagEntry => ()
+add_unique_diag = list, item =>
+   !has_diag(list, item) | list += item
+
+analyze_document: String, String, (String => ()) => ()
+analyze_document = uri, text, tc_hook =>
+   fpath = uri_to_path(uri)
+   ast::cell_var_reset!
+   diag::enable_capture!
+   lexer::lex_set_file(fpath)
+   ppr = parser::parse_init(text)
+   parser::parser_set_file(ppr, fpath)
+   ppr.allow_module_refs = <+>
+   prog_res = parser::parse_program(ppr)
+   captured = diag::get_captured!
+   diag::disable_capture!
+
+   all_diags = diag::DiagEntries()
+   captured @ cd => add_unique_diag(all_diags, cd)
+
+   syms' = SymEntries()
+   upsert_doc(uri, fpath, text, syms')
+   prog_res
+      | prog =>
+         prog
+            [Block stmts]
+               folded = parser::fold_program_consts(stmts)
+               syms' = extract_symbols(folded, ppr.top_lines, ppr.top_cols)
+               upsert_doc(uri, fpath, text, syms')
+               ?all_diags == 0
+                  |
+                     !has_use_imports(folded)
+                        |
+                           files = ast::Names()
+                           ?folded @
+                              files += fpath
+                           annotate::set_source_file(fpath)
+                           annotate::set_program_locs(files, ppr.top_lines, ppr.top_cols)
+                           el_res = annotate::annotate_program(ast::Expr(Block, folded))
+                           el_res
+                              | succ =>
+                                 enrich_symbols_with_tast(syms', succ.ctx, succ.prog)
+                              | errs =>
+                                 errs @ e =>
+                                    add_unique_diag(all_diags, diag::DiagEntry(e.code, e.file, e.line, e.col, e.msg, <->))
+                        |
+                           pending_syms ::= syms'
+                           pending_diags ::= all_diags
+                           diag::enable_capture!
+                           tc_hook(fpath)
+                           ld_captured = diag::get_captured!
+                           diag::disable_capture!
+                           ld_captured @ lcd =>
+                              (lcd.file == "" || lcd.file == fpath)
+                                 | add_unique_diag(pending_diags, lcd)
+                           syms' = pending_syms
+   upsert_doc(uri, fpath, text, syms')
+   publish_diagnostics(uri, all_diags)
+
+// --- Word / Identifier Extraction at Cursor (0-based line, character) ------
+
+is_ident_char: Int => <>
+is_ident_char = c =>
+   c ['a'...'z', 'A'...'Z', '0'...'9', '_', '\'', '#', ':']
+
+get_line_at: String, Int => String
+get_line_at = text, target_line =>
+   n = ?text
+   pos' = 0
+   cur_line' = 0
+   res' = ++""
+   0.. @
+      pos' !< n | -->
+      lstart = pos'
+      0.. @
+         pos' !< n || text(pos') == '\n' | -->
+         pos' = pos' + 1
+      cur_line' == target_line
+         |
+            lend = pos' > lstart && text(pos' - 1) == '\r' | pos' - 1 | pos'
+            res' = text(lstart..lend)
+            -->
+      pos' < n && text(pos') == '\n' | pos' = pos' + 1
+      cur_line' = cur_line' + 1
+   res'
+
+count_doc_lines: String => Int
+count_doc_lines = text =>
+   cnt' = 1
+   ?text @ i =>
+      text(i) == '\n' | cnt' = cnt' + 1
+   cnt'
+
+extract_word_at: String, Int, Int => String
+extract_word_at = text, line0, char0 =>
+   line_str = get_line_at(text, line0)
+   n = ?line_str
+   n == 0 | --| ""
+   idx = char0 < n | (char0 < 0 | 0 | char0) | n - 1
+   !is_ident_char(line_str(idx)) | --| ""
+   s' = idx
+   0.. @
+      s' > 0 && is_ident_char(line_str(s' - 1))
+         | s' = s' - 1
+         | -->
+   e' = idx + 1
+   0.. @
+      e' < n && is_ident_char(line_str(e'))
+         | e' = e' + 1
+         | -->
+   line_str(s'..e')
+
+builtin_hover_doc: String => String
+builtin_hover_doc = word =>
+   word
+      ["Int"] "`Int` — 64-bit signed integer (`i64`, 8 bytes)."
+      ["Float"] "`Float` — 64-bit IEEE-754 floating-point (`f64`, 8 bytes)."
+      ["String"] "`String` — Immutable UTF-8 byte view (`{ ptr, i64 }`, 16 bytes)."
+      ["Rune"] "`Rune` — Unicode scalar value (`i32`, 4 bytes)."
+      ["Builder"] "`Builder` — Mutable Arena-backed byte buffer (`{ cap }`)."
+      ["Addr"] "`Addr` — Untyped raw memory address (`@[addr]`, `&x`)."
+      ["Error"] "`Error` — Structured error record (`code`, `message`, `file`, `line`, `col`, `context`)."
+      ["Type"] "`Type` — First-class compile-time type value (`#! T: Type`)."
+      ["#use"] "`#use <module>` — Imports a standard library, relative, or `@pkg` module."
+      ["#type"] "`#type <Name> <Def>` — Declares a named record, bitfield, ramification, or enum."
+      ["#foreign"] "`#foreign \"<abi>\"` — Declares external C ABI functions or symbols."
+      ["#public"] "`#public` — Exports subsequent declarations from the current module."
+      ["#private"] "`#private` — Marks subsequent declarations module-private."
+      ["#export"] "`#export` — Exports a function with unmangled C ABI linkage."
+      ["#size"] "`#size <Type>` — Compile-time byte size of a type (`Int`)."
+      ["#align"] "`#align <Type>` — Compile-time byte alignment of a type (`Int`)."
+      ["#exit"] "`#exit <code>` — Terminates the process with an integer exit status."
+      | ""
+
+// Search an imported module on disk for `mod::member` hover/definition.
+find_imported_symbol: String, String, String => < (String, SymEntry) | >
+find_imported_symbol = doc_path, mod_name, member_name =>
+   base_dir = path::parent(doc_path)
+   cand1 = path::join(base_dir, mod_name + ".dva")
+   cand2 = stdlib_dir_path != "" | path::join(stdlib_dir_path, mod_name + ".dva") | ""
+   target_path = (has_override(cand1) || fs::is_file(cand1))
+      | cand1
+      | (cand2 != "" && (has_override(cand2) || fs::is_file(cand2)) | cand2 | "")
+   target_path == "" | --| <-->
+   src_opt = get_override_text(target_path)
+      | txt => <+ txt +>
+      | fs::read_to_string(target_path)
+   src_opt
+      | src =>
+         diag::enable_capture!
+         lexer::lex_set_file(target_path)
+         ppr = parser::parse_init(src)
+         parser::parser_set_file(ppr, target_path)
+         ppr.allow_module_refs = <+>
+         prog_res = parser::parse_program(ppr)
+         diag::disable_capture!
+         prog_res
+            | prog =>
+               prog
+                  [Block stmts]
+                     syms = extract_symbols(stmts, ppr.top_lines, ppr.top_cols)
+                     hit' = <-->
+                     syms @ s =>
+                        s.name == member_name
+                           |
+                              hit' = <+ (target_path, s) +>
+                              -->
+                     hit'
+                  | <-->
+            | <-->
+      | <-->
+
+split_qualified: String => (String, String)
+split_qualified = word =>
+   n = ?word
+   i' = 0
+   found' = -1
+   0.. @
+      i' + 1 !< n | -->
+      word(i') == ':' && word(i' + 1) == ':'
+         |
+            found' = i'
+            -->
+      i' = i' + 1
+   found' !< 0
+      | (word(0..found'), word(found' + 2..n))
+      | ("", word)
+
+// --- LSP Request Handlers --------------------------------------------------
+
+format_id_json: json::Value => String
+format_id_json = id_val =>
+   id_val
+      [Number n] json::format_number(n)
+      [String s] json::escape_string(s)
+      | "null"
+
+send_result: json::Value, String => ()
+send_result = id_val, result_json =>
+   payload = "{\"jsonrpc\":\"2.0\",\"id\":" + format_id_json(id_val) +
+      ",\"result\":" + result_json + "}"
+   send_rpc_payload(payload)
+
+handle_initialize: json::Value => ()
+handle_initialize = id_val =>
+   caps = "{\"capabilities\":{" +
+      "\"textDocumentSync\":1," +
+      "\"hoverProvider\":true," +
+      "\"definitionProvider\":true," +
+      "\"documentSymbolProvider\":true," +
+      "\"documentFormattingProvider\":true," +
+      "\"completionProvider\":{\"triggerCharacters\":[\".\",\":\"]}" +
+      "},\"serverInfo\":{\"name\":\"edva-lsp\",\"version\":" +
+      json::escape_string(version::VERSION) + "}}"
+   send_result(id_val, caps)
+
+extract_doc_uri_and_pos: json::Value => (String, Int, Int)
+extract_doc_uri_and_pos = params =>
+   td = json::get(params, "textDocument") | v => v | json::Value(Null)
+   pos = json::get(params, "position") | v => v | json::Value(Null)
+   uri = json::get_str(td, "uri") | s => s | ""
+   line0 = json::get_int(pos, "line") | l => l | 0
+   char0 = json::get_int(pos, "character") | c => c | 0
+   (uri, line0, char0)
+
+handle_hover: json::Value, json::Value => ()
+handle_hover = id_val, params =>
+   up = extract_doc_uri_and_pos(params)
+   uri = up.0
+   line0 = up.1
+   char0 = up.2
+   doc_opt = get_doc(uri)
+   doc_opt
+      | doc =>
+         word = extract_word_at(doc.text, line0, char0)
+         ?word == 0
+            | send_result(id_val, "null")
+            |
+               qual = split_qualified(word)
+               mod_name = qual.0
+               bare = qual.1
+               mod_name != ""
+                  |
+                     imp_opt = find_imported_symbol(doc.path, mod_name, bare)
+                     imp_opt
+                        | imp =>
+                           sym = imp.1
+                           md = "```dva\n" + sym.detail + "\n```\n*(from `" + mod_name + "`)*"
+                           send_result(id_val, "{\"contents\":{\"kind\":\"markdown\",\"value\":" +
+                              json::escape_string(md) + "}}")
+                        | send_result(id_val, "null")
+                  |
+                     hit_det' = ++""
+                     doc.syms @ s =>
+                        s.name == bare
+                           |
+                              hit_det' = s.detail
+                              -->
+                     hit_det' != ""
+                        |
+                           md = "```dva\n" + hit_det' + "\n```"
+                           send_result(id_val, "{\"contents\":{\"kind\":\"markdown\",\"value\":" +
+                              json::escape_string(md) + "}}")
+                        |
+                           bdoc = builtin_hover_doc(word)
+                           bdoc != ""
+                              |
+                                 send_result(id_val, "{\"contents\":{\"kind\":\"markdown\",\"value\":" +
+                                    json::escape_string(bdoc) + "}}")
+                              | send_result(id_val, "null")
+      | send_result(id_val, "null")
+
+handle_definition: json::Value, json::Value => ()
+handle_definition = id_val, params =>
+   up = extract_doc_uri_and_pos(params)
+   uri = up.0
+   line0 = up.1
+   char0 = up.2
+   doc_opt = get_doc(uri)
+   doc_opt
+      | doc =>
+         word = extract_word_at(doc.text, line0, char0)
+         ?word == 0
+            | send_result(id_val, "null")
+            |
+               qual = split_qualified(word)
+               mod_name = qual.0
+               bare = qual.1
+               mod_name != ""
+                  |
+                     imp_opt = find_imported_symbol(doc.path, mod_name, bare)
+                     imp_opt
+                        | imp =>
+                           tpath = imp.0
+                           sym = imp.1
+                           turi = path_to_uri(tpath)
+                           rng = lsp_range_json(sym.line, sym.col, sym.end_line, sym.end_col)
+                           send_result(id_val, "{\"uri\":" + json::escape_string(turi) +
+                              ",\"range\":" + rng + "}")
+                        | send_result(id_val, "null")
+                  |
+                     found' = <->
+                     loc_json' = ++"null"
+                     doc.syms @ s =>
+                        s.name == bare
+                           |
+                              rng = lsp_range_json(s.line, s.col, s.end_line, s.end_col)
+                              loc_json' = "{\"uri\":" + json::escape_string(uri) +
+                                 ",\"range\":" + rng + "}"
+                              found' = <+>
+                              -->
+                     send_result(id_val, loc_json')
+      | send_result(id_val, "null")
+
+handle_document_symbol: json::Value, json::Value => ()
+handle_document_symbol = id_val, params =>
+   td = json::get(params, "textDocument") | v => v | json::Value(Null)
+   uri = json::get_str(td, "uri") | s => s | ""
+   doc_opt = get_doc(uri)
+   doc_opt
+      | doc =>
+         b = {512}
+         b += "["
+         doc.syms @ s, idx =>
+            idx > 0 | b += ","
+            rng = lsp_range_json(s.line, s.col, s.end_line, s.end_col)
+            b += "{\"name\":" + json::escape_string(s.name) +
+               ",\"detail\":" + json::escape_string(s.detail) +
+               ",\"kind\":" + str::from_int(s.kind) +
+               ",\"range\":" + rng +
+               ",\"selectionRange\":" + rng + "}"
+         b += "]"
+         send_result(id_val, +b)
+      | send_result(id_val, "[]")
+
+handle_formatting: json::Value, json::Value => ()
+handle_formatting = id_val, params =>
+   td = json::get(params, "textDocument") | v => v | json::Value(Null)
+   uri = json::get_str(td, "uri") | s => s | ""
+   doc_opt = get_doc(uri)
+   doc_opt
+      | doc =>
+         fmt_res = formatter::format_source(doc.text, doc.path)
+         fmt_res
+            | formatted =>
+               formatted == doc.text
+                  | send_result(id_val, "[]")
+                  |
+                     nlines = count_doc_lines(doc.text)
+                     rng = lsp_range_json(1, 1, nlines + 1, 1)
+                     edit = "[{\"range\":" + rng + ",\"newText\":" +
+                        json::escape_string(formatted) + "}]"
+                     send_result(id_val, edit)
+            | send_result(id_val, "[]")
+      | send_result(id_val, "[]")
+
+handle_completion: json::Value, json::Value => ()
+handle_completion = id_val, params =>
+   td = json::get(params, "textDocument") | v => v | json::Value(Null)
+   uri = json::get_str(td, "uri") | s => s | ""
+   b = {512}
+   b += "["
+   count' = 0
+   doc_opt = get_doc(uri)
+   doc_opt
+      | doc =>
+         doc.syms @ s =>
+            count' > 0 | b += ","
+            ckind = s.kind == SYM_FUNCTION | 3 | (s.kind == SYM_STRUCT | 22 | 6)
+            b += "{\"label\":" + json::escape_string(s.name) +
+               ",\"kind\":" + str::from_int(ckind) +
+               ",\"detail\":" + json::escape_string(s.detail) + "}"
+            count' = count' + 1
+   b += "]"
+   send_result(id_val, +b)
+
+handle_did_open: json::Value, (String => ()) => ()
+handle_did_open = params, tc_hook =>
+   td = json::get(params, "textDocument") | v => v | json::Value(Null)
+   uri = json::get_str(td, "uri") | s => s | ""
+   text = json::get_str(td, "text") | s => s | ""
+   uri != "" | analyze_document(uri, text, tc_hook)
+
+handle_did_change: json::Value, (String => ()) => ()
+handle_did_change = params, tc_hook =>
+   td = json::get(params, "textDocument") | v => v | json::Value(Null)
+   uri = json::get_str(td, "uri") | s => s | ""
+   changes = json::get(params, "contentChanges") | v => v | json::Value(Null)
+   n = json::array_len(changes)
+   uri != "" && n > 0
+      |
+         last_change = json::array_at(changes, n - 1)
+         text = json::get_str(last_change, "text") | s => s | ""
+         analyze_document(uri, text, tc_hook)
+
+handle_did_save: json::Value, (String => ()) => ()
+handle_did_save = params, tc_hook =>
+   td = json::get(params, "textDocument") | v => v | json::Value(Null)
+   uri = json::get_str(td, "uri") | s => s | ""
+   text_opt = json::get_str(params, "text")
+   text_opt
+      | text =>
+         uri != "" | analyze_document(uri, text, tc_hook)
+      |
+         fpath = uri_to_path(uri)
+         fs::read_to_string(fpath)
+            | disk_text => analyze_document(uri, disk_text, tc_hook)
+
+handle_did_close: json::Value => ()
+handle_did_close = params =>
+   td = json::get(params, "textDocument") | v => v | json::Value(Null)
+   uri = json::get_str(td, "uri") | s => s | ""
+   uri != ""
+      |
+         remove_doc(uri)
+         publish_diagnostics(uri, diag::DiagEntries())
+
+// --- Main LSP Event Loop ---------------------------------------------------
+
+main: String, (String => ()) => Int
+main = stdlib_dir, tc_hook =>
+   log::set_fd(2)
+   log::set_timestamps(<->)
+   set_stdlib_dir(stdlib_dir)
+   shutdown_requested' = <->
+
+   0.. @
+      msg_opt = read_rpc_message!
+      msg_opt
+         | raw_json =>
+            parsed = json::parse(raw_json)
+            parsed
+               | msg =>
+                  method = json::get_str(msg, "method") | m => m | ""
+                  id_val = json::get(msg, "id") | v => v | json::Value(Null)
+                  params = json::get(msg, "params") | v => v | json::Value(Null)
+                  method
+                     ["initialize"]
+                        handle_initialize(id_val)
+                     ["initialized"]
+                        --^
+                     ["shutdown"]
+                        shutdown_requested' = <+>
+                        send_result(id_val, "null")
+                     ["exit"]
+                        -->
+                     ["textDocument/didOpen"]
+                        handle_did_open(params, tc_hook)
+                     ["textDocument/didChange"]
+                        handle_did_change(params, tc_hook)
+                     ["textDocument/didSave"]
+                        handle_did_save(params, tc_hook)
+                     ["textDocument/didClose"]
+                        handle_did_close(params)
+                     ["textDocument/hover"]
+                        handle_hover(id_val, params)
+                     ["textDocument/definition"]
+                        handle_definition(id_val, params)
+                     ["textDocument/documentSymbol"]
+                        handle_document_symbol(id_val, params)
+                     ["textDocument/formatting"]
+                        handle_formatting(id_val, params)
+                     ["textDocument/completion"]
+                        handle_completion(id_val, params)
+                     |
+                        // Respond with MethodNotFound (-32601) if request had an id
+                        json::has(msg, "id")
+                           |
+                              err_payload = "{\"jsonrpc\":\"2.0\",\"id\":" +
+                                 format_id_json(id_val) +
+                                 ",\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}"
+                              send_rpc_payload(err_payload)
+         | -->
+   shutdown_requested' | 0 | 0

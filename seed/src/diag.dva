@@ -371,3 +371,44 @@ E5012_write_ir_prefix = !=> "E5012: Failed to write LLVM IR to '"
 
 E1008_string_unterminated: () => String
 E1008_string_unterminated = !=> "Unterminated string literal -- missing closing '\"'"
+
+// --- Structured Diagnostic Capture (LSP / Tooling) -------------------------
+
+#type DiagEntry (
+   code: Int,
+   file: String,
+   line: Int,
+   col: Int,
+   msg: String,
+   is_warn: <>
+)
+#type DiagEntries DiagEntry{}
+
+capture_enabled = <->
+captured_diags = DiagEntries()
+
+enable_capture: () => ()
+enable_capture = !=>
+   capture_enabled ::= <+>
+   captured_diags ::= DiagEntries()
+
+disable_capture: () => ()
+disable_capture = !=>
+   capture_enabled ::= <->
+
+is_capturing: () => <>
+is_capturing = !=> capture_enabled
+
+clear_captured: () => ()
+clear_captured = !=>
+   captured_diags ::= DiagEntries()
+
+record_diag: Int, String, Int, Int, String, <> => ()
+record_diag = code, file, line, col, msg, is_warn =>
+   ds = captured_diags
+   ds += DiagEntry(code, file, line, col, msg, is_warn)
+   captured_diags ::= ds
+
+get_captured: () => DiagEntries
+get_captured = !=> captured_diags
+

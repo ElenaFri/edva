@@ -22,12 +22,19 @@ cp "$HOME/.config/helix/languages.toml" "$edva_helix_config/languages.toml"
 chmod u+w "$edva_helix_config/languages.toml"
 cat >> "$edva_helix_config/languages.toml" <<'TOML'
 
+[language-server.edva-lsp]
+command = "edva"
+args = ["lsp"]
+
 [[language]]
 name = "edva"
 scope = "source.edva"
 file-types = ["dva"]
+roots = ["edva.ccl"]
 comment-token = "//"
 grammar = "edva"
+language-servers = ["edva-lsp"]
+formatter = { command = "edva", args = ["fmt", "--stdin"] }
 indent = { tab-width = 3, unit = "   " }
 
 [[grammar]]

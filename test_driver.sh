@@ -2077,5 +2077,82 @@ if [ $rc -ne 0 ] || ! grep -q "3" "$TMPDIR/t48_repl.out" || ! grep -q "42" "$TMP
 fi
 echo "PASS"
 
+# --- Test 49: edva fmt (--stdin, --check, in-place, AST invariance) ---
+echo -n "Testing edva fmt (--stdin, --check, in-place, AST invariance)... "
+FMT_DIR="$TMPDIR/fmt_test"
+mkdir -p "$FMT_DIR"
+cat <<'EOF' > "$FMT_DIR/messy.dva"
+#type Point (x:Int,y:Int)
+
+
+add: Int,Int => Int
+add = a,b =>
+  a + b   
+EOF
+set +e
+./edva fmt --check "$FMT_DIR/messy.dva" >"$TMPDIR/t49_chk1.out" 2>"$TMPDIR/t49_chk1.err"
+rc=$?
+set -e
+if [ $rc -eq 0 ]; then
+    echo "FAILED: expected 'edva fmt --check' to return non-zero on unformatted file"
+    exit 1
+fi
+./edva fmt "$FMT_DIR/messy.dva" >"$TMPDIR/t49_fmt.out" 2>"$TMPDIR/t49_fmt.err"
+./edva fmt --check "$FMT_DIR/messy.dva" >"$TMPDIR/t49_chk2.out" 2>"$TMPDIR/t49_chk2.err"
+if ! grep -q "   a + b" "$FMT_DIR/messy.dva" || ! grep -q "(x: Int, y: Int)" "$FMT_DIR/messy.dva"; then
+    echo "FAILED: edva fmt did not normalize 3-space indentation or colon/comma spacing"
+    cat "$FMT_DIR/messy.dva"
+    exit 1
+fi
+STDIN_OUT=$(printf "f = x =>\n  x + 1\n" | ./edva fmt --stdin)
+if [ "$STDIN_OUT" != "$(printf "f = x =>\n   x + 1")" ]; then
+    echo "FAILED: edva fmt --stdin unexpected output: $STDIN_OUT"
+    exit 1
+fi
+echo "PASS"
+
+# --- Test 50: edva lsp (JSON-RPC 2.0 initialize, diagnostics, hover, definition, formatting) ---
+echo -n "Testing edva lsp (JSON-RPC 2.0 protocol, cross-module typecheck, hover, formatting)... "
+python3 - "$TMPDIR" <<'PYEOF'
+import json, os, subprocess, sys
+
+tmpdir = sys.argv[1]
+def frame(obj):
+    s = json.dumps(obj)
+    return f"Content-Length: {len(s.encode('utf-8'))}\r\n\r\n{s}".encode('utf-8')
+
+uri = f"file://{tmpdir}/lsp_test.dva"
+src_valid = "#use str\n\nshout = s =>\n  str::upper(s)\n"
+src_err = "#use str\n\nbad: Int\nbad = str::upper(\"hi\")\n"
+
+payload = b"".join([
+    frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    frame({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+        "textDocument": {"uri": uri, "languageId": "edva", "version": 1, "text": src_valid}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 2, "method": "textDocument/hover", "params": {
+        "textDocument": {"uri": uri}, "position": {"line": 2, "character": 1}
+    }}),
+    frame({"jsonrpc": "2.0", "id": 3, "method": "textDocument/formatting", "params": {
+        "textDocument": {"uri": uri}, "options": {"tabSize": 3, "insertSpaces": True}
+    }}),
+    frame({"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
+        "textDocument": {"uri": uri, "version": 2},
+        "contentChanges": [{"text": src_err}]
+    }}),
+    frame({"jsonrpc": "2.0", "id": 4, "method": "shutdown"}),
+    frame({"jsonrpc": "2.0", "method": "exit"}),
+])
+
+proc = subprocess.run(["./edva", "lsp"], input=payload, capture_output=True, timeout=15)
+assert proc.returncode == 0, f"edva lsp exited with {proc.returncode}: {proc.stderr.decode()}"
+out = proc.stdout.decode("utf-8")
+assert '"name":"edva-lsp"' in out, f"missing serverInfo in {out}"
+assert "shout: (String) => String" in out, f"missing inferred cross-module hover type in {out}"
+assert "   str::upper(s)" in out, f"missing 3-space formatted edit in {out}"
+assert '"code":"E3084"' in out, f"missing E3084 diagnostic in {out}"
+PYEOF
+echo "PASS"
+
 echo "=== All driver tests PASSED ==="
 

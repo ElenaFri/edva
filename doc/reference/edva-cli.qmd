@@ -8,7 +8,7 @@ meta:
 
 # CLI & Package Manager (`edva.ccl`)
 
-The `edva` binary provides single-file / modular compilation, interactive REPL and inline evaluation (`-i`, `-e`), AST/type inspection, and the integrated `edva pkg` package and build system.
+The `edva` binary provides single-file / modular compilation, interactive REPL and inline evaluation (`-i`, `-e`), AST/type inspection, canonical code formatting (`edva fmt`), Language Server Protocol support (`edva lsp`), and the integrated `edva pkg` package and build system.
 
 ## Compiler invocation and options
 
@@ -16,6 +16,8 @@ The `edva` binary provides single-file / modular compilation, interactive REPL a
 edva [options] <input.dva | dir> [output]
 edva -e "<code_string>" [options]
 edva -i
+edva fmt [--check] [--stdout] [--stdin] [path...]
+edva lsp
 ```
 
 | Short / Long Option | Argument | Default | Specification |
@@ -71,6 +73,13 @@ All package commands may be invoked at top level (`edva build`) or under `edva p
 | `edva graph` | `[dir]` (alias `tree`) | Prints ASCII dependency tree with provenance, duplicate versions, and cycle checks | — |
 | `edva vendor` | `[dir]` | Materializes external dependencies into `vendor/<id>/` + `vendor/vendor.ccl` for air-gapped `--offline --locked` builds | `E7005`: tree hash mismatch |
 | `edva cache` | `dir`, `ls`, `clean` | Prints cache directory, lists cached `.ll` objects and sizes, or evicts cached IR artifacts | `E5026`–`E5028`: cache CLI errors |
+
+## Formatter and Language Server (`edva fmt`, `edva lsp`)
+
+| Command | Arguments & Options | Behavior |
+|---|---|---|
+| `edva fmt` | `[--check] [--stdout] [--stdin] [path...]` | Canonical Edva source formatter. Normalizes 3-space indentation, delimiter spacing, blank lines, and trailing whitespace while verifying AST equivalence via `show::show_expr`. Formats `.` recursively when no paths are given. `--check` exits `1` if any file differs; `--stdin` formats stdin to stdout |
+| `edva lsp` | — | JSON-RPC 2.0 Language Server Protocol server over stdio (`Content-Length` framing). Provides live diagnostics (`textDocument/publishDiagnostics`), inferred-type hover (`textDocument/hover`), same-file and cross-module go-to-definition (`textDocument/definition`), document symbols (`textDocument/documentSymbol`), completion (`textDocument/completion`), and canonical formatting (`textDocument/formatting`) |
 
 ## Package directory layout and `edva.ccl` manifest schema
 

@@ -1,0 +1,655 @@
+// src/fmt.dva — Canonical Edva source code formatter (`edva fmt`).
+//
+// Enforces 3-space indentation, strips trailing whitespace, normalizes
+// delimiter spacing and blank lines while preserving comments, multiline
+// strings/heredocs, and vertical alignment, and verifies AST equivalence
+// via `parser::parse_program` + `show::show_expr`.
+
+#use "lexer"
+#use "parser"
+#use "ast"
+#use "show"
+#use "diag"
+#use "str"
+#use "path"
+#use "log"
+#use fs
+#use libc
+#use sys
+
+#public
+
+// Multiline scanner state across line boundaries.
+// 0 = Normal code line
+// 1 = Inside /* ... */ block comment
+// 2 = Inside single-quote-delimited multiline string ("...\n...")
+// 3 = Inside triple-quote-delimited multiline string ("""...\n...""")
+
+#type LineInfo (
+   raw: String,
+   start_state: Int,
+   end_state: Int,
+   raw_indent: Int,
+   has_tabs: <>,
+   is_blank: <>,
+   is_comment_only: <>
+)
+#type LineInfos LineInfo{}
+
+is_space_or_tab: Int => <>
+is_space_or_tab = [' ', '\t']
+
+// Advance multiline state across one line's content.
+scan_line_state: String, Int => Int
+scan_line_state = line, init_state =>
+   n = ?line
+   st' = init_state
+   i' = 0
+   in_str' = <->
+   str_triple' = <->
+   in_rune' = <->
+   0.. @
+      i' !< n | -->
+      c = line(i')
+      c1 = i' + 1 < n | line(i' + 1) | 0
+      c2 = i' + 2 < n | line(i' + 2) | 0
+      st'
+         [1]
+            c == '*' && c1 == '/'
+               |
+                  st' = 0
+                  i' = i' + 2
+               | i' = i' + 1
+         [2]
+            c == '\\'
+               | i' = i' + 2
+               |
+                  c == '"'
+                     |
+                        st' = 0
+                        i' = i' + 1
+                     | i' = i' + 1
+         [3]
+            c == '\\'
+               | i' = i' + 2
+               |
+                  c == '"' && c1 == '"' && c2 == '"'
+                     |
+                        st' = 0
+                        i' = i' + 3
+                     | i' = i' + 1
+         |
+            in_rune'
+               |
+                  c == '\\'
+                     | i' = i' + 2
+                     |
+                        c == '\''
+                           |
+                              in_rune' = <->
+                              i' = i' + 1
+                           | i' = i' + 1
+               |
+                  in_str'
+                     |
+                        c == '\\'
+                           | i' = i' + 2
+                           |
+                              str_triple'
+                                 |
+                                    c == '"' && c1 == '"' && c2 == '"'
+                                       |
+                                          in_str' = <->
+                                          str_triple' = <->
+                                          i' = i' + 3
+                                       | i' = i' + 1
+                                 |
+                                    c == '"'
+                                       |
+                                          in_str' = <->
+                                          i' = i' + 1
+                                       | i' = i' + 1
+                     |
+                        c == '/' && c1 == '/'
+                           | i' = n
+                           |
+                              c == '/' && c1 == '*'
+                                 |
+                                    st' = 1
+                                    i' = i' + 2
+                                 |
+                                    c == '\''
+                                       |
+                                          in_rune' = <+>
+                                          i' = i' + 1
+                                       |
+                                          c == '"'
+                                             |
+                                                c1 == '"' && c2 == '"'
+                                                   |
+                                                      i' + 3 == n
+                                                         |
+                                                            st' = 3
+                                                            i' = n
+                                                         |
+                                                            in_str' = <+>
+                                                            str_triple' = <+>
+                                                            i' = i' + 3
+                                                   |
+                                                      i' + 1 == n
+                                                         |
+                                                            st' = 2
+                                                            i' = n
+                                                         |
+                                                            in_str' = <+>
+                                                            str_triple' = <->
+                                                            i' = i' + 1
+                                             | i' = i' + 1
+   in_str'
+      | (str_triple' | 3 | 2)
+      | st'
+
+strip_cr_and_trailing_ws: String => String
+strip_cr_and_trailing_ws = s =>
+   end' = ?s
+   0.. @
+      end' !> 0 | -->
+      c = s(end' - 1)
+      c [' ', '\t', '\r']
+         | end' = end' - 1
+         | -->
+   s(0..end')
+
+strip_cr_only: String => String
+strip_cr_only = s =>
+   ?s > 0 && s(?s - 1) == '\r'
+      | s(0..?s - 1)
+      | s
+
+split_source_lines: String => LineInfos
+split_source_lines = src =>
+   res = LineInfos()
+   n = ?src
+   pos' = 0
+   st' = 0
+   0.. @
+      pos' !< n | -->
+      line_start = pos'
+      0.. @
+         pos' !< n || src(pos') == '\n' | -->
+         pos' = pos' + 1
+      raw_slice = src(line_start..pos')
+      pos' < n && src(pos') == '\n' | pos' = pos' + 1
+      cleaned = st' == 0 | strip_cr_and_trailing_ws(raw_slice) | strip_cr_only(raw_slice)
+      sp' = 0
+      tabs' = 0
+      idx' = 0
+      0.. @
+         idx' !< ?cleaned | -->
+         c = cleaned(idx')
+         c == ' '
+            |
+               sp' = sp' + 1
+               idx' = idx' + 1
+            |
+               c == '\t'
+                  |
+                     tabs' = tabs' + 1
+                     idx' = idx' + 1
+                  | -->
+      eff_indent = sp' + tabs' * 3
+      is_blank = st' == 0 && idx' == ?cleaned
+      is_comm = st' == 0 && !is_blank && idx' + 1 < ?cleaned &&
+         cleaned(idx') == '/' && (cleaned(idx' + 1) == '/' || cleaned(idx' + 1) == '*')
+      next_st = scan_line_state(cleaned, st')
+      res += LineInfo(cleaned, st', next_st, eff_indent, tabs' > 0, is_blank, is_comm)
+      st' = next_st
+   res
+
+// Format intra-line comma/semicolon spacing outside strings, runes, and comments.
+format_code_body: String => String
+format_code_body = body =>
+   n = ?body
+   b = {n + 16}
+   i' = 0
+   in_str' = <->
+   str_triple' = <->
+   in_rune' = <->
+   in_blk_comm' = <->
+   0.. @
+      i' !< n | -->
+      c = body(i')
+      c1 = i' + 1 < n | body(i' + 1) | 0
+      c2 = i' + 2 < n | body(i' + 2) | 0
+      in_blk_comm'
+         |
+            b += c
+            c == '*' && c1 == '/'
+               |
+                  b += c1
+                  in_blk_comm' = <->
+                  i' = i' + 2
+               | i' = i' + 1
+         |
+            in_rune'
+               |
+                  b += c
+                  c == '\\' && i' + 1 < n
+                     |
+                        b += c1
+                        i' = i' + 2
+                     |
+                        c == '\'' | in_rune' = <->
+                        i' = i' + 1
+               |
+                  in_str'
+                     |
+                        b += c
+                        c == '\\' && i' + 1 < n
+                           |
+                              b += c1
+                              i' = i' + 2
+                           |
+                              str_triple'
+                                 |
+                                    c == '"' && c1 == '"' && c2 == '"'
+                                       |
+                                          b += c1
+                                          b += c2
+                                          in_str' = <->
+                                          str_triple' = <->
+                                          i' = i' + 3
+                                       | i' = i' + 1
+                                 |
+                                    c == '"' | in_str' = <->
+                                    i' = i' + 1
+                     |
+                        c == '/' && c1 == '/'
+                           |
+                              b += body(i'..n)
+                              i' = n
+                           |
+                              c == '/' && c1 == '*'
+                                 |
+                                    b += "/*"
+                                    in_blk_comm' = <+>
+                                    i' = i' + 2
+                                 |
+                                    c == '\''
+                                       |
+                                          b += c
+                                          in_rune' = <+>
+                                          i' = i' + 1
+                                       |
+                                          c == '"'
+                                             |
+                                                c1 == '"' && c2 == '"'
+                                                   |
+                                                      b += "\"\"\""
+                                                      in_str' = <+>
+                                                      str_triple' = <+>
+                                                      i' = i' + 3
+                                                   |
+                                                      b += c
+                                                      in_str' = <+>
+                                                      str_triple' = <->
+                                                      i' = i' + 1
+                                             |
+                                                c [',', ';']
+                                                   |
+                                                      b += c
+                                                      need_sp = i' + 1 < n &&
+                                                         !(c1 [' ', '\t', ')', ']', '}', ',', ';'])
+                                                      need_sp | b += ' '
+                                                      i' = i' + 1
+                                                   |
+                                                      prev_c = i' > 0 | body(i' - 1) | 0
+                                                      is_annot_colon = c == ':' &&
+                                                         !(prev_c [':', '-', ' ', '\t']) &&
+                                                         !(c1 [':', '=', ' ', '\t', ')', ']', '}', ',', ';'])
+                                                      is_annot_colon
+                                                         |
+                                                            b += ": "
+                                                            i' = i' + 1
+                                                         |
+                                                            b += c
+                                                            i' = i' + 1
+   +b
+
+make_spaces: Int => String
+make_spaces = count =>
+   count !> 0 | --| ""
+   b = {count}
+   count @
+      b += ' '
+   +b
+
+strip_leading_ws: String => String
+strip_leading_ws = s =>
+   i' = 0
+   n = ?s
+   0.. @
+      i' !< n | -->
+      s(i') [' ', '\t']
+         | i' = i' + 1
+         | -->
+   s(i'..n)
+
+// Check whether all non-blank, non-comment code lines already use multiples of 3 spaces.
+all_indents_div3: LineInfos => <>
+all_indents_div3 = lines =>
+   ok' = <+>
+   lines @ ln =>
+      ln.start_state == 0 && !ln.is_blank && !ln.is_comment_only
+         |
+            (ln.raw_indent % 3) != 0
+               |
+                  ok' = <->
+                  -->
+   ok'
+
+find_stack_level: ast::Ints, Int, Int => Int
+find_stack_level = stack, top, raw =>
+   idx' = top - 1
+   found' = 0
+   0.. @
+      idx' < 0 | -->
+      v = stack(idx') | _ | 0
+      v !> raw
+         |
+            found' = idx'
+            -->
+         | idx' = idx' - 1
+   found'
+
+// Core formatting pass producing canonical 3-space Edva source.
+format_lines: LineInfos => String
+format_lines = lines =>
+   div3 = all_indents_div3(lines)
+   stack = ast::Ints()
+   stack += 0
+   top' = 1
+   out = {4096}
+   blank_run' = 0
+   started' = <->
+   cur_canon_indent' = 0
+
+   lines @ ln =>
+      ln.start_state != 0
+         |
+            started' = <+>
+            blank_run' = 0
+            out += ln.raw
+            out += '\n'
+         |
+            ln.is_blank
+               |
+                  started'
+                     |
+                        blank_run' = blank_run' + 1
+                        max_blanks = cur_canon_indent' == 0 | 2 | 1
+                        blank_run' !> max_blanks | out += '\n'
+               |
+                  started' = <+>
+                  blank_run' = 0
+                  body = strip_leading_ws(ln.raw)
+                  ln.is_comment_only
+                     |
+                        c_indent = div3
+                           | ln.raw_indent
+                           |
+                              lvl = find_stack_level(stack, top', ln.raw_indent)
+                              lvl * 3
+                        out += make_spaces(c_indent)
+                        out += body
+                        out += '\n'
+                     |
+                        raw = ln.raw_indent
+                        top_raw = stack(top' - 1) | _ | 0
+                        raw > top_raw
+                           |
+                              top' == ?stack
+                                 | stack += raw
+                                 | (stack(top') = raw !| _)
+                              top' = top' + 1
+                           |
+                              0.. @
+                                 top' > 1 && ((stack(top' - 1) | _ | 0) > raw)
+                                    | top' = top' - 1
+                                    | -->
+                        canon_indent = div3 | raw | (top' - 1) * 3
+                        cur_canon_indent' = canon_indent
+                        out += make_spaces(canon_indent)
+                        out += format_code_body(body)
+                        out += '\n'
+   res = +out
+   // Trim trailing blank lines so file ends with a single newline
+   end' = ?res
+   0.. @
+      end' > 1 && res(end' - 1) == '\n' && res(end' - 2) == '\n'
+         | end' = end' - 1
+         | -->
+   res(0..end')
+
+// Safe fallback normalization (strips trailing spaces on code lines, normalizes EOF newline).
+format_safe_fallback: LineInfos => String
+format_safe_fallback = lines =>
+   out = {4096}
+   lines @ ln =>
+      out += ln.raw
+      out += '\n'
+   res = +out
+   end' = ?res
+   0.. @
+      end' > 1 && res(end' - 1) == '\n' && res(end' - 2) == '\n'
+         | end' = end' - 1
+         | -->
+   res(0..end')
+
+// Parse source with diagnostic capture enabled and return its canonical AST signature.
+parse_ast_signature: String, String => < String | String >
+parse_ast_signature = src, filename =>
+   diag::enable_capture!
+   lexer::lex_set_file(filename)
+   ppr = parser::parse_init(src)
+   parser::parser_set_file(ppr, filename)
+   ppr.allow_module_refs = <+>
+   prog_res = parser::parse_program(ppr)
+   diags = diag::get_captured!
+   diag::disable_capture!
+   prog_res
+      | prog =>
+         ?diags > 0
+            |
+               d = diags(0)!!
+               fn = d.file != "" | d.file + ":" | ""
+               <- fn + str::from_int(d.line) + ":" + str::from_int(d.col) +
+                  ": E" + str::from_int(d.code) + ": " + d.msg +>
+            | <+ show::show_expr(prog) ->
+      |
+         ?diags > 0
+            |
+               d = diags(0)!!
+               fn = d.file != "" | d.file + ":" | ""
+               <- fn + str::from_int(d.line) + ":" + str::from_int(d.col) +
+                  ": E" + str::from_int(d.code) + ": " + d.msg +>
+            | <- filename + ": syntax error" +>
+
+// Format Edva source code and verify AST equivalence.
+format_source: String, String => < String | String >
+format_source = src, filename =>
+   ?src == 0 | --| <+ "" ->
+   orig_sig_res = parse_ast_signature(src, filename)
+   orig_sig_res
+      | orig_sig =>
+         lines = split_source_lines(src)
+         candidate = format_lines(lines)
+         cand_sig_res = parse_ast_signature(candidate, filename)
+         cand_sig_res
+            | cand_sig =>
+               cand_sig == orig_sig
+                  | <+ candidate ->
+                  |
+                     fb = format_safe_fallback(lines)
+                     fb_sig_res = parse_ast_signature(fb, filename)
+                     fb_sig_res
+                        | fb_sig =>
+                           fb_sig == orig_sig | <+ fb -> | <+ src ->
+                        | <+ src ->
+            |
+               fb = format_safe_fallback(lines)
+               fb_sig_res = parse_ast_signature(fb, filename)
+               fb_sig_res
+                  | fb_sig =>
+                     fb_sig == orig_sig | <+ fb -> | <+ src ->
+                  | <+ src ->
+      | err => <- err +>
+
+sort_names: ast::Names => ()
+sort_names = names =>
+   n = ?names
+   n @
+      (n - 1) @ j =>
+         a = names(j) | _ | ""
+         b = names(j + 1) | _ | ""
+         str::cmp(a, b) > 0
+            |
+               names(j) = b !| _
+               names(j + 1) = a !| _
+
+// Collect `.dva` files recursively from a file or directory path.
+collect_dva_files: String, ast::Names => ()
+collect_dva_files = target, out =>
+   fs::is_file(target)
+      |
+         fs::ext(target) == ".dva" | out += target
+      |
+         fs::is_dir(target)
+            |
+               entries = fs::read_dir(target)
+               names = ast::Names()
+               entries @ ent =>
+                  ent.name(0) != '.' | names += ent.name
+               sort_names(names)
+               names @ name =>
+                  sub = fs::join(target, name)
+                  collect_dva_files(sub, out)
+
+read_stdin_all: () => String
+read_stdin_all = !=>
+   b = {4096}
+   chunk = {4096}
+   0.. @
+      n = libc::read(0, &chunk, 4096)
+      n !> 0 | -->
+      ?chunk = n
+      b += +chunk
+   +b
+
+write_stdout: String => ()
+write_stdout = s =>
+   ?s > 0 | libc::write(1, s, ?s)
+
+print_line: String => ()
+print_line = s =>
+   write_stdout(s + "\n")
+
+print_fmt_help: () => ()
+print_fmt_help = !=>
+   print_line("Usage: edva fmt [options] [file.dva | dir...]")
+   print_line("")
+   print_line("Options:")
+   print_line("  --check     Check if files are formatted (exit 1 if changes needed)")
+   print_line("  --stdout    Write formatted output to stdout instead of modifying files")
+   print_line("  --stdin     Read source from stdin and write formatted output to stdout")
+   print_line("  -h, --help  Display this help message and exit")
+
+main: Int => Int
+main = start_idx =>
+   check_only' = <->
+   to_stdout' = <->
+   from_stdin' = <->
+   targets = ast::Names()
+
+   i' = start_idx
+   0.. @
+      i' !< sys::argc | -->
+      arg = sys::argv_string(i')
+      arg
+         ["-h", "--help"]
+            print_fmt_help!
+            --| 0
+         ["--check"]
+            check_only' = <+>
+         ["--stdout"]
+            to_stdout' = <+>
+         ["--stdin"]
+            from_stdin' = <+>
+         |
+            ?arg > 0 && arg(0) == '-'
+               |
+                  log::error("edva fmt: unknown option '" + arg + "'")
+                  --| 1
+               | targets += arg
+      i' = i' + 1
+
+   from_stdin'
+      |
+         src = read_stdin_all!
+         res = format_source(src, "<stdin>")
+         res
+            | formatted =>
+               check_only'
+                  | (formatted == src | 0 | 1)
+                  |
+                     write_stdout(formatted)
+                     0
+            | err =>
+               log::error(err)
+               1
+      |
+         ?targets == 0 | targets += "."
+         files = ast::Names()
+         targets @ t =>
+            !fs::exists(t)
+               |
+                  log::error("edva fmt: path '" + t + "' does not exist")
+                  --| 1
+            collect_dva_files(t, files)
+
+         ?files == 0
+            |
+               log::error("edva fmt: no .dva files found")
+               1
+            |
+               had_err' = <->
+               unformatted' = 0
+               files @ f =>
+                  src_opt = fs::read_to_string(f)
+                  src_opt
+                     | src =>
+                        res = format_source(src, f)
+                        res
+                           | formatted =>
+                              to_stdout'
+                                 | write_stdout(formatted)
+                                 |
+                                    formatted != src
+                                       |
+                                          check_only'
+                                             |
+                                                print_line(f)
+                                                unformatted' = unformatted' + 1
+                                             |
+                                                !fs::write_file(f, formatted)
+                                                   |
+                                                      log::error("edva fmt: could not write '" + f + "'")
+                                                      had_err' = <+>
+                                                   | print_line(f)
+                           | err =>
+                              log::error(err)
+                              had_err' = <+>
+                     |
+                        log::error("edva fmt: could not read '" + f + "'")
+                        had_err' = <+>
+               had_err' || unformatted' > 0 | 1 | 0
