@@ -1,0 +1,911 @@
+// Standard HTTP/1.1, HTTPS, SSE, and WebSocket Client Module (std/http.dva)
+// Provides:
+// - Outbound HTTP/1.1 client over `std/net` with keep-alive connection pooling,
+//   chunked transfer-encoding decoding, custom headers, bearer auth, and JSON/CCL helpers
+// - Transparent `https://` execution via `std/os` (`curl`) without forcing `-lssl` linkage
+// - Server-Sent Events (`text/event-stream`) encoder and parser (`sse_encode`, `sse_parse`)
+// - RFC 6455 WebSocket handshake (`ws_accept_key`), frame codec (`ws_encode_frame`,
+//   `ws_decode_frame`), and client session (`ws_connect`, `ws_send_text`, `ws_recv`, `ws_close`)
+
+#use base64
+#use ccl
+#use crypto
+#use json
+#use net
+#use os
+#use str
+#use url
+
+#public
+
+WS_OP_CONT   = 0
+WS_OP_TEXT   = 1
+WS_OP_BINARY = 2
+WS_OP_CLOSE  = 8
+WS_OP_PING   = 9
+WS_OP_PONG   = 10
+
+#type Header (
+   name:  String,
+   value: String
+)
+
+#type Headers Header{}
+
+#type Request (
+   method:     String,
+   url:        String,
+   headers:    Headers,
+   body:       String,
+   timeout_ms: Int
+)
+
+#type Response (
+   status:  Int,
+   reason:  String,
+   headers: Headers,
+   body:    String
+)
+
+#type PoolEntry (
+   host: String,
+   port: Int,
+   fd:   Int
+)
+
+#type PoolEntries PoolEntry{}
+
+#type Client (
+   pool:            PoolEntries,
+   default_headers: Headers,
+   timeout_ms:      Int
+)
+
+#type SseEvent (
+   id:       String,
+   event:    String,
+   data:     String,
+   retry_ms: Int
+)
+
+#type SseEvents SseEvent{}
+
+#type WsFrame (
+   opcode:   Int,
+   fin:      <>,
+   payload:  String,
+   consumed: Int
+)
+
+#type WsConn (
+   fd:       Int,
+   leftover: String
+)
+
+#private
+
+eq_ci: String, String => <>
+eq_ci = a, b =>
+   ?a != ?b | --| <->
+   diff' = <->
+   ?a @ i =>
+      ca = a(i)
+      cb = b(i)
+      la = ca ['A'...'Z'] | ca + 32 | ca
+      lb = cb ['A'...'Z'] | cb + 32 | cb
+      la != lb
+         |
+            diff' = <+>
+            -->
+   !diff'
+
+contains_ci: String, String => <>
+contains_ci = hay, needle =>
+   str::contains(str::lower(hay), str::lower(needle))
+
+parse_hex_int: String => < Int | >
+parse_hex_int = s =>
+   t = str::trim(s)
+   // Strip optional chunk extensions (;...)
+   semi = str::find(t, ";") | idx => idx | ?t
+   hex_part = str::trim(t(0..semi))
+   ?hex_part == 0 | --| <-->
+   val' = 0
+   ok' = <+>
+   ?hex_part @ i =>
+      c = hex_part(i)
+      d = c
+         ['0'...'9'] c - '0'
+         ['a'...'f'] c - 'a' + 10
+         ['A'...'F'] c - 'A' + 10
+         |           -1
+      d < 0
+         |
+            ok' = <->
+            -->
+         |
+            val' = (val' .<. 4) .|. d
+   ok' | <+ val' +> | <-->
+
+#public
+
+// --- Header & Request Builders ------------------------------------------------
+
+headers: () => Headers
+headers = !=> Headers()
+
+add_header: Headers, String, String => Headers
+add_header = hdrs, name, value =>
+   hdrs += Header(name, value)
+   hdrs
+
+get_header: Headers, String => < String | >
+get_header = hdrs, name =>
+   found' = <-->
+   ?hdrs @ i =>
+      h = hdrs(i)!!
+      eq_ci(h.name, name)
+         |
+            found' = <+ h.value +>
+            -->
+   found'
+
+has_header: Headers, String => <>
+has_header = hdrs, name =>
+   <>(get_header(hdrs, name))
+
+request_new: String, String => Request
+request_new = method, target_url =>
+   Request(method, target_url, Headers(), "", 10000)
+
+with_header: Request, String, String => Request
+with_header = req, name, value =>
+   nh = Headers()
+   ?req.headers @ i =>
+      nh += req.headers(i)!!
+   nh += Header(name, value)
+   Request(req.method, req.url, nh, req.body, req.timeout_ms)
+
+with_headers: Request, Headers => Request
+with_headers = req, extra =>
+   nh = Headers()
+   ?req.headers @ i =>
+      nh += req.headers(i)!!
+   ?extra @ i =>
+      nh += extra(i)!!
+   Request(req.method, req.url, nh, req.body, req.timeout_ms)
+
+with_body: Request, String => Request
+with_body = req, body =>
+   Request(req.method, req.url, req.headers, body, req.timeout_ms)
+
+with_json_body: Request, String => Request
+with_json_body = req, json_str =>
+   r1 = with_header(req, "Content-Type", "application/json")
+   with_body(r1, json_str)
+
+with_bearer: Request, String => Request
+with_bearer = req, token =>
+   with_header(req, "Authorization", "Bearer " + token)
+
+with_timeout: Request, Int => Request
+with_timeout = req, timeout_ms =>
+   Request(req.method, req.url, req.headers, req.body, timeout_ms)
+
+response_header: Response, String => < String | >
+response_header = res, name =>
+   get_header(res.headers, name)
+
+response_json: Response => < json::Value | Error >
+response_json = res =>
+   json::parse(res.body)
+
+response_ccl: Response => < ccl::CclDoc | Error >
+response_ccl = res =>
+   ccl::parse(res.body, "<http>")
+
+// --- HTTP/1.1 Chunked Decoding & Response Parser -----------------------------
+
+// Decodes an HTTP/1.1 `Transfer-Encoding: chunked` body payload.
+decode_chunked: String => < String | String >
+decode_chunked = raw =>
+   n = ?raw
+   out = {n}
+   pos' = 0
+   err' = ++""
+   done' = <->
+   0.. @
+      pos' !< n || done' | -->
+      // Find CRLF ending the chunk size line
+      rem = raw(pos'..n)
+      crlf_opt = str::find(rem, "\r\n")
+      crlf_opt
+         | rel_end =>
+            size_line = rem(0..rel_end)
+            parse_hex_int(size_line)
+               | chunk_len =>
+                  data_start = pos' + rel_end + 2
+                  chunk_len == 0
+                     |
+                        done' = <+>
+                        -->
+                     |
+                        data_end = data_start + chunk_len
+                        data_end > n
+                           |
+                              err' = ++"truncated chunked body"
+                              -->
+                           |
+                              out += raw(data_start..data_end)
+                              pos' = data_end
+                              pos' + 2 !> n && raw(pos'..(pos' + 2)) == "\r\n"
+                                 | pos' = pos' + 2
+               |
+                  err' = "invalid chunk size: " + size_line
+                  -->
+         |
+            err' = ++"missing CRLF in chunked body"
+            -->
+   ?err' > 0 | <- err' +> | <+ +out ->
+
+#private
+
+// Checks whether a complete chunked body (`0\r\n\r\n`) has been received in `raw`.
+chunked_is_complete: String => <>
+chunked_is_complete = raw =>
+   n = ?raw
+   pos' = 0
+   complete' = <->
+   0.. @
+      pos' !< n | -->
+      rem = raw(pos'..n)
+      str::find(rem, "\r\n")
+         | rel_end =>
+            size_line = rem(0..rel_end)
+            parse_hex_int(size_line)
+               | chunk_len =>
+                  data_start = pos' + rel_end + 2
+                  chunk_len == 0
+                     |
+                        // Require trailing CRLF after 0\r\n
+                        n !< data_start + 2 | complete' = <+>
+                        -->
+                     |
+                        next_pos = data_start + chunk_len + 2
+                        next_pos > n | -->
+                        pos' = next_pos
+               | -->
+         | -->
+   complete'
+
+parse_head_block: String => < (status: Int, reason: String, headers: Headers) | String >
+parse_head_block = head_str =>
+   lines = str::split(head_str, "\r\n")
+   ?lines == 0 | --| <- "empty HTTP response" +>
+   status_line = lines(0)!!
+   sp1_opt = str::find(status_line, " ")
+   sp1_opt
+      | sp1 =>
+         rest = str::trim_start(status_line((sp1 + 1)..))
+         sp2 = str::find(rest, " ") | idx => idx | ?rest
+         code_str = rest(0..sp2)
+         reason = sp2 < ?rest | str::trim(rest((sp2 + 1)..)) | ""
+         str::parse_int(code_str)
+            | status =>
+               hdrs = Headers()
+               1..?lines @ i =>
+                  ln = lines(i)!!
+                  ?ln > 0
+                     |
+                        str::find(ln, ":")
+                           | colon =>
+                              hname = str::trim(ln(0..colon))
+                              hval = str::trim(ln((colon + 1)..))
+                              hdrs += Header(hname, hval)
+               <+ (status = status, reason = reason, headers = hdrs) ->
+            | <- "invalid HTTP status code: " + code_str +>
+      | <- "malformed HTTP status line: " + status_line +>
+
+#public
+
+// Parses a raw HTTP/1.1 response message (`status`, `headers`, and `body`,
+// automatically decoding `Transfer-Encoding: chunked` when present).
+parse_response: String => < Response | String >
+parse_response = raw =>
+   // Skip any 100 Continue interim header blocks
+   cur' = raw
+   0.. @
+      str::starts_with(cur', "HTTP/1.1 100") || str::starts_with(cur', "HTTP/1.0 100")
+         |
+            str::find(cur', "\r\n\r\n")
+               | idx => cur' = cur'((idx + 4)..)
+               | -->
+         | -->
+   str::find(cur', "\r\n\r\n")
+      | hdr_end =>
+         head_str = cur'(0..hdr_end)
+         body_raw = cur'((hdr_end + 4)..)
+         parse_head_block(head_str)
+            | parsed =>
+               te = get_header(parsed.headers, "Transfer-Encoding") | v => v | ""
+               contains_ci(te, "chunked")
+                  |
+                     decode_chunked(body_raw)
+                        | dec => <+ Response(parsed.status, parsed.reason, parsed.headers, dec) ->
+                        | err => <- err +>
+                  |
+                     cl_str = get_header(parsed.headers, "Content-Length") | v => v | ""
+                     ?cl_str > 0
+                        |
+                           str::parse_int(cl_str)
+                              | cl =>
+                                 take = cl < ?body_raw | cl | ?body_raw
+                                 <+ Response(parsed.status, parsed.reason, parsed.headers, body_raw(0..take)) ->
+                              | <+ Response(parsed.status, parsed.reason, parsed.headers, body_raw) ->
+                        | <+ Response(parsed.status, parsed.reason, parsed.headers, body_raw) ->
+            | err => <- err +>
+      | <- "incomplete HTTP response headers" +>
+
+#private
+
+serialize_request: Request, url::Url, Headers, <> => String
+serialize_request = req, u, def_hdrs, keep_alive =>
+   target_path = ?u.path > 0 | u.path | "/"
+   full_target = ?u.query > 0 | target_path + "?" + u.query | target_path
+   out = {512 + ?req.body}
+   out += req.method
+   out += " "
+   out += full_target
+   out += " HTTP/1.1\r\n"
+
+   merged = Headers()
+   ?def_hdrs @ i =>
+      merged += def_hdrs(i)!!
+   ?req.headers @ i =>
+      merged += req.headers(i)!!
+
+   !has_header(merged, "Host")
+      |
+         host_hdr = (u.port > 0 && u.port != 80 && u.port != 443)
+            | u.host + ":" + str::from_int(u.port)
+            | u.host
+         out += "Host: "
+         out += host_hdr
+         out += "\r\n"
+
+   !has_header(merged, "User-Agent")
+      | out += "User-Agent: Edva-HTTP/1.4\r\n"
+
+   !has_header(merged, "Connection")
+      |
+         out += (keep_alive | "Connection: keep-alive\r\n" | "Connection: close\r\n")
+
+   (?req.body > 0 && !has_header(merged, "Content-Length"))
+      |
+         out += "Content-Length: "
+         out += str::from_int(?req.body)
+         out += "\r\n"
+
+   ?merged @ i =>
+      h = merged(i)!!
+      out += h.name
+      out += ": "
+      out += h.value
+      out += "\r\n"
+
+   out += "\r\n"
+   ?req.body > 0 | out += req.body
+   +out
+
+read_http_from_fd: Int, String => < (res: Response, keep_alive: <>) | String >
+read_http_from_fd = fd, req_method =>
+   buf' = ++""
+   hdr_end' = -1
+   0.. @
+      found = str::find(buf', "\r\n\r\n")
+      found
+         | idx =>
+            hdr_end' = idx
+            -->
+         |
+            net::recv(fd, 8192)
+               | chunk => buf' = buf' + chunk
+               | -->
+   hdr_end' < 0 | --| <- "connection closed before HTTP headers completed" +>
+   head_str = buf'(0..hdr_end')
+   body_buf' = buf'((hdr_end' + 4)..)
+   parse_head_block(head_str)
+      | parsed =>
+         status = parsed.status
+         hdrs = parsed.headers
+         conn_hdr = get_header(hdrs, "Connection") | v => v | ""
+         ka = !contains_ci(conn_hdr, "close")
+         no_body = (status !< 100 && status < 200) || status == 204 || status == 304 || eq_ci(req_method, "HEAD")
+         no_body
+            | <+ (res = Response(status, parsed.reason, hdrs, ""), keep_alive = ka) ->
+            |
+               te = get_header(hdrs, "Transfer-Encoding") | v => v | ""
+               contains_ci(te, "chunked")
+                  |
+                     0.. @
+                        chunked_is_complete(body_buf') | -->
+                        net::recv(fd, 8192)
+                           | chunk => body_buf' = body_buf' + chunk
+                           | -->
+                     decode_chunked(body_buf')
+                        | dec => <+ (res = Response(status, parsed.reason, hdrs, dec), keep_alive = ka) ->
+                        | err => <- err +>
+                  |
+                     cl_str = get_header(hdrs, "Content-Length") | v => v | ""
+                     ?cl_str > 0
+                        |
+                           str::parse_int(cl_str)
+                              | cl =>
+                                 0.. @
+                                    ?body_buf' !< cl | -->
+                                    net::recv(fd, 8192)
+                                       | chunk => body_buf' = body_buf' + chunk
+                                       | -->
+                                 ?body_buf' < cl
+                                    | <- "truncated HTTP response body" +>
+                                    | <+ (res = Response(status, parsed.reason, hdrs, body_buf'(0..cl)), keep_alive = ka) ->
+                              | <- "invalid Content-Length header" +>
+                        |
+                           // Read until EOF
+                           0.. @
+                              net::recv(fd, 8192)
+                                 | chunk => body_buf' = body_buf' + chunk
+                                 | -->
+                           <+ (res = Response(status, parsed.reason, hdrs, body_buf'), keep_alive = <->) ->
+      | err => <- err +>
+
+send_https_curl: Request, Headers => < Response | String >
+send_https_curl = req, def_hdrs =>
+   args = os::Args("-sS", "-i", "-X", req.method)
+   sec = req.timeout_ms > 0 | (req.timeout_ms + 999) / 1000 | 10
+   args += "--max-time"
+   args += str::from_int(sec)
+   ?def_hdrs @ i =>
+      h = def_hdrs(i)!!
+      args += "-H"
+      args += (h.name + ": " + h.value)
+   ?req.headers @ i =>
+      h = req.headers(i)!!
+      args += "-H"
+      args += (h.name + ": " + h.value)
+   ?req.body > 0
+      |
+         args += "--data-binary"
+         args += "@-"
+   args += req.url
+   os::exec_input("curl", args, req.body)
+      | res =>
+         res.status != 0
+            | <- ("https request failed: " + str::trim(res.stderr)) +>
+            | parse_response(res.stdout)
+      | <- "failed to invoke curl for https request" +>
+
+take_pooled_fd: Client, String, Int => Int
+take_pooled_fd = client, host, port =>
+   found_fd' = -1
+   ?client.pool @ i =>
+      e = client.pool(i)!!
+      e.fd !< 0 && e.port == port && eq_ci(e.host, host)
+         |
+            found_fd' = e.fd
+            client.pool(i) = PoolEntry("", 0, -1)
+            -->
+   found_fd'
+
+put_pooled_fd: Client, String, Int, Int => ()
+put_pooled_fd = client, host, port, fd =>
+   fd < 0 | --|
+   placed' = <->
+   ?client.pool @ i =>
+      e = client.pool(i)!!
+      e.fd < 0
+         |
+            client.pool(i) = PoolEntry(host, port, fd)
+            placed' = <+>
+            -->
+   !placed' | client.pool += PoolEntry(host, port, fd)
+
+#public
+
+// --- HTTP Client & Keep-Alive Connection Pool --------------------------------
+
+client_new: () => Client
+client_new = !=>
+   Client(PoolEntries(), Headers(), 10000)
+
+client_with_header: Client, String, String => Client
+client_with_header = client, name, value =>
+   client.default_headers += Header(name, value)
+   client
+
+client_close: Client => ()
+client_close = client =>
+   ?client.pool @ i =>
+      e = client.pool(i)!!
+      e.fd !< 0
+         |
+            net::close_fd(e.fd)
+            client.pool(i) = PoolEntry("", 0, -1)
+
+client_send: Client, Request => < Response | String >
+client_send = client, req =>
+   url::parse(req.url)
+      | u =>
+         eq_ci(u.scheme, "https")
+            | send_https_curl(req, client.default_headers)
+            | !eq_ci(u.scheme, "http")
+               | <- ("unsupported URL scheme: " + u.scheme) +>
+               |
+                  port = u.port > 0 | u.port | 80
+                  wire = serialize_request(req, u, client.default_headers, <+>)
+                  t_ms = req.timeout_ms > 0 | req.timeout_ms | client.timeout_ms
+                  pooled_fd = take_pooled_fd(client, u.host, port)
+                  pooled_fd !< 0
+                     |
+                        t_ms > 0
+                           |
+                              net::set_recv_timeout(pooled_fd, t_ms)
+                              net::set_send_timeout(pooled_fd, t_ms)
+                        sent = net::send_str(pooled_fd, wire)
+                        sent == ?wire
+                           |
+                              read_http_from_fd(pooled_fd, req.method)
+                                 | out =>
+                                    out.keep_alive
+                                       | put_pooled_fd(client, u.host, port, pooled_fd)
+                                       | net::close_fd(pooled_fd)
+                                    --| <+ out.res ->
+                                 | err_stale => net::close_fd(pooled_fd)
+                           | net::close_fd(pooled_fd)
+                  // Fresh TCP connection
+                  net::tcp_connect(u.host, port)
+                     | fd =>
+                        t_ms > 0
+                           |
+                              net::set_recv_timeout(fd, t_ms)
+                              net::set_send_timeout(fd, t_ms)
+                        sent = net::send_str(fd, wire)
+                        sent != ?wire
+                           |
+                              net::close_fd(fd)
+                              <- "failed to send HTTP request" +>
+                           |
+                              read_http_from_fd(fd, req.method)
+                                 | out =>
+                                    out.keep_alive
+                                       | put_pooled_fd(client, u.host, port, fd)
+                                       | net::close_fd(fd)
+                                    <+ out.res ->
+                                 | err =>
+                                    net::close_fd(fd)
+                                    <- err +>
+                     | err => <- err +>
+      | err => <- err.msg +>
+
+// --- One-Shot HTTP/HTTPS Convenience Functions -------------------------------
+
+send: Request => < Response | String >
+send = req =>
+   c = client_new!
+   res = client_send(c, req)
+   client_close(c)
+   res
+
+get: String => < Response | String >
+get = target_url =>
+   send(request_new("GET", target_url))
+
+get_with_headers: String, Headers => < Response | String >
+get_with_headers = target_url, hdrs =>
+   send(with_headers(request_new("GET", target_url), hdrs))
+
+post: String, String, String => < Response | String >
+post = target_url, content_type, body =>
+   r = with_header(request_new("POST", target_url), "Content-Type", content_type)
+   send(with_body(r, body))
+
+post_json: String, String => < Response | String >
+post_json = target_url, json_body =>
+   send(with_json_body(request_new("POST", target_url), json_body))
+
+post_json_val: #! T: Type, String, T => < Response | String >
+post_json_val = target_url, val =>
+   post_json(target_url, json::encode(val))
+
+put_json: String, String => < Response | String >
+put_json = target_url, json_body =>
+   send(with_json_body(request_new("PUT", target_url), json_body))
+
+patch_json: String, String => < Response | String >
+patch_json = target_url, json_body =>
+   send(with_json_body(request_new("PATCH", target_url), json_body))
+
+delete: String => < Response | String >
+delete = target_url =>
+   send(request_new("DELETE", target_url))
+
+// --- Server-Sent Events (SSE) Formatter & Parser -----------------------------
+
+sse_event: String, String => SseEvent
+sse_event = event, data =>
+   SseEvent("", event, data, 0)
+
+sse_event_id: String, String, String => SseEvent
+sse_event_id = id, event, data =>
+   SseEvent(id, event, data, 0)
+
+sse_data: String => SseEvent
+sse_data = data =>
+   SseEvent("", "", data, 0)
+
+sse_encode: SseEvent => String
+sse_encode = ev =>
+   out = {?ev.data + 64}
+   ?ev.id > 0
+      |
+         out += "id: "
+         out += ev.id
+         out += "\n"
+   ?ev.event > 0
+      |
+         out += "event: "
+         out += ev.event
+         out += "\n"
+   ev.retry_ms > 0
+      |
+         out += "retry: "
+         out += str::from_int(ev.retry_ms)
+         out += "\n"
+   lines = str::split(ev.data, "\n")
+   ?lines == 0
+      | out += "data: \n"
+      |
+         ?lines @ i =>
+            out += "data: "
+            out += lines(i)!!
+            out += "\n"
+   out += "\n"
+   +out
+
+sse_encode_events: SseEvents => String
+sse_encode_events = evs =>
+   out = {256}
+   ?evs @ i =>
+      out += sse_encode(evs(i)!!)
+   +out
+
+// Parses a `text/event-stream` payload into an array of `SseEvent` records.
+sse_parse: String => SseEvents
+sse_parse = raw =>
+   evs' = SseEvents()
+   normalized = str::replace(raw, "\r\n", "\n")
+   lines = str::split(normalized, "\n")
+   id' = ++""
+   event' = ++""
+   data' = ++""
+   has_data' = <->
+   retry' = 0
+   ?lines @ i =>
+      ln = lines(i)!!
+      ?ln == 0
+         |
+            (has_data' || ?id' > 0 || ?event' > 0)
+               |
+                  evs' += SseEvent(id', event', data', retry')
+                  id' = ++""
+                  event' = ++""
+                  data' = ++""
+                  has_data' = <->
+                  retry' = 0
+         | ln(0) != ':'
+            |
+               colon = str::find(ln, ":") | idx => idx | ?ln
+               field = ln(0..colon)
+               val_raw = colon < ?ln | ln((colon + 1)..) | ""
+               val = (?val_raw > 0 && val_raw(0) == ' ') | val_raw(1..) | val_raw
+               field
+                  ["id"]    id' = val
+                  ["event"] event' = val
+                  ["retry"]
+                     str::parse_int(val)
+                        | r => retry' = r
+                  ["data"]
+                     has_data'
+                        | data' = data' + "\n" + val
+                        |
+                           data' = val
+                           has_data' = <+>
+   (has_data' || ?id' > 0 || ?event' > 0)
+      | evs' += SseEvent(id', event', data', retry')
+   evs'
+
+// --- RFC 6455 WebSocket Handshake, Frame Codec & Client ----------------------
+
+ws_accept_key: String => String
+ws_accept_key = client_key =>
+   crypto::websocket_accept_key(client_key)
+
+ws_encode_frame: Int, String, <> => String
+ws_encode_frame = opcode, payload, masked =>
+   plen = ?payload
+   out = {plen + 14}
+   b0 = 0x80 .|. (opcode .&. 0x0F)
+   out += b0
+   mask_bit = masked | 0x80 | 0
+   plen < 126
+      | out += (mask_bit .|. plen)
+      | plen !> 65535
+         |
+            out += (mask_bit .|. 126)
+            out += ((plen .>. 8) .&. 0xFF)
+            out += (plen .&. 0xFF)
+         |
+            out += (mask_bit .|. 127)
+            out += ((plen .>. 56) .&. 0xFF)
+            out += ((plen .>. 48) .&. 0xFF)
+            out += ((plen .>. 40) .&. 0xFF)
+            out += ((plen .>. 32) .&. 0xFF)
+            out += ((plen .>. 24) .&. 0xFF)
+            out += ((plen .>. 16) .&. 0xFF)
+            out += ((plen .>. 8) .&. 0xFF)
+            out += (plen .&. 0xFF)
+   masked
+      |
+         m0 = 0x37
+         m1 = 0xFA
+         m2 = 0x21
+         m3 = 0x3D
+         out += m0
+         out += m1
+         out += m2
+         out += m3
+         plen @ i =>
+            kb = (i .&. 3) [0] m0 [1] m1 [2] m2 | m3
+            out += (payload(i) .^. kb)
+      | out += payload
+   +out
+
+ws_decode_frame: String => < WsFrame | >
+ws_decode_frame = raw =>
+   avail = ?raw
+   avail < 2 | --| <-->
+   b0 = raw(0)
+   b1 = raw(1)
+   fin = (b0 .&. 0x80) != 0
+   opcode = b0 .&. 0x0F
+   masked = (b1 .&. 0x80) != 0
+   len7 = b1 .&. 0x7F
+   hdr_len' = 2
+   plen' = len7
+   len7 == 126
+      |
+         avail < 4 | --| <-->
+         hdr_len' = 4
+         plen' = (raw(2) .<. 8) .|. raw(3)
+      | len7 == 127
+         |
+            avail < 10 | --| <-->
+            hdr_len' = 10
+            (raw(2) .&. 0x80) != 0 | --| <-->
+            plen' = (raw(2) .<. 56) .|. (raw(3) .<. 48) .|. (raw(4) .<. 40) .|. (raw(5) .<. 32) .|.
+               (raw(6) .<. 24) .|. (raw(7) .<. 16) .|. (raw(8) .<. 8) .|. raw(9)
+   mask_off = hdr_len'
+   masked | hdr_len' = hdr_len' + 4
+   total = hdr_len' + plen'
+   avail < total | --| <-->
+   out = {plen'}
+   masked
+      |
+         m0 = raw(mask_off)
+         m1 = raw(mask_off + 1)
+         m2 = raw(mask_off + 2)
+         m3 = raw(mask_off + 3)
+         plen' @ i =>
+            kb = (i .&. 3) [0] m0 [1] m1 [2] m2 | m3
+            out += (raw(hdr_len' + i) .^. kb)
+      | out += raw(hdr_len'..total)
+   <+ WsFrame(opcode, fin, +out, total) +>
+
+// Connects to a `ws://host:port/path` endpoint and performs the RFC 6455 handshake.
+ws_connect: String => < WsConn | String >
+ws_connect = ws_url =>
+   url::parse(ws_url)
+      | u =>
+         !eq_ci(u.scheme, "ws") && !eq_ci(u.scheme, "http")
+            | <- ("unsupported WebSocket scheme: " + u.scheme) +>
+            |
+               port = u.port > 0 | u.port | 80
+               path_q = (?u.path > 0 | u.path | "/") + (?u.query > 0 | "?" + u.query | "")
+               net::tcp_connect(u.host, port)
+                  | fd =>
+                     key_bytes = crypto::random_bytes(16) | b => b | "0123456789abcdef"
+                     sec_key = base64::encode(key_bytes)
+                     expected_accept = ws_accept_key(sec_key)
+                     host_hdr = (port != 80) | u.host + ":" + str::from_int(port) | u.host
+                     req_str = "GET " + path_q + " HTTP/1.1\r\n" +
+                        "Host: " + host_hdr + "\r\n" +
+                        "Upgrade: websocket\r\n" +
+                        "Connection: Upgrade\r\n" +
+                        "Sec-WebSocket-Key: " + sec_key + "\r\n" +
+                        "Sec-WebSocket-Version: 13\r\n\r\n"
+                     net::send_str(fd, req_str) != ?req_str
+                        |
+                           net::close_fd(fd)
+                           <- "failed to send WebSocket upgrade request" +>
+                        |
+                           buf' = ++""
+                           hdr_end' = -1
+                           0.. @
+                              str::find(buf', "\r\n\r\n")
+                                 | idx =>
+                                    hdr_end' = idx
+                                    -->
+                                 |
+                                    net::recv(fd, 4096)
+                                       | chunk => buf' = buf' + chunk
+                                       | -->
+                           hdr_end' < 0
+                              |
+                                 net::close_fd(fd)
+                                 <- "WebSocket handshake closed before response headers" +>
+                              |
+                                 head_str = buf'(0..hdr_end')
+                                 leftover = buf'((hdr_end' + 4)..)
+                                 parse_head_block(head_str)
+                                    | parsed =>
+                                       parsed.status != 101
+                                          |
+                                             net::close_fd(fd)
+                                             <- ("WebSocket upgrade rejected with status " + str::from_int(parsed.status)) +>
+                                          |
+                                             got_accept = get_header(parsed.headers, "Sec-WebSocket-Accept") | v => v | ""
+                                             got_accept != expected_accept
+                                                |
+                                                   net::close_fd(fd)
+                                                   <- "WebSocket Sec-WebSocket-Accept mismatch" +>
+                                                | <+ WsConn(fd, leftover) ->
+                                    | err =>
+                                       net::close_fd(fd)
+                                       <- err +>
+                  | err => <- err +>
+      | err => <- err.msg +>
+
+ws_send_text: WsConn, String => <>
+ws_send_text = conn, text =>
+   frame = ws_encode_frame(WS_OP_TEXT, text, <+>)
+   net::send_str(conn.fd, frame) == ?frame
+
+ws_send_binary: WsConn, String => <>
+ws_send_binary = conn, data =>
+   frame = ws_encode_frame(WS_OP_BINARY, data, <+>)
+   net::send_str(conn.fd, frame) == ?frame
+
+ws_recv: WsConn => < WsFrame | String >
+ws_recv = conn =>
+   buf' = conn.leftover
+   res' = <- "WebSocket connection closed" +>
+   0.. @
+      ws_decode_frame(buf')
+         | f =>
+            conn.leftover = buf'(f.consumed..)
+            res' = <+ f ->
+            -->
+         |
+            net::recv(conn.fd, 8192)
+               | chunk => buf' = buf' + chunk
+               | -->
+   res'
+
+ws_close: WsConn => ()
+ws_close = conn =>
+   conn.fd !< 0
+      |
+         frame = ws_encode_frame(WS_OP_CLOSE, "", <+>)
+         net::send_str(conn.fd, frame)
+         net::close_fd(conn.fd)
+         conn.fd = -1

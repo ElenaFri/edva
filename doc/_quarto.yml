@@ -51,6 +51,7 @@ book:
         - reference/stdlib/hash.qmd
         - reference/stdlib/heap.qmd
         - reference/stdlib/hex.qmd
+        - reference/stdlib/http.qmd
         - reference/stdlib/img.qmd
         - reference/stdlib/in.qmd
         - reference/stdlib/io.qmd

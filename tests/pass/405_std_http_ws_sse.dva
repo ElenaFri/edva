@@ -1,0 +1,150 @@
+// 405_std_http_ws_sse.dva — Tests for std/http (DVA-8):
+// - HTTP/1.1 response parser, chunked transfer-encoding decoder, JSON/CCL helpers
+// - Keep-alive connection pooling across multiple HTTP requests over loopback TCP
+// - Server-Sent Events (SSE) encoding & parsing
+// - RFC 6455 WebSocket handshake, frame codec, and loopback client/server session
+
+#use ccl
+#use http
+#use io
+#use json
+#use libc
+#use net
+#use os
+#use str
+#use sys
+#use test
+
+#foreign "c"
+   c_fork = fork: () => i32
+
+// 1. Chunked transfer-encoding & response parsing
+raw_chunked = "HTTP/1.1 100 Continue\r\n\r\n" +
+   "HTTP/1.1 200 OK\r\n" +
+   "Content-Type: application/json\r\n" +
+   "Transfer-Encoding: chunked\r\n" +
+   "X-Custom: Edva-8\r\n\r\n" +
+   "7\r\n{\"msg\":\r\n" +
+   "8;ext=1\r\n\"chunky\"\r\n" +
+   "1\r\n}\r\n" +
+   "0\r\n\r\n"
+
+res1 = http::parse_response(raw_chunked)!!
+test::eq(res1.status, 200, "parse_response status after 100 Continue")
+test::eq(res1.reason, "OK", "parse_response reason")
+test::eq(http::response_header(res1, "x-custom") | v => v | "", "Edva-8", "case-insensitive response_header")
+test::eq(res1.body, "{\"msg\":\"chunky\"}", "chunked body decoded")
+
+jv = http::response_json(res1)!!
+test::eq(json::get_str(jv, "msg") | s => s | "", "chunky", "response_json parsed")
+
+// 2. Server-Sent Events (SSE) encode & parse
+ev1 = http::SseEvent("42", "update", "line1\nline2", 1500)
+ev2 = http::sse_data("plain-msg")
+sse_wire = ": keepalive\n\n" + http::sse_encode(ev1) + http::sse_encode(ev2)
+parsed_evs = http::sse_parse(sse_wire)
+test::eq(?parsed_evs, 2, "sse_parse count (ignoring comment)")
+pe0 = parsed_evs(0)!!
+pe1 = parsed_evs(1)!!
+test::eq(pe0.id, "42", "sse event 0 id")
+test::eq(pe0.event, "update", "sse event 0 event")
+test::eq(pe0.data, "line1\nline2", "sse event 0 multiline data")
+test::eq(pe0.retry_ms, 1500, "sse event 0 retry")
+test::eq(pe1.event, "", "sse event 1 default event")
+test::eq(pe1.data, "plain-msg", "sse event 1 data")
+
+// 3. RFC 6455 WebSocket handshake accept key & frame codec
+accept = http::ws_accept_key("dGhlIHNhbXBsZSBub25jZQ==")
+test::eq(accept, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", "RFC 6455 Sec-WebSocket-Accept vector")
+
+f_masked = http::ws_encode_frame(http::WS_OP_TEXT, "hello websocket!", <+>)
+df1 = http::ws_decode_frame(f_masked)!!
+test::eq(df1.opcode, http::WS_OP_TEXT, "decoded masked frame opcode")
+test::ok(df1.fin, "decoded masked frame fin")
+test::eq(df1.payload, "hello websocket!", "decoded masked frame payload")
+
+// 16-bit extended length frame (200 bytes)
+long_str = str::repeat("abcd", 50)
+f_long = http::ws_encode_frame(http::WS_OP_BINARY, long_str, <->)
+df2 = http::ws_decode_frame(f_long)!!
+test::eq(df2.opcode, http::WS_OP_BINARY, "decoded 16-bit frame opcode")
+test::eq(?df2.payload, 200, "decoded 16-bit frame length")
+test::eq(df2.payload, long_str, "decoded 16-bit frame payload")
+
+// 4. Live loopback TCP HTTP/1.1 keep-alive + WebSocket session
+srv_fd' = -1
+port' = 29180
+0..40 @ i =>
+   cand = 29180 + i
+   net::tcp_listen(cand, 8)
+      | fd =>
+         srv_fd' = fd
+         port' = cand
+         -->
+
+test::ok(srv_fd' !< 0, "bound loopback test listener")
+
+child_pid = Int(c_fork!)
+child_pid == 0
+   |
+      // Child 1: accept one keep-alive HTTP connection and serve 2 requests on it
+      net::tcp_accept(srv_fd')
+         | cfd =>
+            // Request 1 (GET /first -> chunked response, keep-alive)
+            net::recv(cfd, 4096)
+            resp1 = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n5\r\nhello\r\n6\r\n-world\r\n0\r\n\r\n"
+            net::send_str(cfd, resp1)
+            // Request 2 on the SAME socket (POST /second -> Content-Length response)
+            net::recv(cfd, 4096)
+            resp2 = "HTTP/1.1 201 Created\r\nContent-Type: application/ccl\r\nContent-Length: 10\r\nConnection: close\r\n\r\nstatus = 1"
+            net::send_str(cfd, resp2)
+            net::close_fd(cfd)
+      // Accept second connection for WebSocket upgrade + echo
+      net::tcp_accept(srv_fd')
+         | wfd =>
+            req_raw = net::recv(wfd, 4096) | s => s | ""
+            // Extract Sec-WebSocket-Key
+            lines = str::split(req_raw, "\r\n")
+            key' = ++""
+            ?lines @ i =>
+               ln = lines(i)!!
+               str::starts_with(ln, "Sec-WebSocket-Key: ")
+                  | key' = str::trim(ln(19..))
+            acc_key = http::ws_accept_key(key')
+            hs = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + acc_key + "\r\n\r\n"
+            net::send_str(wfd, hs)
+            f_in_raw = net::recv(wfd, 4096) | s => s | ""
+            http::ws_decode_frame(f_in_raw)
+               | fin_f =>
+                  f_out = http::ws_encode_frame(http::WS_OP_TEXT, "echo:" + fin_f.payload, <->)
+                  net::send_str(wfd, f_out)
+            net::close_fd(wfd)
+      net::close_fd(srv_fd')
+      sys::exit(0)
+
+// Parent: close listener copy and exercise `http::Client` keep-alive + `http::ws_connect`
+net::close_fd(srv_fd')
+base_url = "http://127.0.0.1:" + str::from_int(port')
+client = http::client_new!
+
+r_first = http::client_send(client, http::request_new("GET", base_url + "/first"))!!
+test::eq(r_first.status, 200, "keep-alive req 1 status")
+test::eq(r_first.body, "hello-world", "keep-alive req 1 chunked body")
+
+r_second = http::client_send(client, http::with_json_body(http::request_new("POST", base_url + "/second"), "{\"ok\":true}"))!!
+test::eq(r_second.status, 201, "keep-alive req 2 status on reused socket")
+ccl_doc = http::response_ccl(r_second)!!
+test::eq(ccl::get(ccl_doc, "status") | v => v | "", "1", "response_ccl parsed")
+http::client_close(client)
+
+ws_url = "ws://127.0.0.1:" + str::from_int(port') + "/ws"
+wconn = http::ws_connect(ws_url)!!
+test::ok(http::ws_send_text(wconn, "edva-ws"), "ws_send_text succeeds")
+wframe = http::ws_recv(wconn)!!
+test::eq(wframe.opcode, http::WS_OP_TEXT, "ws_recv opcode")
+test::eq(wframe.payload, "echo:edva-ws", "ws_recv echoed payload")
+http::ws_close(wconn)
+
+os::wait_pid(child_pid)
+
+io::out("405_std_http_ws_sse: ALL PASSED")

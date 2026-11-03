@@ -1,0 +1,109 @@
+---
+meta:
+  audience: "Edva application and systems programmers"
+  status: "reference for std/http.dva"
+  audited: "20789d4"
+  evidence: "`std/http.dva`, `tests/pass/405_std_http_ws_sse.dva`"
+---
+
+# `http`
+
+`#use http` provides an outbound HTTP/1.1 client with keep-alive connection
+pooling, `Transfer-Encoding: chunked` decoding, transparent `https://` support,
+Server-Sent Events (SSE) formatting and parsing, and RFC 6455 WebSocket
+handshake, frame encoding/decoding, and client sockets.
+
+```{.dva .run}
+#use http
+#use io
+#use str
+
+raw = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n7\r\n{\"ok\":1\r\n1\r\n}\r\n0\r\n\r\n"
+res = http::parse_response(raw)!!
+io::out $ str::from_int(res.status) + " " + res.body
+
+evts = http::SseEvents()
+evts += http::sse_event_id("1", "tick", "hello\nworld")
+parsed = http::sse_parse(http::sse_encode_events(evts))
+first = parsed(0)!!
+io::out $ first.event + ":" + first.data
+```
+
+## Request and Response Types
+
+- `Header`: `(name: String, value: String)`
+- `Headers`: `Header{}`
+- `Request`: `(method: String, url: String, headers: Headers, body: String, timeout_ms: Int)`
+- `Response`: `(status: Int, reason: String, headers: Headers, body: String)`
+- `Client`: `(pool: PoolEntries, default_headers: Headers, timeout_ms: Int)`
+
+| Function | Signature | Description |
+|---|---|---|
+| `headers` | `() => Headers` | Creates an empty `Headers` collection. |
+| `add_header` | `Headers, String, String => Headers` | Appends a `Header` to `Headers`. |
+| `get_header` | `Headers, String => < String | >` | Case-insensitive header lookup. |
+| `has_header` | `Headers, String => <>` | True when a header is present (case-insensitive). |
+| `request_new` | `String, String => Request` | Creates a request with method and URL (`timeout_ms = 10000`). |
+| `with_header` | `Request, String, String => Request` | Appends a request header. |
+| `with_headers` | `Request, Headers => Request` | Merges multiple headers into a request. |
+| `with_body` | `Request, String => Request` | Sets the request body. |
+| `with_json_body` | `Request, String => Request` | Sets `Content-Type: application/json` and JSON payload. |
+| `with_bearer` | `Request, String => Request` | Sets `Authorization: Bearer <token>`. |
+| `with_timeout` | `Request, Int => Request` | Sets timeout in milliseconds. |
+| `response_header` | `Response, String => < String | >` | Case-insensitive response header lookup. |
+| `response_json` | `Response => < json::Value | Error >` | Parses `res.body` as a `json::Value`. |
+| `response_ccl` | `Response => < ccl::CclDoc | Error >` | Parses `res.body` as a `ccl::CclDoc`. |
+| `decode_chunked` | `String => < String | String >` | Decodes an HTTP/1.1 `Transfer-Encoding: chunked` body. |
+| `parse_response` | `String => < Response | String >` | Parses a raw HTTP/1.x wire response. |
+
+## Client and One-Shot Requests
+
+`http://` requests use native `std/net` TCP sockets with connection pooling in
+`Client`. `https://` URLs transparently delegate to `curl` via `std/os`.
+
+| Function | Signature | Description |
+|---|---|---|
+| `client_new` | `() => Client` | Creates a keep-alive HTTP client pool. |
+| `client_with_header` | `Client, String, String => Client` | Adds a default header sent on every request. |
+| `client_send` | `Client, Request => < Response | String >` | Sends a `Request` using the client's connection pool. |
+| `client_close` | `Client => ()` | Closes all pooled keep-alive sockets. |
+| `send` | `Request => < Response | String >` | Sends a one-shot `Request`. |
+| `get` | `String => < Response | String >` | Performs `GET <url>`. |
+| `get_with_headers` | `String, Headers => < Response | String >` | Performs `GET <url>` with custom headers. |
+| `post` | `String, String, String => < Response | String >` | Performs `POST <url>` with content-type and body. |
+| `post_json` | `String, String => < Response | String >` | Performs `POST <url>` with a JSON string body. |
+| `post_json_val` | `#! T: Type, String, T => < Response | String >` | Serializes `val` via `json::encode` and performs `POST <url>`. |
+| `put_json` | `String, String => < Response | String >` | Performs `PUT <url>` with a JSON string body. |
+| `patch_json` | `String, String => < Response | String >` | Performs `PATCH <url>` with a JSON string body. |
+| `delete` | `String => < Response | String >` | Performs `DELETE <url>`. |
+
+## Server-Sent Events (SSE)
+
+- `SseEvent`: `(id: String, event: String, data: String, retry_ms: Int)`
+- `SseEvents`: `SseEvent{}`
+
+| Function | Signature | Description |
+|---|---|---|
+| `sse_data` | `String => SseEvent` | Creates an unnamed SSE event with `data`. |
+| `sse_event` | `String, String => SseEvent` | Creates an SSE event with `event` name and `data`. |
+| `sse_event_id` | `String, String, String => SseEvent` | Creates an SSE event with `id`, `event`, and `data`. |
+| `sse_encode` | `SseEvent => String` | Formats a single SSE event block (`text/event-stream`). |
+| `sse_encode_events` | `SseEvents => String` | Formats a sequence of SSE events. |
+| `sse_parse` | `String => SseEvents` | Parses a `text/event-stream` payload into `SseEvents`. |
+
+## RFC 6455 WebSocket Client and Framing
+
+- `WsFrame`: `(opcode: Int, fin: <>, payload: String, consumed: Int)`
+- `WsConn`: `(fd: Int, leftover: String)`
+- Opcode constants: `WS_OP_CONT` (`0`), `WS_OP_TEXT` (`1`), `WS_OP_BINARY` (`2`), `WS_OP_CLOSE` (`8`), `WS_OP_PING` (`9`), `WS_OP_PONG` (`10`)
+
+| Function | Signature | Description |
+|---|---|---|
+| `ws_accept_key` | `String => String` | Computes RFC 6455 `Sec-WebSocket-Accept` from `Sec-WebSocket-Key`. |
+| `ws_encode_frame` | `Int, String, <> => String` | Encodes a WebSocket frame (`masked = <+>` for client-to-server). |
+| `ws_decode_frame` | `String => < WsFrame | >` | Decodes the next frame from a wire buffer. |
+| `ws_connect` | `String => < WsConn | String >` | Connects and performs RFC 6455 upgrade handshake for `ws://host:port/path`. |
+| `ws_send_text` | `WsConn, String => <>` | Sends a masked `WS_OP_TEXT` frame. |
+| `ws_send_binary` | `WsConn, String => <>` | Sends a masked `WS_OP_BINARY` frame. |
+| `ws_recv` | `WsConn => < WsFrame | String >` | Receives the next WebSocket frame. |
+| `ws_close` | `WsConn => ()` | Sends `WS_OP_CLOSE` and closes the socket. |

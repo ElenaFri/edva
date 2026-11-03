@@ -33,6 +33,7 @@ Standard stream writers and readers live in `std/io.dva`.
 | `hash` | FNV-1a, WyHash, CRC-32, Adler-32, and `#!` structural hashing | [hash](hash.qmd) |
 | `heap` | generic binary min/max/custom priority queue | [heap](heap.qmd) |
 | `hex` | RFC 4648 Base16 hexadecimal encoding and decoding | [hex](hex.qmd) |
+| `http` | outbound HTTP/1.1 client, connection pool, SSE, and RFC 6455 WebSocket client | [http](http.qmd) |
 | `img` | lossless RGBA8 `Image` buffer and QOI / PNG encoders and decoders | [img](img.qmd) |
 | `in` | input readers and line scanning | [in](in.qmd) |
 | `io` | readers, writers, and standard streams | [io](io.qmd) |
@@ -60,7 +61,7 @@ Standard stream writers and readers live in `std/io.dva`.
 | `utf` | UTF-8 rune encoding and decoding | [utf](utf.qmd) |
 
 Target-support files are implementation probes, not public
-API. Dedicated reference pages are provided for all 43 standard library modules.
+API. Dedicated reference pages are provided for all 44 standard library modules.
 
 ```{.dva .run}
 #use io
