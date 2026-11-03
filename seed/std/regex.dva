@@ -245,32 +245,35 @@ parse_escape = pat, pos, in_class =>
       | --| EscResult(-1, 0, empty_bits!, pos, "trailing backslash in regex")
    c = pat(pos)
    next = pos + 1
-   c == 110 | --| EscResult(0, 10, empty_bits!, next, "") // \n
-   c == 114 | --| EscResult(0, 13, empty_bits!, next, "") // \r
-   c == 116 | --| EscResult(0, 9,  empty_bits!, next, "") // \t
-   c == 102 | --| EscResult(0, 12, empty_bits!, next, "") // \f
-   c == 118 | --| EscResult(0, 11, empty_bits!, next, "") // \v
-   c == 48  | --| EscResult(0, 0,  empty_bits!, next, "") // \0
-   c == 100 | --| EscResult(1, 0,  bits_digit!, next, "") // \d
-   c == 68  | --| EscResult(1, 0,  bits_invert(bits_digit!), next, "") // \D
-   c == 119 | --| EscResult(1, 0,  bits_word!, next, "") // \w
-   c == 87  | --| EscResult(1, 0,  bits_invert(bits_word!), next, "") // \W
-   c == 115 | --| EscResult(1, 0,  bits_space!, next, "") // \s
-   c == 83  | --| EscResult(1, 0,  bits_invert(bits_space!), next, "") // \S
-   !in_class && c == 65  | --| EscResult(2, ANCHOR_START, empty_bits!, next, "") // \A
-   !in_class && c == 122 | --| EscResult(2, ANCHOR_END, empty_bits!, next, "")   // \z
-   !in_class && c == 98  | --| EscResult(2, ANCHOR_WORD, empty_bits!, next, "")  // \b
-   !in_class && c == 66  | --| EscResult(2, ANCHOR_NON_WORD, empty_bits!, next, "") // \B
-   c == 120 // \xHH
+   !in_class
       |
+         c
+            [65]  --| EscResult(2, ANCHOR_START, empty_bits!, next, "")    // \A
+            [122] --| EscResult(2, ANCHOR_END, empty_bits!, next, "")      // \z
+            [98]  --| EscResult(2, ANCHOR_WORD, empty_bits!, next, "")     // \b
+            [66]  --| EscResult(2, ANCHOR_NON_WORD, empty_bits!, next, "") // \B
+   c
+      [110] EscResult(0, 10, empty_bits!, next, "") // \n
+      [114] EscResult(0, 13, empty_bits!, next, "") // \r
+      [116] EscResult(0, 9,  empty_bits!, next, "") // \t
+      [102] EscResult(0, 12, empty_bits!, next, "") // \f
+      [118] EscResult(0, 11, empty_bits!, next, "") // \v
+      [48]  EscResult(0, 0,  empty_bits!, next, "") // \0
+      [100] EscResult(1, 0,  bits_digit!, next, "") // \d
+      [68]  EscResult(1, 0,  bits_invert(bits_digit!), next, "") // \D
+      [119] EscResult(1, 0,  bits_word!, next, "") // \w
+      [87]  EscResult(1, 0,  bits_invert(bits_word!), next, "") // \W
+      [115] EscResult(1, 0,  bits_space!, next, "") // \s
+      [83]  EscResult(1, 0,  bits_invert(bits_space!), next, "") // \S
+      [120] // \xHH
          next + 2 > ?pat
             | --| EscResult(-1, 0, empty_bits!, pos, "incomplete \\xHH escape in regex")
          h1 = hex_val(pat(next))
          h2 = hex_val(pat(next + 1))
          (h1 < 0 || h2 < 0)
             | --| EscResult(-1, 0, empty_bits!, pos, "invalid hex digit in \\xHH escape")
-         --| EscResult(0, (h1 .<. 4) .|. h2, empty_bits!, next + 2, "")
-   EscResult(0, c, empty_bits!, next, "")
+         EscResult(0, (h1 .<. 4) .|. h2, empty_bits!, next + 2, "")
+      | EscResult(0, c, empty_bits!, next, "")
 
 // Parse bracket character class `[...]` starting after `[` at `st.pos`.
 parse_class: ParseState => ParseState
@@ -444,43 +447,39 @@ parse_group_or_flags = st =>
 parse_atom: ParseState => ParseState
 parse_atom = st =>
    pat = st.pat
-   len = ?pat
    pos = st.pos
    c = pat(pos)
-   c == 40 // '('
-      | --| parse_group_or_flags(ParseState(pat, pos + 1, st.flags, st.num_groups, st.nodes, -1, st.err_msg, st.err_pos))
-   c == 91 // '['
-      | --| parse_class(ParseState(pat, pos + 1, st.flags, st.num_groups, st.nodes, -1, st.err_msg, st.err_pos))
-   c == 46 // '.'
-      |
+   c
+      [40] // '('
+         parse_group_or_flags(ParseState(pat, pos + 1, st.flags, st.num_groups, st.nodes, -1, st.err_msg, st.err_pos))
+      [91] // '['
+         parse_class(ParseState(pat, pos + 1, st.flags, st.num_groups, st.nodes, -1, st.err_msg, st.err_pos))
+      [46] // '.'
          st2 = ParseState(pat, pos + 1, st.flags, st.num_groups, st.nodes, -1, st.err_msg, st.err_pos)
-         --| add_node(st2, AstNode(AST_ANY, 0, 0, 0, 0, <+>, st.flags, empty_bits!))
-   c == 94 // '^'
-      |
+         add_node(st2, AstNode(AST_ANY, 0, 0, 0, 0, <+>, st.flags, empty_bits!))
+      [94] // '^'
          ak = (st.flags .&. FLAG_MULTILINE) != 0 | ANCHOR_BOL_LINE | ANCHOR_BOL
          st2 = ParseState(pat, pos + 1, st.flags, st.num_groups, st.nodes, -1, st.err_msg, st.err_pos)
-         --| add_node(st2, AstNode(AST_ANCHOR, ak, 0, 0, 0, <+>, st.flags, empty_bits!))
-   c == 36 // '$'
-      |
+         add_node(st2, AstNode(AST_ANCHOR, ak, 0, 0, 0, <+>, st.flags, empty_bits!))
+      [36] // '$'
          ak = (st.flags .&. FLAG_MULTILINE) != 0 | ANCHOR_EOL_LINE | ANCHOR_EOL
          st2 = ParseState(pat, pos + 1, st.flags, st.num_groups, st.nodes, -1, st.err_msg, st.err_pos)
-         --| add_node(st2, AstNode(AST_ANCHOR, ak, 0, 0, 0, <+>, st.flags, empty_bits!))
-   c == 92 // '\'
-      |
+         add_node(st2, AstNode(AST_ANCHOR, ak, 0, 0, 0, <+>, st.flags, empty_bits!))
+      [92] // '\'
          esc = parse_escape(pat, pos + 1, <->)
          esc.kind < 0 | --| fail_state(st, esc.err, pos)
          st2 = ParseState(pat, esc.next_pos, st.flags, st.num_groups, st.nodes, -1, st.err_msg, st.err_pos)
-         esc.kind == 1
-            | --| add_node(st2, AstNode(AST_CLASS, 0, 0, 0, 0, <+>, st.flags, esc.bits))
-         esc.kind == 2
-            | --| add_node(st2, AstNode(AST_ANCHOR, esc.val, 0, 0, 0, <+>, st.flags, empty_bits!))
-         --| add_node(st2, AstNode(AST_CHAR, esc.val, 0, 0, 0, <+>, st.flags, empty_bits!))
-   (c == 42 || c == 43 || c == 63 || c == 123)
-      | --| fail_state(st, "quantifier has nothing to repeat in regex", pos)
-   c == 93
-      | --| fail_state(st, "unmatched ']' in regex", pos)
-   st2 = ParseState(pat, pos + 1, st.flags, st.num_groups, st.nodes, -1, st.err_msg, st.err_pos)
-   add_node(st2, AstNode(AST_CHAR, c, 0, 0, 0, <+>, st.flags, empty_bits!))
+         esc.kind
+            [1] add_node(st2, AstNode(AST_CLASS, 0, 0, 0, 0, <+>, st.flags, esc.bits))
+            [2] add_node(st2, AstNode(AST_ANCHOR, esc.val, 0, 0, 0, <+>, st.flags, empty_bits!))
+            |   add_node(st2, AstNode(AST_CHAR, esc.val, 0, 0, 0, <+>, st.flags, empty_bits!))
+      [42, 43, 63, 123]
+         fail_state(st, "quantifier has nothing to repeat in regex", pos)
+      [93]
+         fail_state(st, "unmatched ']' in regex", pos)
+      |
+         st2 = ParseState(pat, pos + 1, st.flags, st.num_groups, st.nodes, -1, st.err_msg, st.err_pos)
+         add_node(st2, AstNode(AST_CHAR, c, 0, 0, 0, <+>, st.flags, empty_bits!))
 
 parse_factor: ParseState => ParseState
 parse_factor = st =>
@@ -844,6 +843,18 @@ expand_replacement = repl, m =>
             i' = i' + 1
    +out
 
+#private
+
+match_regex: Regex, String => <>
+match_regex = re, text =>
+   run_vm(re, text, 0)
+      | saved => ?saved !< 0
+      | <->
+
+is_meta: Int => <>
+is_meta = c =>
+   c [92, 46, 43, 42, 63, 40, 41, 124, 91, 93, 123, 125, 94, 36]
+
 #public
 
 // Compiles a regular expression pattern into a linear-time PikeVM `Regex`.
@@ -863,19 +874,15 @@ compile = pattern =>
    anchored = is_anchored_root(st.nodes, st.node_id)
    <+ Regex(pattern, prog', st.num_groups, anchored) ->
 
-// Returns `<+>` if `re` matches anywhere in `text`.
-is_match: Regex, String => <>
-is_match = re, text =>
-   run_vm(re, text, 0)
-      | saved => ?saved !< 0
-      | <->
-
-// Convenience one-shot helper: compiles `pattern` and tests if it matches `text`.
-match_str: String, String => <>
-match_str = pattern, text =>
-   compile(pattern)
-      | re => is_match(re, text)
-      | <->
+// Returns `<+>` if `pat` (either a compiled `Regex` or a pattern `String`) matches anywhere in `text`.
+match: #! P: Type, P, String => <>
+match = #! P, pat, text =>
+   P
+      [String]
+         compile(pat)
+            | re => match_regex(re, text)
+            | <->
+      | match_regex(pat, text)
 
 // Finds the first match of `re` in `text` starting at or after byte index `start_pos`.
 find_at: Regex, String, Int => < Match >
@@ -991,9 +998,6 @@ escape = s =>
    out = {n * 2}
    n @ i =>
       c = s(i)
-      is_meta = c == 92 || c == 46 || c == 43 || c == 42 || c == 63 ||
-                c == 40 || c == 41 || c == 124 || c == 91 || c == 93 ||
-                c == 123 || c == 125 || c == 94 || c == 36
-      is_meta | out += 92
+      is_meta(c) | out += 92
       out += c
    +out

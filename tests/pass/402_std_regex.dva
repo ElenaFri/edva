@@ -4,11 +4,12 @@
 #use regex
 #use test
 
-// 1. Basic literals, dot, anchors, escapes
+// 1. Basic literals, dot, anchors, escapes (testing both Regex and String in regex::match)
 re_hello = regex::compile("^hello, (\\w+)!$")!!
-test::ok(regex::is_match(re_hello, "hello, world!"), "anchored match")
-test::ok(!regex::is_match(re_hello, "hello, world! extra"), "anchored reject trailing")
-test::ok(!regex::is_match(re_hello, "say hello, world!"), "anchored reject leading")
+test::ok(regex::match(re_hello, "hello, world!"), "anchored match (compiled Regex)")
+test::ok(regex::match("^hello, (\\w+)!$", "hello, world!"), "anchored match (pattern String)")
+test::ok(!regex::match(re_hello, "hello, world! extra"), "anchored reject trailing")
+test::ok(!regex::match("^hello, (\\w+)!$", "say hello, world!"), "anchored reject leading")
 
 m_hello = regex::find(re_hello, "hello, edva_42!")!!
 test::eq(m_hello.text, "hello, edva_42!", "full match text")
@@ -50,7 +51,7 @@ test::eq(caps(0)!!, "2026-11-03", "date full")
 test::eq(caps(1)!!, "2026", "date year")
 test::eq(caps(2)!!, "11", "date month")
 test::eq(caps(3)!!, "03", "date day")
-test::ok(!regex::is_match(re_date, "12345-11-03"), "word boundary rejects 5-digit year")
+test::ok(!regex::match(re_date, "12345-11-03"), "word boundary rejects 5-digit year")
 
 // 5. Alternation, non-capturing groups (?:...), and optional captures
 re_semver = regex::compile("v?(\\d+)\\.(\\d+)\\.(\\d+)(?:-([0-9A-Za-z.-]+))?")!!
@@ -66,7 +67,7 @@ test::eq(c_pre(4)!!, "rc.1", "semver prerelease")
 
 // 6. Inline flags: (?i) case-insensitive, (?m) multiline, (?s) dotall
 re_icase = regex::compile("(?i)^edva\\s+rocks$")!!
-test::ok(regex::is_match(re_icase, "EDVA   Rocks"), "(?i) case-insensitive match")
+test::ok(regex::match(re_icase, "EDVA   Rocks"), "(?i) case-insensitive match")
 
 re_multi = regex::compile("(?m)^#\\s*(\\w+)")!!
 m_lines = regex::find_all(re_multi, "first\n# alpha\n  \n# beta\nlast")
@@ -102,12 +103,12 @@ test::eq(parts2(1)!!, "b, c, d", "split_n 1 remainder")
 
 lit = "price is $5.00 (USD)* [ok]?"
 re_lit = regex::compile("^" + regex::escape(lit) + "$")!!
-test::ok(regex::is_match(re_lit, lit), "escape metacharacters roundtrip")
+test::ok(regex::match(re_lit, lit), "escape metacharacters roundtrip")
 
 // 9. Linear-time ReDoS immunity check on pathological pattern (a?){24}a{24}
 re_pathological = regex::compile("(a?){24}a{24}")!!
-test::ok(regex::is_match(re_pathological, "aaaaaaaaaaaaaaaaaaaaaaaa"), "PikeVM linear time on a?^24 a^24")
-test::ok(!regex::is_match(re_pathological, "aaaaaaaaaaaaaaaaaaaaaaa"), "PikeVM linear time reject 23 a's")
+test::ok(regex::match(re_pathological, "aaaaaaaaaaaaaaaaaaaaaaaa"), "PikeVM linear time on a?^24 a^24")
+test::ok(!regex::match(re_pathological, "aaaaaaaaaaaaaaaaaaaaaaa"), "PikeVM linear time reject 23 a's")
 
 // 10. Invalid syntax diagnostics
 bad1 = regex::compile("[z-a]")

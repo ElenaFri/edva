@@ -44,8 +44,7 @@ The `regex` module (`#use regex`) implements a linear-time regular expression en
 | Function | Signature | Description |
 |---|---|---|
 | `compile` | `String => < Regex \| Error >` | Compiles a pattern into a PikeVM `Regex` |
-| `is_match` | `Regex, String => <>` | Returns `<+>` if `re` matches anywhere in `text` |
-| `match_str` | `String, String => <>` | One-shot helper: compiles `pattern` and tests `text` |
+| `match` | `#! P: Type, P, String => <>` | Returns `<+>` if `pat` (`Regex` or pattern `String`) matches anywhere in `text` |
 | `find` | `Regex, String => < Match >` | Finds the first match of `re` in `text` |
 | `find_at` | `Regex, String, Int => < Match >` | Finds the first match starting at or after `start_pos` |
 | `find_all` | `Regex, String => Match{}` | Finds all non-overlapping matches of `re` in `text` |
