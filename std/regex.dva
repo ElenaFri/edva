@@ -845,15 +845,8 @@ expand_replacement = repl, m =>
 
 #private
 
-match_regex: Regex, String => <>
-match_regex = re, text =>
-   run_vm(re, text, 0)
-      | saved => ?saved !< 0
-      | <->
-
 is_meta: Int => <>
-is_meta = c =>
-   c [92, 46, 43, 42, 63, 40, 41, 124, 91, 93, 123, 125, 94, 36]
+is_meta = [92, 46, 43, 42, 63, 40, 41, 124, 91, 93, 123, 125, 94, 36]
 
 #public
 
@@ -877,12 +870,10 @@ compile = pattern =>
 // Returns `<+>` if `pat` (either a compiled `Regex` or a pattern `String`) matches anywhere in `text`.
 match: #! P: Type, P, String => <>
 match = #! P, pat, text =>
-   P
-      [String]
-         compile(pat)
-            | re => match_regex(re, text)
-            | <->
-      | match_regex(pat, text)
+   re = P [String] (compile(pat) | _ |->) | pat
+   run_vm(re, text, 0)
+      | saved => ?saved !< 0
+      | <->
 
 // Finds the first match of `re` in `text` starting at or after byte index `start_pos`.
 find_at: Regex, String, Int => < Match >
