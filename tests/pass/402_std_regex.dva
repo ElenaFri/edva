@@ -1,0 +1,121 @@
+// 402_std_regex.dva — Test suite for std/regex (Thompson NFA / PikeVM)
+
+#use io
+#use regex
+#use test
+
+// 1. Basic literals, dot, anchors, escapes
+re_hello = regex::compile("^hello, (\\w+)!$")!!
+test::ok(regex::is_match(re_hello, "hello, world!"), "anchored match")
+test::ok(!regex::is_match(re_hello, "hello, world! extra"), "anchored reject trailing")
+test::ok(!regex::is_match(re_hello, "say hello, world!"), "anchored reject leading")
+
+m_hello = regex::find(re_hello, "hello, edva_42!")!!
+test::eq(m_hello.text, "hello, edva_42!", "full match text")
+test::eq(m_hello.start, 0, "full match start")
+test::eq(m_hello.end, 15, "full match end")
+test::eq(?m_hello.groups, 2, "group count (0 + 1)")
+test::eq((m_hello.groups(1)!!).text, "edva_42", "group 1 capture")
+
+// 2. Character classes, ranges, negation, shorthands (\d, \w, \s)
+re_hex = regex::compile("0[xX]([0-9a-fA-F]+)")!!
+m_hex = regex::find(re_hex, "addr = 0xCAFEbab3;")!!
+test::eq(m_hex.text, "0xCAFEbab3", "hex full match")
+test::eq((m_hex.groups(1)!!).text, "CAFEbab3", "hex digits group")
+
+re_neg = regex::compile("[^0-9\\s]+")!!
+all_words = regex::find_all(re_neg, "123 foo_bar 456 baz!")
+test::eq(?all_words, 2, "negated class find_all count")
+test::eq((all_words(0)!!).text, "foo_bar", "negated class word 0")
+test::eq((all_words(1)!!).text, "baz!", "negated class word 1")
+
+// 3. Greedy vs. Lazy quantifiers (*, *?, +, +?, ?, ??, {m,n}, {m,n}?)
+re_greedy = regex::compile("<.+>")!!
+re_lazy   = regex::compile("<.+?>")!!
+html_sample = "<b>bold</b> and <i>italic</i>"
+test::eq((regex::find(re_greedy, html_sample)!!).text, "<b>bold</b> and <i>italic</i>", "greedy .+ match")
+test::eq((regex::find(re_lazy, html_sample)!!).text, "<b>", "lazy .+? match")
+lazy_tags = regex::find_all(re_lazy, html_sample)
+test::eq(?lazy_tags, 4, "lazy find_all tag count")
+test::eq((lazy_tags(0)!!).text, "<b>", "tag 0")
+test::eq((lazy_tags(1)!!).text, "</b>", "tag 1")
+test::eq((lazy_tags(2)!!).text, "<i>", "tag 2")
+test::eq((lazy_tags(3)!!).text, "</i>", "tag 3")
+
+// 4. Bounded repetitions {m}, {m,}, {m,n}
+re_date = regex::compile("\\b(\\d{4})-(\\d{2})-(\\d{2})\\b")!!
+caps = regex::captures(re_date, "Release date: 2026-11-03.")!!
+test::eq(?caps, 4, "date captures len")
+test::eq(caps(0)!!, "2026-11-03", "date full")
+test::eq(caps(1)!!, "2026", "date year")
+test::eq(caps(2)!!, "11", "date month")
+test::eq(caps(3)!!, "03", "date day")
+test::ok(!regex::is_match(re_date, "12345-11-03"), "word boundary rejects 5-digit year")
+
+// 5. Alternation, non-capturing groups (?:...), and optional captures
+re_semver = regex::compile("v?(\\d+)\\.(\\d+)\\.(\\d+)(?:-([0-9A-Za-z.-]+))?")!!
+c_rel = regex::captures(re_semver, "v1.4.6")!!
+test::eq(c_rel(1)!!, "1", "semver major")
+test::eq(c_rel(2)!!, "4", "semver minor")
+test::eq(c_rel(3)!!, "6", "semver patch")
+test::eq(c_rel(4)!!, "", "semver empty prerelease")
+
+c_pre = regex::captures(re_semver, "2.0.0-rc.1")!!
+test::eq(c_pre(1)!!, "2", "semver pre major")
+test::eq(c_pre(4)!!, "rc.1", "semver prerelease")
+
+// 6. Inline flags: (?i) case-insensitive, (?m) multiline, (?s) dotall
+re_icase = regex::compile("(?i)^edva\\s+rocks$")!!
+test::ok(regex::is_match(re_icase, "EDVA   Rocks"), "(?i) case-insensitive match")
+
+re_multi = regex::compile("(?m)^#\\s*(\\w+)")!!
+m_lines = regex::find_all(re_multi, "first\n# alpha\n  \n# beta\nlast")
+test::eq(?m_lines, 2, "(?m) multiline ^ count")
+test::eq(((m_lines(0)!!).groups(1)!!).text, "alpha", "multiline match 0")
+test::eq(((m_lines(1)!!).groups(1)!!).text, "beta", "multiline match 1")
+
+re_dotall = regex::compile("(?s)/\\*.*?\\*/")!!
+test::eq((regex::find(re_dotall, "x /* line1\nline2 */ y /* c2 */")!!).text, "/* line1\nline2 */", "(?s) dotall multiline comment")
+
+// 7. Replacement (replace, replace_all, replace_with) & group expansion ($1, $&, $$)
+re_swap = regex::compile("(\\w+)=(\\w+)")!!
+test::eq(regex::replace(re_swap, "a=1 b=2", "$2:$1"), "1:a b=2", "replace first with $2:$1")
+test::eq(regex::replace_all(re_swap, "a=1 b=2 c=3", "[$1->$2 $$]"), "[a->1 $] [b->2 $] [c->3 $]", "replace_all with $1, $2, $$")
+
+re_num = regex::compile("\\d+")!!
+doubled = regex::replace_with(re_num, "items: 10, 25", m => "<" + m.text + ">")
+test::eq(doubled, "items: <10>, <25>", "replace_with callback")
+
+// 8. Splitting (split & split_n) and escaping
+re_sep = regex::compile("\\s*,\\s*")!!
+parts = regex::split(re_sep, "alpha, beta ,  gamma,delta")
+test::eq(?parts, 4, "split count")
+test::eq(parts(0)!!, "alpha", "split 0")
+test::eq(parts(1)!!, "beta", "split 1")
+test::eq(parts(2)!!, "gamma", "split 2")
+test::eq(parts(3)!!, "delta", "split 3")
+
+parts2 = regex::split_n(re_sep, "a, b, c, d", 2)
+test::eq(?parts2, 2, "split_n(2) count")
+test::eq(parts2(0)!!, "a", "split_n 0")
+test::eq(parts2(1)!!, "b, c, d", "split_n 1 remainder")
+
+lit = "price is $5.00 (USD)* [ok]?"
+re_lit = regex::compile("^" + regex::escape(lit) + "$")!!
+test::ok(regex::is_match(re_lit, lit), "escape metacharacters roundtrip")
+
+// 9. Linear-time ReDoS immunity check on pathological pattern (a?){24}a{24}
+re_pathological = regex::compile("(a?){24}a{24}")!!
+test::ok(regex::is_match(re_pathological, "aaaaaaaaaaaaaaaaaaaaaaaa"), "PikeVM linear time on a?^24 a^24")
+test::ok(!regex::is_match(re_pathological, "aaaaaaaaaaaaaaaaaaaaaaa"), "PikeVM linear time reject 23 a's")
+
+// 10. Invalid syntax diagnostics
+bad1 = regex::compile("[z-a]")
+bad2 = regex::compile("(unclosed")
+bad3 = regex::compile("*dangling")
+has_err1 = bad1 | <-> | err => ?err.msg > 0
+has_err2 = bad2 | <-> | err => ?err.msg > 0
+has_err3 = bad3 | <-> | err => ?err.msg > 0
+test::ok(has_err1 && has_err2 && has_err3, "invalid regex patterns return Error")
+
+io::out("402_std_regex: ALL PASSED")

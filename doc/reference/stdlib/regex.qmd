@@ -1,0 +1,96 @@
+---
+meta:
+  audience: "Edva users and integrators"
+  status: "current stdlib reference"
+  audited: "809bc0a"
+  evidence: "`std/regex.dva`, `tests/pass/402_std_regex.dva`"
+---
+
+# `regex`
+
+The `regex` module (`#use regex`) implements a linear-time regular expression engine based on Russ Cox's **Thompson NFA / PikeVM** virtual machine. Because active NFA states are deduplicated at every byte position, matching runs in guaranteed $O(N \times M)$ time with zero catastrophic backtracking (ReDoS-immune), zero external C dependencies, and full compatibility across Linux, macOS, Windows, and `wasm32-unknown-unknown`.
+
+## Types
+
+| Type | Fields | Description |
+|---|---|---|
+| `Regex` | `(pattern: String, prog: Instr{}, num_groups: Int, anchored_start: <>)` | Compiled PikeVM regular expression program |
+| `Span` | `(start: Int, end: Int, text: String)` | Substring span (`start == -1` when an optional capture group did not participate) |
+| `Match` | `(start: Int, end: Int, text: String, groups: Span{})` | Full match span plus all capture groups (`groups(0)` is the full match, `groups(1..N)` are numbered captures) |
+
+## Pattern Syntax
+
+| Construct | Meaning |
+|---|---|
+| `.` | Any byte except `\n` (or any byte when `(?s)` is active) |
+| `^` / `$` | Start / end of input (or start / end of line when `(?m)` is active) |
+| `\A` / `\z` | Start / end of input |
+| `\b` / `\B` | ASCII word boundary (`[A-Za-z0-9_]`) / non-word boundary |
+| `*`, `+`, `?` | Greedy quantifiers: `0+`, `1+`, `0..1` |
+| `*?`, `+?`, `??` | Lazy (non-greedy) quantifiers |
+| `{m}`, `{m,}`, `{m,n}` | Bounded quantifiers up to 256 (append `?` for lazy `{m,n}?`) |
+| `a\|b` | Leftmost-first alternation |
+| `(...)` | Numbered capture group (`1..N`) |
+| `(?:...)` | Non-capturing group |
+| `(?ims)` / `(?ims:...)` | Inline flags: `i` (case-insensitive), `m` (multiline `^`/`$`), `s` (dotall `.`) |
+| `[...]` / `[^...]` | Character class / negated character class (`[a-z0-9_-]`, `[^\s]`) |
+| `\d`, `\D` | ASCII digit `[0-9]` / non-digit `[^0-9]` |
+| `\w`, `\W` | ASCII word `[A-Za-z0-9_]` / non-word `[^A-Za-z0-9_]` |
+| `\s`, `\S` | Whitespace `[ \t\n\r\f\v]` / non-whitespace |
+| `\n`, `\r`, `\t`, `\xHH` | Control & hexadecimal byte escapes |
+
+## Public API
+
+| Function | Signature | Description |
+|---|---|---|
+| `compile` | `String => < Regex \| Error >` | Compiles a pattern into a PikeVM `Regex` |
+| `is_match` | `Regex, String => <>` | Returns `<+>` if `re` matches anywhere in `text` |
+| `match_str` | `String, String => <>` | One-shot helper: compiles `pattern` and tests `text` |
+| `find` | `Regex, String => < Match >` | Finds the first match of `re` in `text` |
+| `find_at` | `Regex, String, Int => < Match >` | Finds the first match starting at or after `start_pos` |
+| `find_all` | `Regex, String => Match{}` | Finds all non-overlapping matches of `re` in `text` |
+| `captures` | `Regex, String => < String{} >` | Returns `[full, group1, group2, ...]` for the first match |
+| `replace` | `Regex, String, String => String` | Replaces first match (`$$`, `$&`, `$0`, `$1`..`$9` supported) |
+| `replace_all` | `Regex, String, String => String` | Replaces all non-overlapping matches |
+| `replace_with` | `Regex, String, (Match => String) => String` | Replaces all matches using a callback `Match => String` |
+| `split` | `Regex, String => String{}` | Splits `text` around all matches of `re` |
+| `split_n` | `Regex, String, Int => String{}` | Splits `text` into at most `max_parts` parts |
+| `escape` | `String => String` | Escapes all regex metacharacters in a literal string |
+
+## Examples
+
+### Matching, Capture Groups, and SemVer Extraction
+
+```{.dva .run}
+#use io
+#use regex
+
+re = regex::compile("v?(\\d+)\\.(\\d+)\\.(\\d+)(?:-([0-9A-Za-z.-]+))?")!!
+caps = regex::captures(re, "release v1.4.6-rc.2")!!
+io::out("full:  " + caps(0)!!)
+io::out("major: " + caps(1)!!)
+io::out("minor: " + caps(2)!!)
+io::out("patch: " + caps(3)!!)
+io::out("pre:   " + caps(4)!!)
+```
+
+### Greedy vs. Lazy Quantifiers, Replacement, and Splitting
+
+```{.dva .run}
+#use io
+#use regex
+
+// Lazy quantifier <.+?> matches each individual tag
+re_tag = regex::compile("<.+?>")!!
+tags = regex::find_all(re_tag, "<b>Edva</b> <i>PikeVM</i>")
+io::out(?tags)
+
+// Group-aware replacement with $1 and $2
+re_kv = regex::compile("(\\w+)=(\\d+)")!!
+io::out(regex::replace_all(re_kv, "x=10, y=20", "$1:$2"))
+
+// Splitting by whitespace-padded delimiter
+re_sep = regex::compile("\\s*;\\s*")!!
+parts = regex::split(re_sep, "alpha ; beta;  gamma")
+io::out(parts(1)!!)
+```

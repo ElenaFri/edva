@@ -1,0 +1,999 @@
+// std/regex.dva — Linear-Time Regular Expression Engine (Thompson NFA / PikeVM)
+//
+// Provides guaranteed O(N * M) regular expression compilation, matching,
+// submatch capture extraction, replacement, and splitting with zero backtracking.
+//
+// Supported syntax:
+//   .             Any byte except '\n' (or any byte when (?s) is active)
+//   ^  $          Start / end of input (or line when (?m) is active)
+//   \A \z         Start / end of input
+//   \b \B         ASCII word / non-word boundary ([A-Za-z0-9_])
+//   *  +  ?       Greedy quantifiers (0+, 1+, 0..1)
+//   *? +? ??      Lazy (non-greedy) quantifiers
+//   {m} {m,} {m,n} Exact / bounded quantifiers (and lazy {m,n}?)
+//   abc           Concatenation
+//   a|b           Alternation
+//   (...)         Numbered capture group (1..N)
+//   (?:...)       Non-capturing group
+//   (?ims)        Inline flags (i: case-insensitive, m: multiline, s: dotall)
+//   (?ims:...)    Scoped inline flags
+//   [...] [^...]  Character classes and negated classes (e.g. [a-z0-9_], [^\s])
+//   \d \D         Digit [0-9] / non-digit
+//   \w \W         Word [A-Za-z0-9_] / non-word
+//   \s \S         Whitespace [ \t\n\r\f\v] / non-whitespace
+//   \n \r \t \xHH Standard character escapes and escaped metacharacters
+
+#use str
+
+// --- Bytecode Opcodes & Anchor Kinds ----------------------------------------
+
+OP_CHAR   = 1
+OP_ANY    = 2
+OP_CLASS  = 3
+OP_SPLIT  = 4
+OP_JMP    = 5
+OP_SAVE   = 6
+OP_ANCHOR = 7
+OP_MATCH  = 8
+
+ANCHOR_BOL      = 1 // ^ (start of input)
+ANCHOR_EOL      = 2 // $ (end of input)
+ANCHOR_BOL_LINE = 3 // ^ in (?m) mode
+ANCHOR_EOL_LINE = 4 // $ in (?m) mode
+ANCHOR_START    = 5 // \A
+ANCHOR_END      = 6 // \z
+ANCHOR_WORD     = 7 // \b
+ANCHOR_NON_WORD = 8 // \B
+
+FLAG_ICASE     = 1 // (?i)
+FLAG_MULTILINE = 2 // (?m)
+FLAG_DOTALL    = 4 // (?s)
+
+// --- AST Node Kinds ---------------------------------------------------------
+
+AST_EMPTY  = 0
+AST_CHAR   = 1
+AST_ANY    = 2
+AST_CLASS  = 3
+AST_ANCHOR = 4
+AST_CAT    = 5
+AST_ALT    = 6
+AST_REP    = 7
+AST_GROUP  = 8
+
+#type ClassBits (
+   w0: Int,
+   w1: Int,
+   w2: Int,
+   w3: Int
+)
+
+#type AstNode (
+   kind:   Int,
+   a:      Int,
+   b:      Int,
+   min_r:  Int,
+   max_r:  Int,
+   greedy: <>,
+   flags:  Int,
+   bits:   ClassBits
+)
+
+#type ParseState (
+   pat:        String,
+   pos:        Int,
+   flags:      Int,
+   num_groups: Int,
+   nodes:      AstNode{},
+   node_id:    Int,
+   err_msg:    String,
+   err_pos:    Int
+)
+
+#public
+
+// PikeVM instruction record.
+#type Instr (
+   op:    Int,
+   x:     Int,
+   y:     Int,
+   flags: Int,
+   bits:  ClassBits
+)
+
+// Compiled regular expression program.
+#type Regex (
+   pattern:        String,
+   prog:           Instr{},
+   num_groups:     Int,
+   anchored_start: <>
+)
+
+// A matched substring span (`start == -1` when an optional capture group did not participate).
+#type Span (
+   start: Int,
+   end:   Int,
+   text:  String
+)
+
+// A full regular expression match along with all capture group spans (`groups(0)` is the full match).
+#type Match (
+   start:  Int,
+   end:    Int,
+   text:   String,
+   groups: Span{}
+)
+
+#private
+
+regex_err: String, Int => Error
+regex_err = msg, pos =>
+   Error(4200, msg, "std/regex.dva", 1, pos + 1)
+
+empty_bits: () => ClassBits
+empty_bits = !=> ClassBits(0, 0, 0, 0)
+
+bit_set: ClassBits, Int => ClassBits
+bit_set = b, ch =>
+   c = ch .&. 0xFF
+   w = c .>. 6
+   w
+      [0] ClassBits(b.w0 .|. (1 .<. c), b.w1, b.w2, b.w3)
+      [1] ClassBits(b.w0, b.w1 .|. (1 .<. (c - 64)), b.w2, b.w3)
+      [2] ClassBits(b.w0, b.w1, b.w2 .|. (1 .<. (c - 128)), b.w3)
+      | ClassBits(b.w0, b.w1, b.w2, b.w3 .|. (1 .<. (c - 192)))
+
+bit_test: ClassBits, Int => <>
+bit_test = b, ch =>
+   c = ch .&. 0xFF
+   w = c .>. 6
+   w
+      [0] ((b.w0 .>. c) .&. 1) != 0
+      [1] ((b.w1 .>. (c - 64)) .&. 1) != 0
+      [2] ((b.w2 .>. (c - 128)) .&. 1) != 0
+      | ((b.w3 .>. (c - 192)) .&. 1) != 0
+
+bits_or: ClassBits, ClassBits => ClassBits
+bits_or = a, b =>
+   ClassBits(a.w0 .|. b.w0, a.w1 .|. b.w1, a.w2 .|. b.w2, a.w3 .|. b.w3)
+
+bits_invert: ClassBits => ClassBits
+bits_invert = b =>
+   all_ones = -1
+   ClassBits(b.w0 .^. all_ones, b.w1 .^. all_ones, b.w2 .^. all_ones, b.w3 .^. all_ones)
+
+bits_range: ClassBits, Int, Int, <> => ClassBits
+bits_range = b, lo, hi, icase =>
+   cur' = b
+   c' = lo
+   (c' !> hi) @
+      cur' = bit_set(cur', c')
+      icase
+         |
+            (c' !< 65 && c' !> 90)
+               | cur' = bit_set(cur', c' + 32)
+            (c' !< 97 && c' !> 122)
+               | cur' = bit_set(cur', c' - 32)
+      c' = c' + 1
+   cur'
+
+bits_digit: () => ClassBits
+bits_digit = !=>
+   bits_range(empty_bits!, 48, 57, <->)
+
+bits_word: () => ClassBits
+bits_word = !=>
+   b0 = bits_range(empty_bits!, 48, 57, <->)
+   b1 = bits_range(b0, 65, 90, <->)
+   b2 = bits_range(b1, 97, 122, <->)
+   bit_set(b2, 95)
+
+bits_space: () => ClassBits
+bits_space = !=>
+   b0 = bit_set(empty_bits!, 32)
+   b1 = bit_set(b0, 9)
+   b2 = bit_set(b1, 10)
+   b3 = bit_set(b2, 13)
+   b4 = bit_set(b3, 12)
+   bit_set(b4, 11)
+
+is_word_byte: Int => <>
+is_word_byte = c =>
+   (c !< 48 && c !> 57) || (c !< 65 && c !> 90) || (c !< 97 && c !> 122) || c == 95
+
+ascii_lower: Int => Int
+ascii_lower = c =>
+   (c !< 65 && c !> 90) | (c + 32) | c
+
+hex_val: Int => Int
+hex_val = c =>
+   (c !< 48 && c !> 57) | --| c - 48
+   (c !< 65 && c !> 70) | --| c - 55
+   (c !< 97 && c !> 102) | --| c - 87
+   -1
+
+add_node: ParseState, AstNode => ParseState
+add_node = st, nd =>
+   nodes = st.nodes
+   id = ?nodes
+   nodes += nd
+   ParseState(st.pat, st.pos, st.flags, st.num_groups, nodes, id, st.err_msg, st.err_pos)
+
+fail_state: ParseState, String, Int => ParseState
+fail_state = st, msg, pos =>
+   ?st.err_msg > 0
+      | st
+      | ParseState(st.pat, st.pos, st.flags, st.num_groups, st.nodes, -1, msg, pos)
+
+// Parse an escape sequence starting after '\' at `st.pos`.
+// Returns `(kind, byte_or_anchor, bits, next_pos, err_msg)`:
+//   kind == 0: literal byte in `byte_or_anchor`
+//   kind == 1: character class in `bits`
+//   kind == 2: anchor in `byte_or_anchor`
+//   kind == -1: error in `err_msg`
+#type EscResult (
+   kind:     Int,
+   val:      Int,
+   bits:     ClassBits,
+   next_pos: Int,
+   err:      String
+)
+
+parse_escape: String, Int, <> => EscResult
+parse_escape = pat, pos, in_class =>
+   pos !< ?pat
+      | --| EscResult(-1, 0, empty_bits!, pos, "trailing backslash in regex")
+   c = pat(pos)
+   next = pos + 1
+   c == 110 | --| EscResult(0, 10, empty_bits!, next, "") // \n
+   c == 114 | --| EscResult(0, 13, empty_bits!, next, "") // \r
+   c == 116 | --| EscResult(0, 9,  empty_bits!, next, "") // \t
+   c == 102 | --| EscResult(0, 12, empty_bits!, next, "") // \f
+   c == 118 | --| EscResult(0, 11, empty_bits!, next, "") // \v
+   c == 48  | --| EscResult(0, 0,  empty_bits!, next, "") // \0
+   c == 100 | --| EscResult(1, 0,  bits_digit!, next, "") // \d
+   c == 68  | --| EscResult(1, 0,  bits_invert(bits_digit!), next, "") // \D
+   c == 119 | --| EscResult(1, 0,  bits_word!, next, "") // \w
+   c == 87  | --| EscResult(1, 0,  bits_invert(bits_word!), next, "") // \W
+   c == 115 | --| EscResult(1, 0,  bits_space!, next, "") // \s
+   c == 83  | --| EscResult(1, 0,  bits_invert(bits_space!), next, "") // \S
+   !in_class && c == 65  | --| EscResult(2, ANCHOR_START, empty_bits!, next, "") // \A
+   !in_class && c == 122 | --| EscResult(2, ANCHOR_END, empty_bits!, next, "")   // \z
+   !in_class && c == 98  | --| EscResult(2, ANCHOR_WORD, empty_bits!, next, "")  // \b
+   !in_class && c == 66  | --| EscResult(2, ANCHOR_NON_WORD, empty_bits!, next, "") // \B
+   c == 120 // \xHH
+      |
+         next + 2 > ?pat
+            | --| EscResult(-1, 0, empty_bits!, pos, "incomplete \\xHH escape in regex")
+         h1 = hex_val(pat(next))
+         h2 = hex_val(pat(next + 1))
+         (h1 < 0 || h2 < 0)
+            | --| EscResult(-1, 0, empty_bits!, pos, "invalid hex digit in \\xHH escape")
+         --| EscResult(0, (h1 .<. 4) .|. h2, empty_bits!, next + 2, "")
+   EscResult(0, c, empty_bits!, next, "")
+
+// Parse bracket character class `[...]` starting after `[` at `st.pos`.
+parse_class: ParseState => ParseState
+parse_class = st =>
+   pat = st.pat
+   len = ?pat
+   pos' = st.pos
+   icase = (st.flags .&. FLAG_ICASE) != 0
+   neg' = <->
+   (pos' < len && pat(pos') == 94) // '^'
+      |
+         neg' = <+>
+         pos' = pos' + 1
+   bits' = empty_bits!
+   first' = <+>
+   closed' = <->
+   have_prev' = <->
+   prev_byte' = 0
+   (pos' < len) @
+      c = pat(pos')
+      (c == 93 && !first') // ']'
+         |
+            pos' = pos' + 1
+            closed' = <+>
+            -->
+      first' = <->
+      // Check for range `prev-next` when `c == '-'` and not at end of class
+      (c == 45 && have_prev' && (pos' + 1) < len && pat(pos' + 1) != 93)
+         |
+            pos' = pos' + 1
+            rc = pat(pos')
+            hi_byte' = 0
+            rc == 92 // '\'
+               |
+                  esc = parse_escape(pat, pos' + 1, <+>)
+                  esc.kind < 0 | --| fail_state(st, esc.err, pos')
+                  esc.kind != 0 | --| fail_state(st, "invalid character class range endpoint", pos')
+                  hi_byte' = esc.val
+                  pos' = esc.next_pos
+               |
+                  hi_byte' = rc
+                  pos' = pos' + 1
+            hi_byte' < prev_byte'
+               | --| fail_state(st, "character class range out of order", pos' - 1)
+            bits' = bits_range(bits', prev_byte', hi_byte', icase)
+            have_prev' = <->
+         |
+            c == 92 // '\'
+               |
+                  esc = parse_escape(pat, pos' + 1, <+>)
+                  esc.kind < 0 | --| fail_state(st, esc.err, pos')
+                  pos' = esc.next_pos
+                  esc.kind == 1
+                     |
+                        bits' = bits_or(bits', esc.bits)
+                        have_prev' = <->
+                     |
+                        bits' = bits_range(bits', esc.val, esc.val, icase)
+                        have_prev' = <+>
+                        prev_byte' = esc.val
+               |
+                  bits' = bits_range(bits', c, c, icase)
+                  have_prev' = <+>
+                  prev_byte' = c
+                  pos' = pos' + 1
+   !closed'
+      | --| fail_state(st, "unclosed character class '[' in regex", st.pos - 1)
+   final_bits = neg' | bits_invert(bits') | bits'
+   st2 = ParseState(st.pat, pos', st.flags, st.num_groups, st.nodes, st.node_id, st.err_msg, st.err_pos)
+   add_node(st2, AstNode(AST_CLASS, 0, 0, 0, 0, <+>, st.flags, final_bits))
+
+// Parse bounded quantifier `{m}`, `{m,}`, `{m,n}` starting after `{` at `st.pos`.
+#type BraceQuant (
+   ok:       <>,
+   min_r:    Int,
+   max_r:    Int,
+   next_pos: Int,
+   err:      String
+)
+
+parse_brace_quant: String, Int => BraceQuant
+parse_brace_quant = pat, pos =>
+   len = ?pat
+   p' = pos
+   min_v' = 0
+   min_digits' = 0
+   (p' < len && pat(p') !< 48 && pat(p') !> 57) @
+      min_v' = min_v' * 10 + (pat(p') - 48)
+      min_digits' = min_digits' + 1
+      p' = p' + 1
+   min_digits' == 0 || p' !< len
+      | --| BraceQuant(<->, 0, 0, pos, "invalid '{m,n}' quantifier in regex")
+   max_v' = min_v'
+   pat(p') == 44 // ','
+      |
+         p' = p' + 1
+         max_digits' = 0
+         mv' = 0
+         (p' < len && pat(p') !< 48 && pat(p') !> 57) @
+            mv' = mv' * 10 + (pat(p') - 48)
+            max_digits' = max_digits' + 1
+            p' = p' + 1
+         max_v' = max_digits' == 0 | -1 | mv'
+   (p' !< len || pat(p') != 125) // '}'
+      | --| BraceQuant(<->, 0, 0, pos, "unclosed '{m,n}' quantifier in regex")
+   (max_v' != -1 && max_v' < min_v')
+      | --| BraceQuant(<->, 0, 0, pos, "quantifier '{m,n}' has max < min")
+   (min_v' > 256 || max_v' > 256)
+      | --| BraceQuant(<->, 0, 0, pos, "quantifier '{m,n}' exceeds maximum bound 256")
+   BraceQuant(<+>, min_v', max_v', p' + 1, "")
+
+parse_alt: ParseState => ParseState
+
+apply_flag: Int, Int, <> => Int
+apply_flag = flags, bit, neg =>
+   neg | (flags .&. (bit .^. -1)) | (flags .|. bit)
+
+// Parse inline flag group `(?ims)` or `(?ims:...)` starting after `(?` at `st.pos`.
+parse_group_or_flags: ParseState => ParseState
+parse_group_or_flags = st =>
+   pat = st.pat
+   len = ?pat
+   pos' = st.pos
+   pos' !< len
+      | --| fail_state(st, "unclosed '(' in regex", pos' - 1)
+   pat(pos') == 63 // '(?'
+      |
+         pos' = pos' + 1
+         pos' !< len
+            | --| fail_state(st, "incomplete '(?' group in regex", pos' - 1)
+         pat(pos') == 58 // '(?:' non-capturing group
+            |
+               inner = parse_alt(ParseState(pat, pos' + 1, st.flags, st.num_groups, st.nodes, -1, st.err_msg, st.err_pos))
+               ?inner.err_msg > 0 | --| inner
+               (inner.pos !< len || pat(inner.pos) != 41)
+                  | --| fail_state(inner, "unclosed '(?:' group in regex", pos' - 2)
+               --| ParseState(pat, inner.pos + 1, st.flags, inner.num_groups, inner.nodes, inner.node_id, inner.err_msg, inner.err_pos)
+         // Parse flags `i`, `m`, `s` (and `-` to clear)
+         flags' = st.flags
+         neg_flag' = <->
+         (pos' < len && pat(pos') != 41 && pat(pos') != 58) @
+            fc = pat(pos')
+            fc
+               [45]  neg_flag' = <+>
+               [105] flags' = apply_flag(flags', FLAG_ICASE, neg_flag')
+               [109] flags' = apply_flag(flags', FLAG_MULTILINE, neg_flag')
+               [115] flags' = apply_flag(flags', FLAG_DOTALL, neg_flag')
+               | --| fail_state(st, "unknown inline regex flag", pos')
+            pos' = pos' + 1
+         pos' !< len
+            | --| fail_state(st, "unclosed '(?' flag directive", st.pos)
+         pat(pos') == 41 // `(?ims)` sets flags for enclosing sequence
+            |
+               st_flag = ParseState(pat, pos' + 1, flags', st.num_groups, st.nodes, -1, st.err_msg, st.err_pos)
+               --| add_node(st_flag, AstNode(AST_EMPTY, 0, 0, 0, 0, <+>, flags', empty_bits!))
+         // `(?ims:...)` scoped flags
+         inner = parse_alt(ParseState(pat, pos' + 1, flags', st.num_groups, st.nodes, -1, st.err_msg, st.err_pos))
+         ?inner.err_msg > 0 | --| inner
+         (inner.pos !< len || pat(inner.pos) != 41)
+            | --| fail_state(inner, "unclosed '(?flags:...' group in regex", st.pos - 1)
+         --| ParseState(pat, inner.pos + 1, st.flags, inner.num_groups, inner.nodes, inner.node_id, inner.err_msg, inner.err_pos)
+   // Numbered capture group `(...)`
+   grp_idx = st.num_groups + 1
+   inner = parse_alt(ParseState(pat, pos', st.flags, grp_idx, st.nodes, -1, st.err_msg, st.err_pos))
+   ?inner.err_msg > 0 | --| inner
+   (inner.pos !< len || pat(inner.pos) != 41)
+      | --| fail_state(inner, "unclosed '(' in regex", st.pos - 1)
+   st2 = ParseState(pat, inner.pos + 1, st.flags, inner.num_groups, inner.nodes, inner.node_id, inner.err_msg, inner.err_pos)
+   add_node(st2, AstNode(AST_GROUP, inner.node_id, grp_idx, 0, 0, <+>, st.flags, empty_bits!))
+
+parse_atom: ParseState => ParseState
+parse_atom = st =>
+   pat = st.pat
+   len = ?pat
+   pos = st.pos
+   c = pat(pos)
+   c == 40 // '('
+      | --| parse_group_or_flags(ParseState(pat, pos + 1, st.flags, st.num_groups, st.nodes, -1, st.err_msg, st.err_pos))
+   c == 91 // '['
+      | --| parse_class(ParseState(pat, pos + 1, st.flags, st.num_groups, st.nodes, -1, st.err_msg, st.err_pos))
+   c == 46 // '.'
+      |
+         st2 = ParseState(pat, pos + 1, st.flags, st.num_groups, st.nodes, -1, st.err_msg, st.err_pos)
+         --| add_node(st2, AstNode(AST_ANY, 0, 0, 0, 0, <+>, st.flags, empty_bits!))
+   c == 94 // '^'
+      |
+         ak = (st.flags .&. FLAG_MULTILINE) != 0 | ANCHOR_BOL_LINE | ANCHOR_BOL
+         st2 = ParseState(pat, pos + 1, st.flags, st.num_groups, st.nodes, -1, st.err_msg, st.err_pos)
+         --| add_node(st2, AstNode(AST_ANCHOR, ak, 0, 0, 0, <+>, st.flags, empty_bits!))
+   c == 36 // '$'
+      |
+         ak = (st.flags .&. FLAG_MULTILINE) != 0 | ANCHOR_EOL_LINE | ANCHOR_EOL
+         st2 = ParseState(pat, pos + 1, st.flags, st.num_groups, st.nodes, -1, st.err_msg, st.err_pos)
+         --| add_node(st2, AstNode(AST_ANCHOR, ak, 0, 0, 0, <+>, st.flags, empty_bits!))
+   c == 92 // '\'
+      |
+         esc = parse_escape(pat, pos + 1, <->)
+         esc.kind < 0 | --| fail_state(st, esc.err, pos)
+         st2 = ParseState(pat, esc.next_pos, st.flags, st.num_groups, st.nodes, -1, st.err_msg, st.err_pos)
+         esc.kind == 1
+            | --| add_node(st2, AstNode(AST_CLASS, 0, 0, 0, 0, <+>, st.flags, esc.bits))
+         esc.kind == 2
+            | --| add_node(st2, AstNode(AST_ANCHOR, esc.val, 0, 0, 0, <+>, st.flags, empty_bits!))
+         --| add_node(st2, AstNode(AST_CHAR, esc.val, 0, 0, 0, <+>, st.flags, empty_bits!))
+   (c == 42 || c == 43 || c == 63 || c == 123)
+      | --| fail_state(st, "quantifier has nothing to repeat in regex", pos)
+   c == 93
+      | --| fail_state(st, "unmatched ']' in regex", pos)
+   st2 = ParseState(pat, pos + 1, st.flags, st.num_groups, st.nodes, -1, st.err_msg, st.err_pos)
+   add_node(st2, AstNode(AST_CHAR, c, 0, 0, 0, <+>, st.flags, empty_bits!))
+
+parse_factor: ParseState => ParseState
+parse_factor = st =>
+   st1 = parse_atom(st)
+   ?st1.err_msg > 0 | --| st1
+   pat = st1.pat
+   len = ?pat
+   pos' = st1.pos
+   node' = st1.node_id
+   cur' = st1
+   (pos' < len) @
+      c = pat(pos')
+      (c == 42 || c == 43 || c == 63) // '*', '+', '?'
+         |
+            min_r = c == 43 | 1 | 0
+            max_r = c == 63 | 1 | -1
+            pos' = pos' + 1
+            greedy' = <+>
+            (pos' < len && pat(pos') == 63) // lazy '*?', '+?', '??'
+               |
+                  greedy' = <->
+                  pos' = pos' + 1
+            cur' = add_node(
+               ParseState(pat, pos', cur'.flags, cur'.num_groups, cur'.nodes, node', cur'.err_msg, cur'.err_pos),
+               AstNode(AST_REP, node', 0, min_r, max_r, greedy', cur'.flags, empty_bits!)
+            )
+            node' = cur'.node_id
+         |
+            c == 123 // '{m,n}'
+               |
+                  bq = parse_brace_quant(pat, pos' + 1)
+                  !bq.ok
+                     | --| fail_state(cur', bq.err, pos')
+                  pos' = bq.next_pos
+                  greedy' = <+>
+                  (pos' < len && pat(pos') == 63)
+                     |
+                        greedy' = <->
+                        pos' = pos' + 1
+                  cur' = add_node(
+                     ParseState(pat, pos', cur'.flags, cur'.num_groups, cur'.nodes, node', cur'.err_msg, cur'.err_pos),
+                     AstNode(AST_REP, node', 0, bq.min_r, bq.max_r, greedy', cur'.flags, empty_bits!)
+                  )
+                  node' = cur'.node_id
+               | -->
+   cur'
+
+parse_seq: ParseState => ParseState
+parse_seq = st =>
+   pat = st.pat
+   len = ?pat
+   cur' = st
+   first' = <+>
+   seq_id' = -1
+   (cur'.pos < len) @
+      c = pat(cur'.pos)
+      (c == 124 || c == 41) // '|' or ')'
+         | -->
+      f = parse_factor(cur')
+      ?f.err_msg > 0 | --| f
+      first'
+         |
+            seq_id' = f.node_id
+            first' = <->
+            cur' = f
+         |
+            cur' = add_node(f, AstNode(AST_CAT, seq_id', f.node_id, 0, 0, <+>, f.flags, empty_bits!))
+            seq_id' = cur'.node_id
+   first'
+      | add_node(cur', AstNode(AST_EMPTY, 0, 0, 0, 0, <+>, cur'.flags, empty_bits!))
+      | ParseState(pat, cur'.pos, cur'.flags, cur'.num_groups, cur'.nodes, seq_id', cur'.err_msg, cur'.err_pos)
+
+parse_alt = st =>
+   pat = st.pat
+   len = ?pat
+   left = parse_seq(st)
+   ?left.err_msg > 0 | --| left
+   cur' = left
+   alt_id' = left.node_id
+   (cur'.pos < len && pat(cur'.pos) == 124) @ // '|'
+      rhs = parse_seq(ParseState(pat, cur'.pos + 1, cur'.flags, cur'.num_groups, cur'.nodes, -1, cur'.err_msg, cur'.err_pos))
+      ?rhs.err_msg > 0 | --| rhs
+      cur' = add_node(rhs, AstNode(AST_ALT, alt_id', rhs.node_id, 0, 0, <+>, rhs.flags, empty_bits!))
+      alt_id' = cur'.node_id
+   ParseState(pat, cur'.pos, cur'.flags, cur'.num_groups, cur'.nodes, alt_id', cur'.err_msg, cur'.err_pos)
+
+// --- PikeVM Bytecode Compiler -----------------------------------------------
+
+mk_ins: Int, Int, Int, Int, ClassBits => Instr
+mk_ins = op, x, y, flags, bits =>
+   Instr(op, x, y, flags, bits)
+
+emit_ast: Instr{}, AstNode{}, Int => Instr{}
+emit_ast = prog, nodes, idx =>
+   idx < 0 | --| prog
+   nd = nodes(idx)!!
+   k = nd.kind
+   p' = prog
+   k
+      [AST_EMPTY] p'
+      [AST_CHAR]
+         p' += mk_ins(OP_CHAR, nd.a, 0, nd.flags, empty_bits!)
+         p'
+      [AST_ANY]
+         p' += mk_ins(OP_ANY, 0, 0, nd.flags, empty_bits!)
+         p'
+      [AST_CLASS]
+         p' += mk_ins(OP_CLASS, 0, 0, nd.flags, nd.bits)
+         p'
+      [AST_ANCHOR]
+         p' += mk_ins(OP_ANCHOR, nd.a, 0, nd.flags, empty_bits!)
+         p'
+      [AST_CAT]
+         p' = emit_ast(p', nodes, nd.a)
+         emit_ast(p', nodes, nd.b)
+      [AST_ALT]
+         split_pc = ?p'
+         p' += mk_ins(OP_SPLIT, 0, 0, 0, empty_bits!)
+         left_pc = ?p'
+         p' = emit_ast(p', nodes, nd.a)
+         jmp_pc = ?p'
+         p' += mk_ins(OP_JMP, 0, 0, 0, empty_bits!)
+         right_pc = ?p'
+         p' = emit_ast(p', nodes, nd.b)
+         end_pc = ?p'
+         p'(split_pc) = mk_ins(OP_SPLIT, left_pc, right_pc, 0, empty_bits!) !| _
+         p'(jmp_pc) = mk_ins(OP_JMP, end_pc, 0, 0, empty_bits!) !| _
+         p'
+      [AST_GROUP]
+         slot0 = nd.b * 2
+         slot1 = slot0 + 1
+         p' += mk_ins(OP_SAVE, slot0, 0, 0, empty_bits!)
+         p' = emit_ast(p', nodes, nd.a)
+         p' += mk_ins(OP_SAVE, slot1, 0, 0, empty_bits!)
+         p'
+      |
+         // AST_REP (min_r, max_r, greedy)
+         min_r = nd.min_r
+         max_r = nd.max_r
+         greedy = nd.greedy
+         child = nd.a
+         (max_r == -1 && min_r > 0)
+            |
+               (min_r - 1) @
+                  p' = emit_ast(p', nodes, child)
+               body_pc = ?p'
+               p' = emit_ast(p', nodes, child)
+               split_pc = ?p'
+               end_pc = split_pc + 1
+               x = greedy | body_pc | end_pc
+               y = greedy | end_pc | body_pc
+               p' += mk_ins(OP_SPLIT, x, y, 0, empty_bits!)
+               p'
+            |
+               (max_r == -1 && min_r == 0)
+                  |
+                     split_pc = ?p'
+                     p' += mk_ins(OP_SPLIT, 0, 0, 0, empty_bits!)
+                     body_pc = ?p'
+                     p' = emit_ast(p', nodes, child)
+                     p' += mk_ins(OP_JMP, split_pc, 0, 0, empty_bits!)
+                     end_pc = ?p'
+                     x = greedy | body_pc | end_pc
+                     y = greedy | end_pc | body_pc
+                     p'(split_pc) = mk_ins(OP_SPLIT, x, y, 0, empty_bits!) !| _
+                     p'
+                  |
+                     min_r @
+                        p' = emit_ast(p', nodes, child)
+                     rem = max_r - min_r
+                     rem @
+                        split_pc = ?p'
+                        p' += mk_ins(OP_SPLIT, 0, 0, 0, empty_bits!)
+                        body_pc = ?p'
+                        p' = emit_ast(p', nodes, child)
+                        end_pc = ?p'
+                        x = greedy | body_pc | end_pc
+                        y = greedy | end_pc | body_pc
+                        p'(split_pc) = mk_ins(OP_SPLIT, x, y, 0, empty_bits!) !| _
+                     p'
+
+is_anchored_root: AstNode{}, Int => <>
+is_anchored_root = nodes, idx =>
+   idx < 0 | --| <->
+   nd = nodes(idx)!!
+   nd.kind
+      [AST_ANCHOR] nd.a == ANCHOR_BOL || nd.a == ANCHOR_START
+      [AST_CAT]    is_anchored_root(nodes, nd.a)
+      [AST_GROUP]  is_anchored_root(nodes, nd.a)
+      | <->
+
+// --- PikeVM Runtime Execution -----------------------------------------------
+
+#type Thread (
+   pc:    Int,
+   saved: Int{}
+)
+
+clone_saved: Int{}, Int, Int => Int{}
+clone_saved = src, slot, val =>
+   n = ?src
+   out = Int{}
+   n @ i =>
+      out += (i == slot | val | src(i)!!)
+   out
+
+check_anchor: Int, String, Int => <>
+check_anchor = kind, text, sp =>
+   len = ?text
+   kind
+      [ANCHOR_BOL, ANCHOR_START] sp == 0
+      [ANCHOR_EOL, ANCHOR_END]   sp == len
+      [ANCHOR_BOL_LINE]          sp == 0 || text(sp - 1) == 10
+      [ANCHOR_EOL_LINE]          sp == len || text(sp) == 10
+      |
+         prev_w = sp > 0 && is_word_byte(text(sp - 1))
+         curr_w = sp < len && is_word_byte(text(sp))
+         is_boundary = (prev_w && !curr_w) || (!prev_w && curr_w)
+         kind == ANCHOR_WORD | is_boundary | !is_boundary
+
+add_thread: Thread{}, Int{}, Int, Instr{}, String, Int, Int, Int{} => Thread{}
+add_thread = list, visited, step_gen, prog, text, sp, pc, saved =>
+   visited(pc)!! == step_gen
+      | --| list
+   visited(pc) = step_gen !| _
+   ins = prog(pc)!!
+   op = ins.op
+   op
+      [OP_JMP] add_thread(list, visited, step_gen, prog, text, sp, ins.x, saved)
+      [OP_SPLIT]
+         l1 = add_thread(list, visited, step_gen, prog, text, sp, ins.x, saved)
+         add_thread(l1, visited, step_gen, prog, text, sp, ins.y, saved)
+      [OP_SAVE]
+         s2 = clone_saved(saved, ins.x, sp)
+         add_thread(list, visited, step_gen, prog, text, sp, pc + 1, s2)
+      [OP_ANCHOR]
+         check_anchor(ins.x, text, sp)
+            | add_thread(list, visited, step_gen, prog, text, sp, pc + 1, saved)
+            | list
+      |
+         out = list
+         out += Thread(pc, saved)
+         out
+
+char_matches: Instr, Int => <>
+char_matches = ins, ch =>
+   op = ins.op
+   op
+      [OP_CHAR]
+         (ins.flags .&. FLAG_ICASE) != 0
+            | ascii_lower(ch) == ascii_lower(ins.x)
+            | ch == ins.x
+      [OP_ANY]
+         (ins.flags .&. FLAG_DOTALL) != 0
+            | <+>
+            | ch != 10
+      [OP_CLASS] bit_test(ins.bits, ch)
+      | <->
+
+// Run PikeVM starting at or after `start_pos` in `text`.
+// When `need_groups` is `<->`, capture array updates on `OP_SAVE` are skipped except slots 0 and 1.
+run_vm: Regex, String, Int => < Int{} >
+run_vm = re, text, start_pos =>
+   prog = re.prog
+   n_inst = ?prog
+   len = ?text
+   start_pos > len | --| <-->
+   n_slots = (re.num_groups + 1) * 2
+   visited = Int{}
+   n_inst @
+      visited += 0
+   init_saved = Int{}
+   n_slots @
+      init_saved += -1
+
+   clist' = Thread{}
+   matched' = <->
+   best_saved' = init_saved
+   gen' = 1
+   sp' = start_pos
+   (sp' !> len) @
+      // Seed new start thread if no match has begun yet
+      (!matched' && (sp' == start_pos || !re.anchored_start))
+         |
+            clist' = add_thread(clist', visited, gen', prog, text, sp', 0, init_saved)
+      ?clist' == 0
+         |
+            (matched' || re.anchored_start)
+               | -->
+      nlist' = Thread{}
+      next_gen = gen' + 1
+      n_threads = ?clist'
+      ti' = 0
+      (ti' < n_threads) @
+         th = clist'(ti')!!
+         ins = prog(th.pc)!!
+         ins.op == OP_MATCH
+            |
+               matched' = <+>
+               best_saved' = th.saved
+               // Prune lower-priority threads in clist'
+               -->
+         (sp' < len && char_matches(ins, text(sp')))
+            |
+               nlist' = add_thread(nlist', visited, next_gen, prog, text, sp' + 1, th.pc + 1, th.saved)
+         ti' = ti' + 1
+      clist' = nlist'
+      gen' = next_gen + 1
+      (matched' && ?clist' == 0)
+         | -->
+      sp' = sp' + 1
+
+   matched'
+      | <+ best_saved' +>
+      | <-->
+
+build_match: String, Int{}, Int => Match
+build_match = text, saved, num_groups =>
+   s0 = saved(0)!!
+   e0 = saved(1)!!
+   groups = Span{}
+   (num_groups + 1) @ g =>
+      gs = saved(g * 2)!!
+      ge = saved(g * 2 + 1)!!
+      (gs !< 0 && ge !< gs)
+         | groups += Span(gs, ge, text(gs..ge))
+         | groups += Span(-1, -1, "")
+   Match(s0, e0, text(s0..e0), groups)
+
+expand_replacement: String, Match => String
+expand_replacement = repl, m =>
+   len = ?repl
+   out = {len + ?m.text}
+   i' = 0
+   (i' < len) @
+      c = repl(i')
+      (c == 36 && (i' + 1) < len) // '$'
+         |
+            nc = repl(i' + 1)
+            nc
+               [36] // '$$' -> '$'
+                  out += 36
+                  i' = i' + 2
+               [38, 48] // '$&' or '$0' -> full match
+                  out += m.text
+                  i' = i' + 2
+               |
+                  (nc !< 49 && nc !> 57) // '$1'..'$9'
+                     |
+                        g_idx = nc - 48
+                        g_idx < ?m.groups
+                           |
+                              sp = m.groups(g_idx)!!
+                              sp.start !< 0 | out += sp.text
+                        i' = i' + 2
+                     |
+                        out += 36
+                        i' = i' + 1
+         |
+            out += c
+            i' = i' + 1
+   +out
+
+#public
+
+// Compiles a regular expression pattern into a linear-time PikeVM `Regex`.
+compile: String => < Regex | Error >
+compile = pattern =>
+   init = ParseState(pattern, 0, 0, 0, AstNode{}, -1, "", 0)
+   st = parse_alt(init)
+   ?st.err_msg > 0
+      | --| <- regex_err(st.err_msg, st.err_pos) +>
+   st.pos < ?pattern
+      | --| <- regex_err("unexpected ')' in regex", st.pos) +>
+   prog' = Instr{}
+   prog' += mk_ins(OP_SAVE, 0, 0, 0, empty_bits!)
+   prog' = emit_ast(prog', st.nodes, st.node_id)
+   prog' += mk_ins(OP_SAVE, 1, 0, 0, empty_bits!)
+   prog' += mk_ins(OP_MATCH, 0, 0, 0, empty_bits!)
+   anchored = is_anchored_root(st.nodes, st.node_id)
+   <+ Regex(pattern, prog', st.num_groups, anchored) ->
+
+// Returns `<+>` if `re` matches anywhere in `text`.
+is_match: Regex, String => <>
+is_match = re, text =>
+   run_vm(re, text, 0)
+      | saved => ?saved !< 0
+      | <->
+
+// Convenience one-shot helper: compiles `pattern` and tests if it matches `text`.
+match_str: String, String => <>
+match_str = pattern, text =>
+   compile(pattern)
+      | re => is_match(re, text)
+      | <->
+
+// Finds the first match of `re` in `text` starting at or after byte index `start_pos`.
+find_at: Regex, String, Int => < Match >
+find_at = re, text, start_pos =>
+   pos = start_pos < 0 | 0 | start_pos
+   run_vm(re, text, pos)
+      | saved => <+ build_match(text, saved, re.num_groups) +>
+      | <-->
+
+// Finds the first match of `re` in `text`.
+find: Regex, String => < Match >
+find = re, text =>
+   find_at(re, text, 0)
+
+// Finds all non-overlapping matches of `re` in `text`.
+find_all: Regex, String => Match{}
+find_all = re, text =>
+   out = Match{}
+   len = ?text
+   pos' = 0
+   (pos' !> len) @
+      find_at(re, text, pos')
+         | m =>
+            out += m
+            m.end == m.start
+               | pos' = m.end + 1
+               | pos' = m.end
+            re.anchored_start | -->
+         | -->
+   out
+
+// Returns the captured strings `[full_match, group1, group2, ...]` for the first match in `text`.
+captures: Regex, String => < String{} >
+captures = re, text =>
+   find(re, text)
+      | m =>
+         res = String{}
+         m.groups @ g =>
+            res += g.text
+         <+ res +>
+      | <-->
+
+// Replaces the first match of `re` in `text` with `repl` (supports `$$`, `$&`, `$0`, `$1`..`$9`).
+replace: Regex, String, String => String
+replace = re, text, repl =>
+   find(re, text)
+      | m =>
+         exp = expand_replacement(repl, m)
+         text(0..m.start) + exp + text(m.end..?text)
+      | text
+
+// Replaces all non-overlapping matches of `re` in `text` with `repl` (supports `$$`, `$&`, `$0`, `$1`..`$9`).
+replace_all: Regex, String, String => String
+replace_all = re, text, repl =>
+   matches = find_all(re, text)
+   ?matches == 0 | --| text
+   out = {?text + 32}
+   last' = 0
+   matches @ m =>
+      m.start > last'
+         | out += text(last'..m.start)
+      out += expand_replacement(repl, m)
+      last' = m.end
+   last' < ?text
+      | out += text(last'..?text)
+   +out
+
+// Replaces all non-overlapping matches of `re` in `text` using a callback `fn(match) => String`.
+replace_with: Regex, String, (Match => String) => String
+replace_with = re, text, fn =>
+   matches = find_all(re, text)
+   ?matches == 0 | --| text
+   out = {?text + 32}
+   last' = 0
+   matches @ m =>
+      m.start > last'
+         | out += text(last'..m.start)
+      out += fn(m)
+      last' = m.end
+   last' < ?text
+      | out += text(last'..?text)
+   +out
+
+// Splits `text` into substrings separated by matches of `re` (at most `max_parts` parts when `max_parts > 0`).
+split_n: Regex, String, Int => String{}
+split_n = re, text, max_parts =>
+   out = String{}
+   max_parts == 1
+      |
+         out += text
+         --| out
+   matches = find_all(re, text)
+   last' = 0
+   matches @ m =>
+      (max_parts > 0 && (?out + 1) !< max_parts)
+         | -->
+      (m.end == m.start && m.start == last')
+         | --^
+      out += text(last'..m.start)
+      last' = m.end
+   out += text(last'..?text)
+   out
+
+// Splits `text` into all substrings separated by matches of `re`.
+split: Regex, String => String{}
+split = re, text =>
+   split_n(re, text, 0)
+
+// Escapes all regular expression metacharacters in `s` so it matches literally.
+escape: String => String
+escape = s =>
+   n = ?s
+   out = {n * 2}
+   n @ i =>
+      c = s(i)
+      is_meta = c == 92 || c == 46 || c == 43 || c == 42 || c == 63 ||
+                c == 40 || c == 41 || c == 124 || c == 91 || c == 93 ||
+                c == 123 || c == 125 || c == 94 || c == 36
+      is_meta | out += 92
+      out += c
+   +out

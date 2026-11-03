@@ -359,6 +359,10 @@ Complete reference documentation for each module is maintained in `doc/reference
 - **`mem`**: Memory management utilities and arena allocators.
 - **`os`** & **`sys`**: Operating system environment, command-line arguments (`sys::argv`), and exits.
 - **`ccl`**: Configuration file parsing for the CCL format (`ccl::parse`).
+- **`regex`**: Linear-time Thompson NFA / PikeVM regular expression engine (`compile`, `is_match`, `match_str`, `find`, `find_at`, `find_all`, `captures`, `replace`, `replace_all`, `replace_with`, `split`, `split_n`, `escape`).
+- **`crypto`**: Cryptographic primitives (`sha1`, `sha256`, `sha512`, `hmac_sha256`, `hmac_sha512`, `hkdf_sha256`, `pbkdf2_sha256`, `chacha20_xor`, `poly1305_mac`, `aead_seal`, `aead_open`, `random_bytes`, `ct_eq`).
+- **`flate`** & **`img`**: RFC 1951/1950/1952 DEFLATE/Zlib/Gzip codecs and lossless RGBA8 PNG/QOI image codecs.
+- **`kv`**: Bitcask-style log-structured persistent key-value store with CRC-32 verification and `#!` structural `put_struct`/`get_struct`.
 
 ---
 

@@ -46,6 +46,7 @@ Standard stream writers and readers live in `std/io.dva`.
 | `os` | hosted operating-system operations, environment, and subprocess pipelines | [os](os.qmd) |
 | `path` | cross-platform lexical path manipulation and glob matching | [path](path.qmd) |
 | `rand` | xoshiro256\*\* PRNG, OS entropy seeding, distributions, and shuffling | [rand](rand.qmd) |
+| `regex` | linear-time Thompson NFA / PikeVM regular expression engine | [regex](regex.qmd) |
 | `set` | generic hash-backed and structural array-backed sets | [set](set.qmd) |
 | `sort` | sorting helpers and comparator cycles | [sort](sort.qmd) |
 | `str` | string conversion and manipulation | [str](str.qmd) |
@@ -59,7 +60,7 @@ Standard stream writers and readers live in `std/io.dva`.
 | `utf` | UTF-8 rune encoding and decoding | [utf](utf.qmd) |
 
 Target-support files are implementation probes, not public
-API. Dedicated reference pages are provided for all 42 standard library modules.
+API. Dedicated reference pages are provided for all 43 standard library modules.
 
 ```{.dva .run}
 #use io

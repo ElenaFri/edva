@@ -90,6 +90,7 @@ book:
         - reference/stdlib/os.qmd
         - reference/stdlib/path.qmd
         - reference/stdlib/rand.qmd
+        - reference/stdlib/regex.qmd
         - reference/stdlib/set.qmd
         - reference/stdlib/sort.qmd
         - reference/stdlib/str.qmd
