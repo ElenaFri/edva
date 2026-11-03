@@ -3,7 +3,7 @@ meta:
   audience: "Edva developers implementing high-performance asynchronous I/O on Linux"
   status: "current reference"
   audited: "c17e2aa"
-  evidence: "`std/uring.dva`, `tests/pass/281_uring.dva`, `tests/pass/344_uring_error_handling.dva`, `tests/pass/346_uring_correctness.dva`"
+  evidence: "`std/uring.dva`, `tests/pass/281_uring.dva`, `tests/pass/344_uring_error_handling.dva`, `tests/pass/346_uring_correctness.dva`, `tests/pass/404_os_pty_multiplex_uring.dva`"
 ---
 
 # `uring` standard library
@@ -65,11 +65,14 @@ It is available exclusively on Linux targets.
 | `uring::prep_read_at` | `Ring, Int, Addr, Int, Int, Int => <>` | Prepares an asynchronous read at an explicit file offset (`off`), preserving file position |
 | `uring::prep_write` | `Ring, Int, Addr, Int, Int => <>` | Prepares an asynchronous write at current file offset (`-1`), advancing position on completion |
 | `uring::prep_write_at` | `Ring, Int, Addr, Int, Int, Int => <>` | Prepares an asynchronous write at an explicit file offset (`off`), preserving file position |
+| `uring::prep_pipe_read` | `Ring, Int, Addr, Int, Int => <>` | Prepares an asynchronous stream/pipe/PTY read (`off = 0`) |
+| `uring::prep_pipe_write` | `Ring, Int, Addr, Int, Int => <>` | Prepares an asynchronous stream/pipe/PTY write (`off = 0`) |
 | `uring::prep_close` | `Ring, Int, Int => <>` | Prepares an asynchronous file descriptor close operation |
 | `uring::prep_send` | `Ring, Int, Addr, Int, Int, Int => <>` | Prepares an asynchronous socket send operation |
 | `uring::prep_recv` | `Ring, Int, Addr, Int, Int, Int => <>` | Prepares an asynchronous socket receive operation |
 | `uring::prep_accept` | `Ring, Int, Addr, Addr, Int, Int => <>` | Prepares an asynchronous socket accept operation |
 | `uring::prep_timeout` | `Ring, Addr, Int, Int, Int => <>` | Prepares a timer- or completion-count-based timeout |
+| `uring::prep_timeout_ms` | `Ring, Addr, Int, Int => <>` | Populates a 16-byte `Timespec` at `ts_ptr` from `timeout_ms` and prepares `OP_TIMEOUT` |
 | `uring::prep_cancel` | `Ring, Int, Int => <>` | Prepares an asynchronous cancellation request targeting a 64-bit `user_data` |
 | `uring::sq_space` | `Ring => Int` | Returns the number of available slots remaining in the submission queue |
 | `uring::submit` | `Ring => Int` | Enters kernel and submits pending SQEs via `io_uring_enter` |
@@ -77,6 +80,7 @@ It is available exclusively on Linux targets.
 | `uring::peek_cqe` | `Ring => < CQE | >` | Non-blocking check for a completion event; copies CQE before advancing head pointer |
 | `uring::wait_cqe` | `Ring => < CQE | String >` | Checks for ready CQE or blocks via `submit_and_wait(ring, 1)` |
 | `uring::reap` | `Ring => CQEs` | Drains all currently ready CQEs into a growable array |
+| `uring::drain_pipes` | `Ring, PipeFds => < PipeOutputs | String >` | Multiplexes concurrent async `OP_READ` submissions across multiple pipes until EOF |
 | `uring::close` | `Ring => ()` | Unmaps submission/completion ring memory and closes the ring file descriptor |
 
 ## Operational semantics

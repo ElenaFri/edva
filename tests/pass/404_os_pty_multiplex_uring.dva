@@ -1,0 +1,156 @@
+// 404_os_pty_multiplex_uring.dva — Tests for DVA-7:
+// - os::pipe, os::set_nonblocking, os::try_read
+// - os::SpawnOpts (with_cwd, with_env, with_clear_env), os::spawn_piped_opts, os::exec_opts
+// - os::wait_pid_timeout, os::communicate_child_timeout, os::exec_timeout
+// - os::pty_open, os::pty_resize, os::pty_size, os::spawn_pty, os::communicate_pty
+// - os::multiplex_children parallel process pipe multiplexing
+// - uring::prep_pipe_read, uring::prep_pipe_write, uring::prep_timeout_ms, uring::drain_pipes
+
+#use io
+#use os
+#use str
+#use test
+#use uring
+
+// 1. Non-blocking pipe & try_read
+p = os::pipe()!!
+test::ok(os::set_nonblocking(p.r), "set_nonblocking on pipe read end")
+
+// Nothing written yet -> <+ "" +> (EAGAIN)
+empty_read = os::try_read(p.r, 64)
+test::ok(<>(empty_read), "try_read on empty non-blocking pipe returns left")
+test::eq(empty_read | s => s | "ERR", "", "try_read on empty pipe is empty string")
+
+// Write and read back
+os::write(p.w, "edva-pipe", 9)
+got_read = os::try_read(p.r, 64)
+test::eq(got_read | s => s | "", "edva-pipe", "try_read reads written bytes")
+
+// Close write end -> EOF returns <-->
+os::close(p.w)
+eof_read = os::try_read(p.r, 64)
+test::ok(!<>(eof_read), "try_read on EOF returns right (<-->)")
+os::close(p.r)
+
+// 2. SpawnOpts: working directory & environment overrides
+opts = os::with_env(
+   os::with_env(os::with_cwd(os::spawn_opts!, "/tmp"), "EDVA_TEST_A", "alpha"),
+   "EDVA_TEST_B", "beta"
+)
+res_opts = os::exec_opts(
+   "sh",
+   os::Args("-c", "pwd && printf '%s:%s' \"$EDVA_TEST_A\" \"$EDVA_TEST_B\""),
+   opts,
+   ""
+)!!
+test::eq(res_opts.status, 0, "exec_opts exit status 0")
+lines_opts = str::split(str::trim(res_opts.stdout), "\n")
+test::eq(?lines_opts, 2, "exec_opts output line count")
+test::ok(str::ends_with(lines_opts(0)!!, "/tmp"), "exec_opts working directory is /tmp")
+test::eq(lines_opts(1)!!, "alpha:beta", "exec_opts environment overrides applied")
+
+// Invalid working directory fails cleanly
+bad_cwd_opts = os::with_cwd(os::spawn_opts!, "/nonexistent_edva_dir_99999")
+bad_cwd_res = os::spawn_piped_opts("true", os::Args(), bad_cwd_opts)
+test::ok(!<>(bad_cwd_res), "spawn_piped_opts with nonexistent cwd fails cleanly")
+
+// 3. Non-blocking timeout & SIGKILL cleanup
+fast_res = os::exec_timeout("printf", os::Args("fast-ok"), "", 2000)
+test::ok(<>(fast_res), "exec_timeout fast command succeeds")
+test::eq((fast_res!!).stdout, "fast-ok", "exec_timeout fast stdout")
+
+slow_res = os::exec_timeout("sh", os::Args("-c", "sleep 10"), "", 40)
+test::ok(!<>(slow_res), "exec_timeout kills slow process and returns <-->")
+
+// 4. PTY open, window size, and interactive child spawning
+pty = os::pty_open(30, 100)!!
+test::ok(pty.master_fd !< 0 && pty.slave_fd !< 0, "pty_open valid fds")
+test::ok(?pty.name > 0, "pty_open non-empty slave path")
+test::ok(os::isatty(pty.slave_fd), "pty slave_fd is a tty")
+
+ws1 = os::pty_size(pty.master_fd)!!
+test::eq(ws1.rows, 30, "pty initial rows")
+test::eq(ws1.cols, 100, "pty initial cols")
+
+test::ok(os::pty_resize(pty.master_fd, 45, 132), "pty_resize succeeds")
+ws2 = os::pty_size(pty.slave_fd)!!
+test::eq(ws2.rows, 45, "pty resized rows")
+test::eq(ws2.cols, 132, "pty resized cols")
+os::close(pty.slave_fd)
+os::close(pty.master_fd)
+
+pty_child = os::spawn_pty(
+   "sh",
+   os::Args("-c", "if [ -t 0 ] && [ -t 1 ]; then printf 'TTY_OK'; else printf 'NOT_TTY'; fi"),
+   24,
+   80
+)!!
+pty_res = os::communicate_pty(pty_child, "", 2000)!!
+test::eq(pty_res.status, 0, "spawn_pty exit status 0")
+test::ok(str::contains(pty_res.output, "TTY_OK"), "spawn_pty child runs attached to a controlling TTY")
+
+// 5. Parallel process multiplexing (os::multiplex_children)
+children = os::Children()
+children += os::spawn_piped("sh", os::Args("-c", "printf 'out-0'; printf 'err-0' >&2"))!!
+children += os::spawn_piped("sh", os::Args("-c", "printf 'out-1'; exit 3"))!!
+children += os::spawn_piped("sh", os::Args("-c", "printf 'out-2'; printf 'err-2' >&2"))!!
+
+m_res = os::multiplex_children(children, 3000)
+test::eq(?m_res, 3, "multiplex_children result count")
+r0 = m_res(0)!!
+r1 = m_res(1)!!
+r2 = m_res(2)!!
+test::eq(r0.status, 0, "multiplex child 0 status")
+test::eq(r0.stdout, "out-0", "multiplex child 0 stdout")
+test::eq(r0.stderr, "err-0", "multiplex child 0 stderr")
+test::eq(r1.status, 3, "multiplex child 1 status")
+test::eq(r1.stdout, "out-1", "multiplex child 1 stdout")
+test::eq(r2.status, 0, "multiplex child 2 status")
+test::eq(r2.stdout, "out-2", "multiplex child 2 stdout")
+test::eq(r2.stderr, "err-2", "multiplex child 2 stderr")
+
+// 6. io_uring async pipe read/write & drain_pipes integration
+uring::new(16)
+   | ring =>
+      // Test prep_pipe_write + prep_pipe_read on an anonymous pipe
+      up = os::pipe()!!
+      msg = "uring-pipe-msg"
+      uring::prep_pipe_write(ring, up.w, &msg, ?msg, 1)
+      uring::submit(ring)
+      w_cqe = uring::wait_cqe(ring)!!
+      test::eq(w_cqe.res, ?msg, "uring::prep_pipe_write byte count")
+      os::close(up.w)
+
+      rbuf = {64}
+      uring::prep_pipe_read(ring, up.r, &rbuf, 64, 2)
+      uring::submit(ring)
+      r_cqe = uring::wait_cqe(ring)!!
+      test::eq(r_cqe.res, ?msg, "uring::prep_pipe_read byte count")
+      ?rbuf = r_cqe.res
+      test::eq(+rbuf, msg, "uring::prep_pipe_read payload")
+      os::close(up.r)
+
+      // Test uring::drain_pipes across two concurrent child processes
+      c_a = os::spawn_piped("printf", os::Args("uring-child-A"))!!
+      c_b = os::spawn_piped("printf", os::Args("uring-child-B"))!!
+      os::close(c_a.stdin_fd)
+      os::close(c_b.stdin_fd)
+      os::close(c_a.stderr_fd)
+      os::close(c_b.stderr_fd)
+
+      fds = uring::PipeFds(c_a.stdout_fd, c_b.stdout_fd)
+      drained = uring::drain_pipes(ring, fds)!!
+      test::eq(?drained, 2, "uring::drain_pipes output count")
+      test::eq(drained(0)!!, "uring-child-A", "uring::drain_pipes child A output")
+      test::eq(drained(1)!!, "uring-child-B", "uring::drain_pipes child B output")
+
+      os::close(c_a.stdout_fd)
+      os::close(c_b.stdout_fd)
+      os::wait_pid(c_a.pid)
+      os::wait_pid(c_b.pid)
+      uring::close(ring)
+   | err =>
+      // If io_uring is disabled by container/seccomp policy, log and continue
+      io::err("io_uring unavailable: " + err)
+
+io::out("404_os_pty_multiplex_uring: ALL PASSED")

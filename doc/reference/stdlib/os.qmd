@@ -3,7 +3,7 @@ meta:
   audience: "Edva developers performing file, environment, and subprocess operations"
   status: "current reference"
   audited: "fb4fbc2"
-  evidence: "`std/os.dva`, `tests/pass/041_posix_spawn.dva`, `tests/pass/387_str_os_cli_test_bench.dva`, `tests/pass/392_os_proc_and_log.dva`"
+  evidence: "`std/os.dva`, `tests/pass/041_posix_spawn.dva`, `tests/pass/387_str_os_cli_test_bench.dva`, `tests/pass/392_os_proc_and_log.dva`, `tests/pass/404_os_pty_multiplex_uring.dva`"
 ---
 
 # `os` standard library
@@ -28,6 +28,13 @@ io::out $ out
 | `os::ExecResult` | Record | `(status: Int, output: String)` | Exit status and captured stdout from `os::exec` |
 | `os::ProcResult` | Record | `(status: Int, stdout: String, stderr: String)` | Exit status and separately captured `stdout` and `stderr` |
 | `os::Child` | Record | `(pid: Int, stdin_fd: Int, stdout_fd: Int, stderr_fd: Int)` | Active child process handle with pipe file descriptors |
+| `os::SpawnOpts` | Record | `(cwd: String, env: EnvVars, clear_env: <>)` | Working directory and environment overrides for subprocesses |
+| `os::Pipe` | Record | `(r: Int, w: Int)` | Anonymous POSIX pipe read/write descriptor pair |
+| `os::WinSize` | Record | `(rows: Int, cols: Int)` | Terminal/PTY window dimensions |
+| `os::Pty` | Record | `(master_fd: Int, slave_fd: Int, name: String)` | Allocated pseudo-terminal master/slave pair and device path |
+| `os::PtyChild` | Record | `(pid: Int, master_fd: Int, name: String)` | Interactive child process attached to a controlling PTY |
+| `os::Children` | Growable Array | `Child{}` | Collection of piped child handles passed to `multiplex_children` |
+| `os::ProcResults` | Growable Array | `ProcResult{}` | Multiplexed completion results returned by `multiplex_children` |
 | `os::SIGINT` | Constant | `2` | Interrupt signal (`SIGINT`) |
 | `os::SIGKILL` | Constant | `9` | Unconditional termination signal (`SIGKILL`) |
 | `os::SIGTERM` | Constant | `15` | Graceful termination signal (`SIGTERM`) |
@@ -42,6 +49,9 @@ io::out $ out
 | | `os::read(fd, count)` | `Int, Int => String` | Unbuffered read of up to `count` bytes into an immutable `String` |
 | | `os::ioctl(fd, req, arg)` | `Int, Int, Int => Int` | Performs control device request |
 | | `os::isatty(fd)` | `Int => <>` | Returns `<+>` if `fd` refers to a terminal device |
+| | `os::pipe()` | `() => < Pipe | >` | Creates an anonymous POSIX pipe pair `(r, w)` |
+| | `os::set_nonblocking(fd)` | `Int => <>` | Sets `O_NONBLOCK` on descriptor `fd` |
+| | `os::try_read(fd, count)` | `Int, Int => < String | >` | Non-blocking read (`<+ "" +>` on `EAGAIN`, `<-->` on EOF/error) |
 | **Environment** | `os::env(name)` | `String => < String | >` | Looks up environment variable `name` |
 | | `os::env_or(name, fallback)` | `String, String => String` | Returns environment variable `name` or `fallback` if unset |
 | | `os::setenv(name, val)` | `String, String => <>` | Sets environment variable `name` to `val` (overwriting) |
@@ -62,7 +72,24 @@ io::out $ out
 | | `os::wait_child(child)` | `Child => < ProcResult | >` | Drains remaining stdout/stderr from `child` and waits for exit |
 | | `os::wait_pid(pid)` | `Int => < Int | >` | Waits for `pid` to exit and returns decoded exit code |
 | | `os::try_wait_pid(pid)` | `Int => < Int | >` | Non-blocking check (`WNOHANG`); returns `<+ status +>` if exited or `<-->` if still running |
+| | `os::wait_pid_timeout(pid, ms)` | `Int, Int => < Int | >` | Waits up to `ms` milliseconds for `pid` to exit (`<-->` on timeout) |
 | | `os::kill_pid(pid, sig)` | `Int, Int => <>` | Sends signal `sig` to `pid` |
+| | `os::spawn_opts()` | `() => SpawnOpts` | Creates default `SpawnOpts` (inherited `cwd` and environment) |
+| | `os::with_cwd(opts, dir)` | `SpawnOpts, String => SpawnOpts` | Returns `SpawnOpts` with working directory `dir` |
+| | `os::with_env(opts, key, val)` | `SpawnOpts, String, String => SpawnOpts` | Appends environment override `key = val` to `opts` |
+| | `os::with_clear_env(opts, flag)` | `SpawnOpts, <> => SpawnOpts` | Configures whether child clears inherited environment before applying overrides |
+| | `os::spawn_piped_opts(prog, args, opts)` | `String, Args, SpawnOpts => < Child | >` | Spawns `prog` with piped stdio, working directory, and environment overrides |
+| | `os::spawn_bg_opts(prog, args, opts)` | `String, Args, SpawnOpts => < Int | >` | Spawns `prog` in background with `SpawnOpts` |
+| | `os::exec_opts(prog, args, opts, input)` | `String, Args, SpawnOpts, String => < ProcResult | >` | Runs `prog` with `SpawnOpts` and `input`, capturing `stdout` and `stderr` |
+| | `os::communicate_child_timeout(child, input, ms)` | `Child, String, Int => < ProcResult | >` | Drains `child` pipes within `ms`; sends `SIGKILL` and returns `<-->` on timeout |
+| | `os::exec_timeout(prog, args, input, ms)` | `String, Args, String, Int => < ProcResult | >` | Spawns `prog` and captures output within `ms`, killing child on timeout |
+| | `os::multiplex_children(children, ms)` | `Children, Int => ProcResults` | Multiplexes `stdout`/`stderr` pipes across multiple children in parallel |
+| **Pseudo-Terminals (PTY)** | `os::pty_open(rows, cols)` | `Int, Int => < Pty | >` | Allocates a POSIX pseudo-terminal pair `(master_fd, slave_fd, name)` |
+| | `os::pty_resize(fd, rows, cols)` | `Int, Int, Int => <>` | Updates PTY window dimensions via `TIOCSWINSZ` |
+| | `os::pty_size(fd)` | `Int => < WinSize | >` | Queries PTY window dimensions via `TIOCGWINSZ` |
+| | `os::spawn_pty(prog, args, rows, cols)` | `String, Args, Int, Int => < PtyChild | >` | Spawns `prog` in a new session attached to a controlling `(rows, cols)` PTY |
+| | `os::spawn_pty_opts(prog, args, rows, cols, opts)` | `String, Args, Int, Int, SpawnOpts => < PtyChild | >` | Spawns `prog` in a controlling PTY with `SpawnOpts` |
+| | `os::communicate_pty(pty, input, ms)` | `PtyChild, String, Int => < ExecResult | >` | Feeds `input` to `pty.master_fd`, drains PTY output within `ms`, and waits for exit |
 | **Shell & Raw `posix_spawn`** | `os::system(cmd)` | `String => Int` | Runs `cmd` via `/bin/sh -c` and returns decoded exit status |
 | | `os::exec(cmd)` | `String => < ExecResult | >` | Runs `cmd` via `popen` and returns `(status, output)` |
 | | `os::run(cmd)` | `String => < String | >` | Runs `cmd` via `popen` and returns `<+ output +>` when status is `0` |

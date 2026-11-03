@@ -119,6 +119,14 @@
 
    #type CQEs CQE{}
 
+   #type Timespec #packed (
+      tv_sec:  i64,
+      tv_nsec: i64
+   )
+
+   #type PipeOutputs String{}
+   #type PipeFds Int{}
+
    #type Ring (
       fd:          Int,
       sq_ptr:      Addr,
@@ -219,6 +227,14 @@
    prep_write_at = ring, fd, buf, len, off, user_data =>
       prep_sqe(ring, OP_WRITE, fd, off, buf, len, user_data)
 
+   prep_pipe_read: Ring, Int, Addr, Int, Int => <>
+   prep_pipe_read = ring, fd, buf, len, user_data =>
+      prep_sqe(ring, OP_READ, fd, 0, buf, len, user_data)
+
+   prep_pipe_write: Ring, Int, Addr, Int, Int => <>
+   prep_pipe_write = ring, fd, buf, len, user_data =>
+      prep_sqe(ring, OP_WRITE, fd, 0, buf, len, user_data)
+
    prep_close: Ring, Int, Int => <>
    prep_close = ring, fd, user_data =>
       prep_sqe(ring, OP_CLOSE, fd, 0, sys::addr_null, 0, user_data)
@@ -266,6 +282,13 @@
    prep_timeout: Ring, Addr, Int, Int, Int => <>
    prep_timeout = ring, ts_ptr, count, flags, user_data =>
       prep_sqe_flags(ring, OP_TIMEOUT, -1, count, ts_ptr, 1, flags, user_data)
+
+   prep_timeout_ms: Ring, Addr, Int, Int => <>
+   prep_timeout_ms = ring, ts_ptr, timeout_ms, user_data =>
+      ms = timeout_ms < 0 | 0 | timeout_ms
+      @[ts_ptr] = i64(ms / 1000)
+      @[ts_ptr + 8] = i64((ms % 1000) * 1000000)
+      prep_timeout(ring, ts_ptr, 0, 0, user_data)
 
    prep_poll_add: Ring, Int, Int, Int => <>
    prep_poll_add = ring, fd, poll_mask, user_data =>
@@ -331,6 +354,47 @@
             | c => (cqes' += c)
             | -->
       cqes'
+
+   // Multiplexes concurrent async pipe reads across `fds` until all pipes reach EOF.
+   drain_pipes: Ring, PipeFds => <PipeOutputs | String>
+   drain_pipes = ring, fds =>
+      n = ?fds
+      outs' = PipeOutputs()
+      n == 0 | --| <+ outs' ->
+      scratch = {n * 4096}
+      active' = 0
+      n @ i =>
+         outs' += ""
+         fd = fds(i)!!
+         fd !< 0
+            |
+               prep_pipe_read(ring, fd, &scratch + i * 4096, 4096, i)
+               active' = active' + 1
+      err_msg' = ++""
+      0.. @
+         active' !> 0 | -->
+         submit(ring)
+         wait_cqe(ring)
+            | cqe =>
+               idx = cqe.user_data
+               idx !< 0 && idx < n
+                  |
+                     cqe.res > 0
+                        |
+                           nb = cqe.res
+                           b = {nb + 1}
+                           %memcpy(&b, &scratch + idx * 4096, nb)
+                           @[&b + nb] = 0u8
+                           ?b = nb
+                           prev = outs'(idx)!!
+                           outs'(idx) = prev + (+b)
+                           fd = fds(idx)!!
+                           prep_pipe_read(ring, fd, &scratch + idx * 4096, 4096, idx)
+                        | active' = active' - 1
+            | msg =>
+               err_msg' = msg
+               -->
+      ?err_msg' > 0 | <- err_msg' +> | <+ outs' ->
 
    close: Ring => ()
    close = ring =>

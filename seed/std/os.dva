@@ -26,10 +26,22 @@
    c_dup2        = dup2:        (oldfd: i32, newfd: i32) => i32
    c_exit        = _exit:       (status: i32) => ()
    c_kill        = kill:        (pid: i32, sig: i32) => i32
-   c_access      = access:      (path: String, mode: i32) => i32
-   c_gethostname = gethostname: (name: Addr, len: Int) => i32
+   c_access         = access:         (path: String, mode: i32) => i32
+   c_gethostname    = gethostname:    (name: Addr, len: Int) => i32
+   c_posix_openpt   = posix_openpt:   (flags: i32) => i32
+   c_grantpt        = grantpt:        (fd: i32) => i32
+   c_unlockpt       = unlockpt:       (fd: i32) => i32
+   c_ptsname        = ptsname:        (fd: i32) => Addr
+   c_setsid         = setsid:         () => i32
+   c_clock_gettime  = clock_gettime:  (clk_id: i32, tp: Addr) => i32
+   c_nanosleep      = nanosleep:      (req: Addr, rem: Addr) => i32
 
 O_NONBLOCK_FLAG = #! (os ["darwin"] 4 | 2048)
+O_RDWR_NOCTTY   = #! (os ["darwin"] 0x20002 | 0x102)
+TIOCSCTTY_REQ   = #! (os ["darwin"] 0x20007461 | 0x540E)
+TIOCGWINSZ_REQ  = #! (os ["darwin"] 0x40087468 | 0x5413)
+TIOCSWINSZ_REQ  = #! (os ["darwin"] 0x80087467 | 0x5414)
+CLOCK_MONO_ID   = #! (os ["darwin"] 6 | 1)
 
 // Extracts the exit code from a POSIX wait status word.
 decode_wait_status: Int => Int
@@ -74,12 +86,67 @@ append_bytes = b, src, n =>
    #type ExecResult (status: Int, output: String)
    #type ProcResult (status: Int, stdout: String, stderr: String)
    #type Child (pid: Int, stdin_fd: Int, stdout_fd: Int, stderr_fd: Int)
+   #type EnvVar (key: String, val: String)
+   #type EnvVars EnvVar{}
+   #type SpawnOpts (cwd: String, env: EnvVars, clear_env: <>)
+   #type Pipe (r: Int, w: Int)
+   #type WinSize (rows: Int, cols: Int)
+   #type Pty (master_fd: Int, slave_fd: Int, name: String)
+   #type PtyChild (pid: Int, master_fd: Int, name: String)
+   #type Children Child{}
+   #type ProcResults ProcResult{}
 
 #private
    #type PipeFds #packed (
       r: i32,
       w: i32
    )
+
+   #type OsTimespec #packed (
+      sec:  i64,
+      nsec: i64
+   )
+
+   #type RawWinSize #packed (
+      ws_row:    u16,
+      ws_col:    u16,
+      ws_xpixel: u16,
+      ws_ypixel: u16
+   )
+
+   monotonic_ms: () => Int
+   monotonic_ms = !=>
+      ts = OsTimespec(0i64, 0i64)
+      c_clock_gettime(i32(CLOCK_MONO_ID), &ts)
+      Int(ts.sec) * 1000 + Int(ts.nsec) / 1000000
+
+   sleep_ms: Int => ()
+   sleep_ms = ms =>
+      ms > 0
+         |
+            req = OsTimespec(i64(ms / 1000), i64((ms % 1000) * 1000000))
+            rem = OsTimespec(0i64, 0i64)
+            c_nanosleep(&req, &rem)
+
+   apply_spawn_opts: SpawnOpts => <>
+   apply_spawn_opts = opts =>
+      cwd_ok = ?opts.cwd == 0 || c_chdir(opts.cwd) == 0i32
+      !cwd_ok | --| <->
+      opts.clear_env
+         |
+            0.. @
+               environ == sys::addr_null | -->
+               first_ptr = @[environ Addr]
+               first_ptr == sys::addr_null | -->
+               entry = sys::c_str(first_ptr)
+               parts = str::split(entry, "=")
+               ?parts > 0 && ?(parts(0)!!) > 0
+                  | c_unsetenv(parts(0)!!)
+                  | -->
+      ?opts.env @ i =>
+         kv = opts.env(i)!!
+         c_setenv(kv.key, kv.val, 1i32)
+      <+>
 
    #type PollFd3 #packed (
       fd0: i32,
@@ -130,6 +197,41 @@ append_bytes = b, src, n =>
                   ?b = n
                   +b
                | ""
+
+   // Creates an anonymous POSIX pipe pair `(r, w)`.
+   pipe: () => < Pipe | >
+   pipe = !=>
+      p = PipeFds(0i32, 0i32)
+      libc::pipe(&p) == 0
+         | <+ Pipe(Int(p.r), Int(p.w)) +>
+         | <-->
+
+   // Sets `O_NONBLOCK` on file descriptor `fd`. Returns `<+>` on success.
+   set_nonblocking: Int => <>
+   set_nonblocking = fd =>
+      flags = libc::fcntl(fd, 3, 0)
+      flags !< 0 && libc::fcntl(fd, 4, flags .|. O_NONBLOCK_FLAG) == 0
+
+   // Non-blocking read of up to `count` bytes:
+   // - `<+ str +>` with `?str > 0` when bytes were read
+   // - `<+ "" +>` when no bytes are ready (`EAGAIN` / `EWOULDBLOCK` / `EINTR`)
+   // - `<-->` on EOF (`0`) or unrecoverable descriptor error (`EIO`, closed pipe)
+   try_read: Int, Int => < String | >
+   try_read = fd, count =>
+      fd < 0 || count !> 0 | --| <-->
+      b = {count}
+      n = libc::read(fd, &b, count)
+      n > 0
+         |
+            ?b = n
+            <+ +b +>
+         | n == 0
+            | <-->
+            |
+               err = Int(@[libc::__errno_location! i32])
+               err == 11 || err == 35 || err == 4
+                  | <+ "" +>
+                  | <-->
 
    // Returns `<+>` if file descriptor `fd` refers to a terminal device.
    isatty: Int => <>
@@ -254,15 +356,57 @@ append_bytes = b, src, n =>
          | <+ decode_wait_status(Int(st)) +>
          | <-->
 
+   // Waits up to `timeout_ms` milliseconds for `child_pid` to exit (`-1` = infinite).
+   // Returns `<+ exit_status +>` if exited within `timeout_ms`, or `<-->` on timeout.
+   wait_pid_timeout: Int, Int => < Int | >
+   wait_pid_timeout = child_pid, timeout_ms =>
+      child_pid !> 0 | --| <-->
+      timeout_ms < 0 | --| wait_pid(child_pid)
+      deadline = monotonic_ms! + timeout_ms
+      res' = <-->
+      0.. @
+         try_wait_pid(child_pid)
+            | code =>
+               res' = <+ code +>
+               -->
+            |
+               now = monotonic_ms!
+               now !< deadline | -->
+               rem = deadline - now
+               step = rem < 5 | rem | 5
+               sleep_ms(step)
+      res'
+
    // Sends signal `sig` to `target_pid`. Returns `<+>` on success.
    kill_pid: Int, Int => <>
    kill_pid = target_pid, sig =>
       c_kill(i32(target_pid), i32(sig)) == 0i32
 
-   // Spawns `prog` with `args` in the background (inheriting stdio).
-   // Returns `<+ child_pid +>` or `<-->` if `fork`/`execvp` fails.
-   spawn_bg: String, Args => < Int | >
-   spawn_bg = prog, args =>
+   // Creates default `SpawnOpts` (inherited `cwd` and environment).
+   spawn_opts: () => SpawnOpts
+   spawn_opts = !=> SpawnOpts("", EnvVars(), <->)
+
+   // Returns a copy of `opts` with working directory `dir`.
+   with_cwd: SpawnOpts, String => SpawnOpts
+   with_cwd = opts, dir => SpawnOpts(dir, opts.env, opts.clear_env)
+
+   // Returns a copy of `opts` with environment override `key = val`.
+   with_env: SpawnOpts, String, String => SpawnOpts
+   with_env = opts, key, val =>
+      evs' = EnvVars()
+      ?opts.env @ i =>
+         evs' += opts.env(i)!!
+      evs' += EnvVar(key, val)
+      SpawnOpts(opts.cwd, evs', opts.clear_env)
+
+   // Returns a copy of `opts` with `clear_env` set to `flag`.
+   with_clear_env: SpawnOpts, <> => SpawnOpts
+   with_clear_env = opts, flag => SpawnOpts(opts.cwd, opts.env, flag)
+
+   // Spawns `prog` with `args` and `opts` in the background (inheriting stdio).
+   // Returns `<+ child_pid +>` or `<-->` if `chdir`/`fork`/`execvp` fails.
+   spawn_bg_opts: String, Args, SpawnOpts => < Int | >
+   spawn_bg_opts = prog, args, opts =>
       ?prog == 0 | --| <-->
       exec_p = PipeFds(0i32, 0i32)
       libc::pipe(&exec_p) != 0 | --| <-->
@@ -281,7 +425,8 @@ append_bytes = b, src, n =>
          | child_pid == 0
             |
                libc::close(exec_r)
-               c_execvp(built.0, built.1)
+               apply_spawn_opts(opts)
+                  | c_execvp(built.0, built.1)
                err_b = 1i32
                libc::write_ptr(exec_w, &err_b, 4)
                libc::close(exec_w)
@@ -299,6 +444,12 @@ append_bytes = b, src, n =>
                      <-->
                   | <+ child_pid +>
 
+   // Spawns `prog` with `args` in the background (inheriting stdio).
+   // Returns `<+ child_pid +>` or `<-->` if `fork`/`execvp` fails.
+   spawn_bg: String, Args => < Int | >
+   spawn_bg = prog, args =>
+      spawn_bg_opts(prog, args, spawn_opts!)
+
    // Spawns `prog` with `args` (inheriting stdio), waits for completion,
    // and returns the decoded exit status (`-1` if spawning fails).
    spawn_args: String, Args => Int
@@ -308,10 +459,10 @@ append_bytes = b, src, n =>
             wait_pid(cpid) | code => code | -1
          | -1
 
-   // Spawns `prog` with `args` and pipes connected to child stdin, stdout, and stderr.
+   // Spawns `prog` with `args`, `opts`, and pipes connected to child stdin, stdout, and stderr.
    // Returns `<+ Child(pid, stdin_fd, stdout_fd, stderr_fd) +>` or `<-->` on error.
-   spawn_piped: String, Args => < Child | >
-   spawn_piped = prog, args =>
+   spawn_piped_opts: String, Args, SpawnOpts => < Child | >
+   spawn_piped_opts = prog, args, opts =>
       ?prog == 0 | --| <-->
       in_p = PipeFds(0i32, 0i32)
       libc::pipe(&in_p) != 0 | --| <-->
@@ -375,7 +526,8 @@ append_bytes = b, src, n =>
                libc::close(in_r)
                libc::close(out_w)
                libc::close(err_w)
-               c_execvp(built.0, built.1)
+               apply_spawn_opts(opts)
+                  | c_execvp(built.0, built.1)
                err_b = 1i32
                libc::write_ptr(exec_w, &err_b, 4)
                libc::close(exec_w)
@@ -399,10 +551,17 @@ append_bytes = b, src, n =>
                      <-->
                   | <+ Child(child_pid, in_w, out_r, err_r) +>
 
+   // Spawns `prog` with `args` and pipes connected to child stdin, stdout, and stderr.
+   // Returns `<+ Child(pid, stdin_fd, stdout_fd, stderr_fd) +>` or `<-->` on error.
+   spawn_piped: String, Args => < Child | >
+   spawn_piped = prog, args =>
+      spawn_piped_opts(prog, args, spawn_opts!)
+
    // Feeds `input` to `child.stdin_fd`, drains `stdout_fd` and `stderr_fd` concurrently
-   // using `poll`, closes all pipe descriptors, and waits for `child.pid`.
-   communicate_child: Child, String => < ProcResult | >
-   communicate_child = child, input =>
+   // within `timeout_ms` (`-1` = infinite). On timeout, sends `SIGKILL`, reaps `child.pid`,
+   // closes all pipes, and returns `<-->`.
+   communicate_child_timeout: Child, String, Int => < ProcResult | >
+   communicate_child_timeout = child, input, timeout_ms =>
       in_fd' = child.stdin_fd
       out_fd' = child.stdout_fd
       err_fd' = child.stderr_fd
@@ -419,8 +578,19 @@ append_bytes = b, src, n =>
       out_buf' = {256}
       err_buf' = {256}
       chunk = {4096}
+      deadline = timeout_ms !< 0 | monotonic_ms! + timeout_ms | -1
+      timed_out' = <->
       0.. @
          in_fd' < 0 && out_fd' < 0 && err_fd' < 0 | -->
+         poll_wait' = -1
+         deadline !< 0
+            |
+               rem_ms = deadline - monotonic_ms!
+               rem_ms !> 0
+                  |
+                     timed_out' = <+>
+                     -->
+                  | poll_wait' = rem_ms
          ev0 = in_fd' !< 0 | 4i16 | 0i16
          ev1 = out_fd' !< 0 | 1i16 | 0i16
          ev2 = err_fd' !< 0 | 1i16 | 0i16
@@ -429,7 +599,11 @@ append_bytes = b, src, n =>
             i32(out_fd'), ev1, 0i16,
             i32(err_fd'), ev2, 0i16
          )
-         pr = libc::poll(&pfds, 3, -1)
+         pr = libc::poll(&pfds, 3, poll_wait')
+         pr == 0 && deadline !< 0
+            |
+               timed_out' = <+>
+               -->
          pr < 0 | -->
          rev0 = Int(pfds.rev0)
          rev1 = Int(pfds.rev1)
@@ -470,14 +644,49 @@ append_bytes = b, src, n =>
       in_fd' !< 0 | libc::close(in_fd')
       out_fd' !< 0 | libc::close(out_fd')
       err_fd' !< 0 | libc::close(err_fd')
-      wait_pid(child.pid)
-         | code => <+ ProcResult(code, +out_buf', +err_buf') +>
-         | <-->
+      timed_out'
+         |
+            kill_pid(child.pid, SIGKILL)
+            wait_pid(child.pid)
+            <-->
+         |
+            rem_wait = deadline !< 0
+               |
+                  rw = deadline - monotonic_ms!
+                  rw > 0 | rw | 0
+               | -1
+            wait_pid_timeout(child.pid, rem_wait)
+               | code => <+ ProcResult(code, +out_buf', +err_buf') +>
+               |
+                  kill_pid(child.pid, SIGKILL)
+                  wait_pid(child.pid)
+                  <-->
+
+   // Feeds `input` to `child.stdin_fd`, drains `stdout_fd` and `stderr_fd` concurrently
+   // using `poll`, closes all pipe descriptors, and waits for `child.pid`.
+   communicate_child: Child, String => < ProcResult | >
+   communicate_child = child, input =>
+      communicate_child_timeout(child, input, -1)
 
    // Waits for a `Child` started by `spawn_piped`, draining remaining stdout and stderr.
    wait_child: Child => < ProcResult | >
    wait_child = child =>
       communicate_child(child, "")
+
+   // Spawns `prog` with `args` and `opts`, feeds `input` to stdin, captures `stdout` and `stderr`.
+   exec_opts: String, Args, SpawnOpts, String => < ProcResult | >
+   exec_opts = prog, args, opts, input =>
+      spawn_piped_opts(prog, args, opts)
+         | child => communicate_child(child, input)
+         | <-->
+
+   // Spawns `prog` with `args`, feeds `input` to stdin, captures `stdout` and `stderr`
+   // within `timeout_ms` (`-1` = infinite). Kills child and returns `<-->` on timeout.
+   exec_timeout: String, Args, String, Int => < ProcResult | >
+   exec_timeout = prog, args, input, timeout_ms =>
+      spawn_piped(prog, args)
+         | child => communicate_child_timeout(child, input, timeout_ms)
+         | <-->
 
    // Spawns `prog` with `args`, feeds `input` to its stdin, captures `stdout` and `stderr`,
    // and returns `<+ ProcResult(status, stdout, stderr) +>` or `<-->` if spawning fails.
@@ -503,6 +712,310 @@ append_bytes = b, src, n =>
                | <+ res.stdout +>
                | <-->
          | <-->
+
+   // --- Pseudo-Terminal (PTY) Allocation & Interactive Spawning ---------------
+
+   // Updates PTY window dimensions (`rows`, `cols`) on `fd` via `TIOCSWINSZ`.
+   pty_resize: Int, Int, Int => <>
+   pty_resize = fd, rows, cols =>
+      fd < 0 || rows !> 0 || cols !> 0 | --| <->
+      ws = RawWinSize(u16(rows), u16(cols), 0u16, 0u16)
+      libc::ioctl(fd, TIOCSWINSZ_REQ, Int(&ws)) == 0
+
+   // Queries PTY window dimensions (`rows`, `cols`) on `fd` via `TIOCGWINSZ`.
+   pty_size: Int => < WinSize | >
+   pty_size = fd =>
+      fd < 0 | --| <-->
+      ws = RawWinSize(0u16, 0u16, 0u16, 0u16)
+      libc::ioctl(fd, TIOCGWINSZ_REQ, Int(&ws)) == 0
+         | <+ WinSize(Int(ws.ws_row), Int(ws.ws_col)) +>
+         | <-->
+
+   // Allocates a POSIX pseudo-terminal pair `(master_fd, slave_fd, name)` with initial `(rows, cols)`.
+   pty_open: Int, Int => < Pty | >
+   pty_open = rows, cols =>
+      mfd = Int(c_posix_openpt(i32(O_RDWR_NOCTTY)))
+      mfd < 0 | --| <-->
+      c_grantpt(i32(mfd)) != 0i32 || c_unlockpt(i32(mfd)) != 0i32
+         |
+            libc::close(mfd)
+            --| <-->
+      raw_name = c_ptsname(i32(mfd))
+      raw_name == sys::addr_null
+         |
+            libc::close(mfd)
+            --| <-->
+      pts_name = sys::c_str(raw_name)
+      sfd = libc::open(pts_name, O_RDWR_NOCTTY)
+      sfd < 0
+         |
+            libc::close(mfd)
+            --| <-->
+      r = rows > 0 | rows | 24
+      c = cols > 0 | cols | 80
+      pty_resize(mfd, r, c)
+      <+ Pty(mfd, sfd, pts_name) +>
+
+   // Spawns `prog` attached to a new pseudo-terminal with `(rows, cols)` and `opts`.
+   // Returns `<+ PtyChild(pid, master_fd, name) +>` or `<-->` on error.
+   spawn_pty_opts: String, Args, Int, Int, SpawnOpts => < PtyChild | >
+   spawn_pty_opts = prog, args, rows, cols, opts =>
+      ?prog == 0 | --| <-->
+      pty_open(rows, cols)
+         | pty =>
+            exec_p = PipeFds(0i32, 0i32)
+            libc::pipe(&exec_p) != 0
+               |
+                  libc::close(pty.master_fd)
+                  libc::close(pty.slave_fd)
+                  <-->
+               |
+                  exec_r = Int(exec_p.r)
+                  exec_w = Int(exec_p.w)
+                  libc::fcntl(exec_w, 2, 1)
+                  ar = mem::arena(512)
+                  built = build_argv_args(ar, prog, args)
+                  child_pid = Int(c_fork!)
+                  child_pid < 0
+                     |
+                        libc::close(pty.master_fd)
+                        libc::close(pty.slave_fd)
+                        libc::close(exec_r)
+                        libc::close(exec_w)
+                        mem::destroy(ar)
+                        <-->
+                     | child_pid == 0
+                        |
+                           libc::close(pty.master_fd)
+                           libc::close(exec_r)
+                           c_setsid!
+                           libc::ioctl(pty.slave_fd, TIOCSCTTY_REQ, 0)
+                           c_dup2(i32(pty.slave_fd), 0i32)
+                           c_dup2(i32(pty.slave_fd), 1i32)
+                           c_dup2(i32(pty.slave_fd), 2i32)
+                           pty.slave_fd > 2 | libc::close(pty.slave_fd)
+                           apply_spawn_opts(opts)
+                              | c_execvp(built.0, built.1)
+                           err_b = 1i32
+                           libc::write_ptr(exec_w, &err_b, 4)
+                           libc::close(exec_w)
+                           c_exit(127i32)
+                           <-->
+                        |
+                           libc::close(pty.slave_fd)
+                           libc::close(exec_w)
+                           mem::destroy(ar)
+                           chk = 0i32
+                           n = libc::read(exec_r, &chk, 4)
+                           libc::close(exec_r)
+                           n > 0
+                              |
+                                 libc::close(pty.master_fd)
+                                 wait_pid(child_pid)
+                                 <-->
+                              | <+ PtyChild(child_pid, pty.master_fd, pty.name) +>
+         | <-->
+
+   // Spawns `prog` attached to a new pseudo-terminal with `(rows, cols)`.
+   spawn_pty: String, Args, Int, Int => < PtyChild | >
+   spawn_pty = prog, args, rows, cols =>
+      spawn_pty_opts(prog, args, rows, cols, spawn_opts!)
+
+   // Feeds `input` to `pty.master_fd`, drains all PTY output until exit or `timeout_ms` (`-1` = infinite),
+   // closes `master_fd`, and waits for `pty.pid`.
+   communicate_pty: PtyChild, String, Int => < ExecResult | >
+   communicate_pty = pty, input, timeout_ms =>
+      mfd' = pty.master_fd
+      mfd' !< 0 | set_nonblock(mfd')
+      in_len = ?input
+      in_pos' = 0
+      out_buf' = {256}
+      chunk = {4096}
+      deadline = timeout_ms !< 0 | monotonic_ms! + timeout_ms | -1
+      timed_out' = <->
+      0.. @
+         mfd' < 0 | -->
+         poll_wait' = -1
+         deadline !< 0
+            |
+               rem_ms = deadline - monotonic_ms!
+               rem_ms !> 0
+                  |
+                     timed_out' = <+>
+                     -->
+                  | poll_wait' = rem_ms
+         ev = 1i16 .|. (in_pos' < in_len | 4i16 | 0i16)
+         pfd = sys::PollFd(i32(mfd'), ev, 0i16)
+         pr = libc::poll(&pfd, 1, poll_wait')
+         pr == 0 && deadline !< 0
+            |
+               timed_out' = <+>
+               -->
+         pr < 0 | -->
+         rev = Int(pfd.revents)
+         in_pos' < in_len && (rev .&. 4) != 0
+            |
+               rem = in_len - in_pos'
+               w = libc::write_ptr(mfd', &input + in_pos', rem)
+               w > 0 | in_pos' = in_pos' + w
+         (rev .&. 25) != 0
+            |
+               r = libc::read(mfd', &chunk, 4096)
+               r > 0
+                  | out_buf' = append_bytes(out_buf', &chunk, r)
+                  | r == 0
+                     |
+                        libc::close(mfd')
+                        mfd' = -1
+                     |
+                        err = Int(@[libc::__errno_location! i32])
+                        (err != 11 && err != 35 && err != 4) || (rev .&. 24) != 0
+                           |
+                              libc::close(mfd')
+                              mfd' = -1
+      mfd' !< 0 | libc::close(mfd')
+      timed_out'
+         |
+            kill_pid(pty.pid, SIGKILL)
+            wait_pid(pty.pid)
+            <-->
+         |
+            rem_wait = deadline !< 0
+               |
+                  rw = deadline - monotonic_ms!
+                  rw > 0 | rw | 0
+               | -1
+            wait_pid_timeout(pty.pid, rem_wait)
+               | code => <+ ExecResult(code, +out_buf') +>
+               |
+                  kill_pid(pty.pid, SIGKILL)
+                  wait_pid(pty.pid)
+                  <-->
+
+   // --- Parallel Process Multiplexing -----------------------------------------
+
+   // Multiplexes `children` concurrently in a single non-blocking `poll` loop over all
+   // `stdout_fd` and `stderr_fd` pipes (closing `stdin_fd`s upfront) with an overall
+   // `timeout_ms` (`-1` = infinite). Any child exceeding `timeout_ms` is terminated with
+   // `SIGKILL` and given `status = -1`. Returns `ProcResults` in the order of `children`.
+   multiplex_children: Children, Int => ProcResults
+   multiplex_children = children, timeout_ms =>
+      n = ?children
+      results' = ProcResults()
+      n == 0 | --| results'
+      out_fds' = Int{}
+      err_fds' = Int{}
+      out_strs' = String{}
+      err_strs' = String{}
+      open_cnt' = 0
+      n @ i =>
+         c = children(i)!!
+         c.stdin_fd !< 0 | libc::close(c.stdin_fd)
+         c.stdout_fd !< 0
+            |
+               set_nonblock(c.stdout_fd)
+               open_cnt' = open_cnt' + 1
+         c.stderr_fd !< 0
+            |
+               set_nonblock(c.stderr_fd)
+               open_cnt' = open_cnt' + 1
+         out_fds' += c.stdout_fd
+         err_fds' += c.stderr_fd
+         out_strs' += ""
+         err_strs' += ""
+      pfds = {n * 2 * 8}
+      chunk = {4096}
+      deadline = timeout_ms !< 0 | monotonic_ms! + timeout_ms | -1
+      timed_out' = <->
+      0.. @
+         open_cnt' !> 0 | -->
+         poll_wait' = -1
+         deadline !< 0
+            |
+               rem_ms = deadline - monotonic_ms!
+               rem_ms !> 0
+                  |
+                     timed_out' = <+>
+                     -->
+                  | poll_wait' = rem_ms
+         n @ i =>
+            ofd = out_fds'(i)!!
+            efd = err_fds'(i)!!
+            k0 = i * 2
+            k1 = i * 2 + 1
+            @[&pfds + k0 * 8] = i32(ofd)
+            @[&pfds + k0 * 8 + 4] = (ofd !< 0 | 1i16 | 0i16)
+            @[&pfds + k0 * 8 + 6] = 0i16
+            @[&pfds + k1 * 8] = i32(efd)
+            @[&pfds + k1 * 8 + 4] = (efd !< 0 | 1i16 | 0i16)
+            @[&pfds + k1 * 8 + 6] = 0i16
+         pr = libc::poll(&pfds, n * 2, poll_wait')
+         pr == 0 && deadline !< 0
+            |
+               timed_out' = <+>
+               -->
+         pr < 0 | -->
+         n @ i =>
+            ofd = out_fds'(i)!!
+            k0 = i * 2
+            rev0 = Int(@[&pfds + k0 * 8 + 6 i16]) .&. 0xFFFF
+            ofd !< 0 && (rev0 .&. 25) != 0
+               |
+                  r = libc::read(ofd, &chunk, 4096)
+                  r > 0
+                     |
+                        b = {r + 1}
+                        %memcpy(&b, &chunk, r)
+                        @[&b + r] = 0u8
+                        ?b = r
+                        out_strs'(i) = (out_strs'(i)!!) + (+b)
+                     | r == 0 || (rev0 .&. 24) != 0
+                        |
+                           libc::close(ofd)
+                           out_fds'(i) = -1
+                           open_cnt' = open_cnt' - 1
+            efd = err_fds'(i)!!
+            k1 = i * 2 + 1
+            rev1 = Int(@[&pfds + k1 * 8 + 6 i16]) .&. 0xFFFF
+            efd !< 0 && (rev1 .&. 25) != 0
+               |
+                  r2 = libc::read(efd, &chunk, 4096)
+                  r2 > 0
+                     |
+                        b2 = {r2 + 1}
+                        %memcpy(&b2, &chunk, r2)
+                        @[&b2 + r2] = 0u8
+                        ?b2 = r2
+                        err_strs'(i) = (err_strs'(i)!!) + (+b2)
+                     | r2 == 0 || (rev1 .&. 24) != 0
+                        |
+                           libc::close(efd)
+                           err_fds'(i) = -1
+                           open_cnt' = open_cnt' - 1
+      n @ i =>
+         ofd = out_fds'(i)!!
+         efd = err_fds'(i)!!
+         ofd !< 0 | libc::close(ofd)
+         efd !< 0 | libc::close(efd)
+         c = children(i)!!
+         st' = -1
+         timed_out'
+            |
+               kill_pid(c.pid, SIGKILL)
+               wait_pid(c.pid)
+            |
+               rem_wait = deadline !< 0
+                  |
+                     rw = deadline - monotonic_ms!
+                     rw > 0 | rw | 0
+                  | -1
+               wait_pid_timeout(c.pid, rem_wait)
+                  | code => st' = code
+                  |
+                     kill_pid(c.pid, SIGKILL)
+                     wait_pid(c.pid)
+         results' += ProcResult(st', out_strs'(i)!!, err_strs'(i)!!)
+      results'
 
    // --- Shell Command Execution -----------------------------------------------
 
