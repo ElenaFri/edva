@@ -1,0 +1,115 @@
+// Test 400: std/crypto — SHA-1, SHA-256, SHA-512, HMAC, HKDF, PBKDF2,
+// ChaCha20, Poly1305, ChaCha20-Poly1305 AEAD, ct_eq, WebSocket accept key, and CSPRNG.
+
+#use crypto
+#use hex
+#use io
+#use test
+
+test::suite("std/crypto")
+
+// 1. Constant-time comparison
+test::check(crypto::ct_eq("secret-token", "secret-token"), "ct_eq equal")
+test::check(!crypto::ct_eq("secret-token", "secret-tokem"), "ct_eq diff byte")
+test::check(!crypto::ct_eq("secret", "secret-longer"), "ct_eq diff len")
+
+// 2. SHA-1 (RFC 3174) & WebSocket RFC 6455 Sec-WebSocket-Accept
+test::eq(crypto::sha1(""), "da39a3ee5e6b4b0d3255bfef95601890afd80709", "sha1 empty")
+test::eq(crypto::sha1("abc"), "a9993e364706816aba3e25717850c26c9cd0d89d", "sha1 abc")
+test::eq(
+   crypto::websocket_accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
+   "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
+   "RFC 6455 Sec-WebSocket-Accept"
+)
+
+// 3. SHA-256 (FIPS 180-4 / RFC 6234)
+test::eq(
+   crypto::sha256(""),
+   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "sha256 empty"
+)
+test::eq(
+   crypto::sha256("abc"),
+   "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+   "sha256 abc"
+)
+test::eq(
+   crypto::sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+   "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+   "sha256 448-bit"
+)
+
+// 4. SHA-512 (FIPS 180-4 / RFC 6234)
+test::eq(
+   crypto::sha512(""),
+   "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e",
+   "sha512 empty"
+)
+test::eq(
+   crypto::sha512("abc"),
+   "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f",
+   "sha512 abc"
+)
+
+// 5. HMAC-SHA256 & HMAC-SHA512 (RFC 4231 Test Case 2)
+test::eq(
+   crypto::hmac_sha256("Jefe", "what do ya want for nothing?"),
+   "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+   "RFC 4231 HMAC-SHA256"
+)
+test::eq(
+   crypto::hmac_sha512("Jefe", "what do ya want for nothing?"),
+   "164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea2505549758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737",
+   "RFC 4231 HMAC-SHA512"
+)
+
+// 6. HKDF-SHA256 (RFC 5869 Test Case 1)
+ikm = hex::decode("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b") | s => s | ""
+salt = hex::decode("000102030405060708090a0b0c") | s => s | ""
+info = hex::decode("f0f1f2f3f4f5f6f7f8f9") | s => s | ""
+prk = crypto::hkdf_extract(salt, ikm)
+test::eq(
+   hex::encode(prk),
+   "077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5",
+   "RFC 5869 HKDF-Extract"
+)
+okm = crypto::hkdf_sha256(salt, ikm, info, 42) | s => hex::encode(s) | ""
+test::eq(
+   okm,
+   "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865",
+   "RFC 5869 HKDF-SHA256 OKM"
+)
+
+// 7. PBKDF2-HMAC-SHA256 (RFC 7914)
+dk1 = crypto::pbkdf2_sha256("password", "salt", 1, 32) | s => s | ""
+test::eq(dk1, "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b", "PBKDF2 c=1")
+dk2 = crypto::pbkdf2_sha256("password", "salt", 2, 32) | s => s | ""
+test::eq(dk2, "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43", "PBKDF2 c=2")
+
+// 8. Poly1305 (RFC 8439 Section 2.5.2)
+p_key = hex::decode("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b") | s => s | ""
+p_tag = crypto::poly1305_hex(p_key, "Cryptographic Forum Research Group") | s => s | ""
+test::eq(p_tag, "a8061dc1305136c6c22b8baf0c0127a9", "RFC 8439 Poly1305")
+
+// 9. ChaCha20-Poly1305 AEAD (RFC 8439 Section 2.8.2)
+aead_key = hex::decode("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f") | s => s | ""
+aead_nonce = hex::decode("070000004041424344454647") | s => s | ""
+aead_aad = hex::decode("50515253c0c1c2c3c4c5c6c7") | s => s | ""
+aead_pt = "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it."
+sealed = crypto::aead_seal(aead_key, aead_nonce, aead_aad, aead_pt) | s => s | ""
+test::eq(?sealed, ?aead_pt + 16, "AEAD sealed length")
+tag_hex = hex::encode(sealed(?aead_pt..?sealed))
+test::eq(tag_hex, "1ae10b594f09e26a7e902ecbd0600691", "RFC 8439 Section 2.8.2 AEAD tag")
+opened = crypto::aead_open(aead_key, aead_nonce, aead_aad, sealed) | s => s | ""
+test::eq(opened, aead_pt, "AEAD roundtrip decrypt")
+bad_aad = crypto::aead_open(aead_key, aead_nonce, "tampered-aad", sealed)
+test::check(!<>(bad_aad), "AEAD rejects tampered AAD")
+
+// 10. CSPRNG (/dev/urandom)
+rnd = crypto::random_bytes(32) | s => s | ""
+test::eq(?rnd, 32, "random_bytes(32) length")
+rhex = crypto::random_hex(16) | s => s | ""
+test::eq(?rhex, 32, "random_hex(16) length")
+
+test::finish!
+io::out("crypto-ok")

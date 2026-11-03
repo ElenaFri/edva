@@ -190,7 +190,6 @@ write_record_header = b, delim =>
                   f.idx > 0 | b += delim
                   write_csv_field(b, f.name, delim)
                b += '\n'
-   --|
 
 write_record_row: #! R: Type, Builder, R, Int => ()
 write_record_row = b, rec, delim =>
@@ -205,7 +204,6 @@ write_record_row = b, rec, delim =>
                |
                   write_csv_field(b, csv_cell_str(rec.(f)), delim)
          b += '\n'
-   --|
 
 decode_csv_cell: #! T: Type, String, Int, Int => < T | Error >
 decode_csv_cell = s, line, col =>

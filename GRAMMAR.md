@@ -817,15 +817,29 @@ RangeExpr     ::= [ Expr ] ".." [ Expr ]
 
 A cycle iterates `Iterable`, binding each value to the function's parameter
 and evaluating the body. Iterables: a range `a..b`, a bare integer `n` (the
-range `0..n`), an array/slice value, or a **String** (which iterates its
-*bytes*). The body may be an inline function (`arr @ i => ...`), a function
-value (`arr @ show`), or an indented block (the implicit form, running with
-`_` bound to the current value and `_i` to its 0-based index):
+range `0..n`), a `Flag` (`<>`) or `Ram` condition expression (re-evaluated
+before each iteration; repeats while positive), an array/slice/homogeneous-record
+value, a map `K ^ V`, or a **String** (which iterates its *bytes*). The body may
+be an inline function (`arr @ i => ...`), a function value (`arr @ show`), or an
+indented block (the implicit form, running with `_` bound to the current value
+and `_i` to its 0-based index):
 
 ```
 arr @
     print_int $ _i   // 0, 1, 2
     print_int $ _    // the element
+```
+
+When `Iterable` is a `Flag` (`<>`) or `Ram` condition expression, the condition
+is re-evaluated at the start of each iteration and the body runs as long as the
+condition evaluates to positive (`<+>` or `<+ ... +>`), acting as a `while`
+loop:
+
+```
+(nbits !< 8) @
+    out += (wbuf .&. 0xFF)
+    wbuf = wbuf .>. 8
+    nbits = nbits - 8
 ```
 
 A String iterable binds one parameter to the **byte value** (an `Int`) and a

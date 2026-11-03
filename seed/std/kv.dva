@@ -1,0 +1,301 @@
+// Standard Embedded Log-Structured Key-Value Store Module (std/kv.dva)
+// Bitcask-inspired durable append-only key-value store with O(1) in-memory keydir,
+// IEEE CRC-32 per-record integrity verification, log compaction, and `#!` compile-time
+// structural typed serialization (`put_val`, `get_val`).
+
+#use binary
+#use hash
+#use libc
+#use sort
+
+#public
+
+#type EntryLoc (
+   off:  Int,
+   vlen: Int
+)
+
+#type KeyDir String ^ EntryLoc
+
+#type Store (
+   path:   String,
+   fd:     Int,
+   pos:    Int,
+   keydir: KeyDir
+)
+
+#private
+
+kv_err: String, Int => Error
+kv_err = msg, off =>
+   Error(400, "kv: " + msg, "std/kv.dva", 1, off + 1, (off, 0))
+
+KV_MAGIC = "EDKV\x01"
+FLAG_PUT = 1
+FLAG_DEL = 2
+
+// O_RDWR | O_CREAT | O_APPEND across Linux and Darwin
+open_rdwr_creat_append: () => Int
+open_rdwr_creat_append = !=> #! (os ["darwin"] 0x020A | 0x0442)
+
+// O_RDWR | O_CREAT | O_TRUNC across Linux and Darwin
+open_rdwr_creat_trunc: () => Int
+open_rdwr_creat_trunc = !=> #! (os ["darwin"] 0x0602 | 0x0242)
+
+write_all: Int, String => <>
+write_all = fd, data =>
+   n = ?data
+   off' = 0
+   ok' = <+>
+   (off' < n) @
+      slice = data(off'..n)
+      w = libc::write(fd, slice, ?slice)
+      w !> 0
+         |
+            ok' = <->
+            -->
+         | off' = off' + w
+   ok'
+
+read_exact_at: Int, Int, Int => < String | Error >
+read_exact_at = fd, off, len =>
+   len == 0 | --| <+ "" ->
+   pos = libc::lseek(fd, off, 0) // SEEK_SET = 0
+   pos < 0 | --| <- kv_err("lseek failed reading value", off) +>
+   buf = {len}
+   got' = 0
+   (got' < len) @
+      r = libc::read(fd, &buf + got', len - got')
+      r !> 0 | -->
+      got' = got' + r
+   got' != len
+      | <- kv_err("short read from kv log file", off + got') +>
+      |
+         ?buf = len
+         <+ +buf ->
+
+encode_record: Int, String, String => String
+encode_record = flags, key, val =>
+   klen = ?key
+   vlen = ?val
+   body = {9 + klen + vlen}
+   body += (flags .&. 0xFF)
+   binary::write_u32_le(body, u32(klen))
+   binary::write_u32_le(body, u32(vlen))
+   body += key
+   body += val
+   body_str = +body
+   crc = hash::crc32(body_str)
+   rec = {4 + ?body_str}
+   binary::write_u32_le(rec, crc)
+   rec += body_str
+   +rec
+
+replay_log: Store, String => < <> | Error >
+replay_log = db, content =>
+   n = ?content
+   n == 0 | --| <+ <+> ->
+   n < 5 || content(0..5) != KV_MAGIC
+      | --| <- kv_err("invalid KV store header magic", 0) +>
+   off' = 5
+   err_opt' = <-->
+   (off' < n && !<>(err_opt')) @
+      off' + 13 > n
+         | err_opt' = <+ kv_err("truncated record header in KV log", off') +>
+         |
+            exp_crc = binary::read_u32_le(content, off')--!
+            flags = content(off' + 4) .&. 0xFF
+            klen = Int(binary::read_u32_le(content, off' + 5)--!)
+            vlen = Int(binary::read_u32_le(content, off' + 9)--!)
+            rec_end = off' + 13 + klen + vlen
+            rec_end > n
+               | err_opt' = <+ kv_err("truncated record payload in KV log", off') +>
+               |
+                  got_crc = hash::crc32(content(off' + 4..rec_end))
+                  exp_crc != got_crc
+                     | err_opt' = <+ kv_err("CRC-32 mismatch in KV log record", off') +>
+                     |
+                        key = content(off' + 13..off' + 13 + klen)
+                        val_off = off' + 13 + klen
+                        flags == FLAG_PUT
+                           | db.keydir ^ key = EntryLoc(val_off, vlen)
+                           |
+                              flags == FLAG_DEL
+                                 | _rem = db.keydir ^- key
+                                 | err_opt' = <+ kv_err("unknown record flag in KV log", off') +>
+                        off' = rec_end
+   err_opt'
+      | e => <- e +>
+      |
+         db.pos = n
+         <+ <+> ->
+
+read_all_file: String => String
+read_all_file = path =>
+   fd = libc::open(path, 0)
+   fd < 0 | --| ""
+   out = {4096}
+   chunk = {4096}
+   0.. @
+      n = libc::read(fd, &chunk, 4096)
+      n !> 0 | -->
+      ?chunk = n
+      out += +chunk
+   libc::close(fd)
+   +out
+
+#public
+
+// Opens or creates a persistent log-structured key-value store at `path`.
+open: String => < Store | Error >
+open = path =>
+   existing = read_all_file(path)
+   fd = libc::open_mode(path, open_rdwr_creat_append!, 0o644)
+   fd < 0 | --| <- kv_err("failed to open KV store file: " + path, 0) +>
+   kdir = KeyDir()
+   db = Store(path, fd, 0, kdir)
+   ?existing == 0
+      |
+         !write_all(fd, KV_MAGIC)
+            |
+               libc::close(fd)
+               <- kv_err("failed to write KV header magic", 0) +>
+            |
+               db.pos = 5
+               <+ db ->
+      |
+         replay_log(db, existing)
+            | ok => <+ db ->
+            | err =>
+               libc::close(fd)
+               <- err +>
+
+// Closes the underlying file descriptor of `db`.
+close: Store => <>
+close = db =>
+   db.fd < 0 | --| <+>
+   rc = libc::close(db.fd)
+   db.fd = -1
+   rc == 0
+
+// Returns the number of live keys in `db`.
+len: Store => Int
+len = db =>
+   ?db.keydir
+
+// Returns `<+>` if `key` exists in `db`.
+has: Store, String => <>
+has = db, key =>
+   db.keydir ^? key
+
+// Appends a `key -> val` record to disk and updates the in-memory index in O(1) time.
+put: Store, String, String => < <> | Error >
+put = db, key, val =>
+   rec = encode_record(FLAG_PUT, key, val)
+   !write_all(db.fd, rec)
+      | <- kv_err("failed to append PUT record to disk", db.pos) +>
+      |
+         val_off = db.pos + 13 + ?key
+         db.keydir ^ key = EntryLoc(val_off, ?val)
+         db.pos = db.pos + ?rec
+         <+ <+> ->
+
+// Reads the raw `String` value for `key` if present (`<-->` if absent or on I/O error).
+get_opt: Store, String => < String | >
+get_opt = db, key =>
+   (db.keydir ^ key)
+      | loc =>
+         read_exact_at(db.fd, loc.off, loc.vlen)
+            | val => <+ val +>
+            | e => <-->
+      | e => <-->
+
+// Reads the value for `key`, returning an `Error` if the key does not exist or on I/O error.
+get: Store, String => < String | Error >
+get = db, key =>
+   (db.keydir ^ key)
+      | loc => read_exact_at(db.fd, loc.off, loc.vlen)
+      | e => <- kv_err("key not found: " + key, 0) +>
+
+// Appends a tombstone record for `key` and removes it from the live key directory.
+delete: Store, String => < <> | Error >
+delete = db, key =>
+   !(db.keydir ^? key) | --| <+ <-> ->
+   rec = encode_record(FLAG_DEL, key, "")
+   !write_all(db.fd, rec)
+      | <- kv_err("failed to append DEL tombstone to disk", db.pos) +>
+      |
+         _rem = db.keydir ^- key
+         db.pos = db.pos + ?rec
+         <+ <+> ->
+
+// Returns all live keys in `db` in sorted lexicographical order.
+keys: Store => String{}
+keys = db =>
+   out = String{}
+   db.keydir @ loc, k =>
+      out += k
+   sort::strings(out)
+
+// Compacts the log file in-place by writing only live key-value entries to a temporary file
+// and atomically renaming it over `db.path`, reclaiming space from overwritten and deleted keys.
+compact: Store => < <> | Error >
+compact = db =>
+   tmp_path = db.path + ".compact.tmp"
+   tmp_fd = libc::open_mode(tmp_path, open_rdwr_creat_trunc!, 0o644)
+   tmp_fd < 0 | --| <- kv_err("failed to open compaction temp file", 0) +>
+   !write_all(tmp_fd, KV_MAGIC)
+      |
+         libc::close(tmp_fd)
+         <- kv_err("failed to write header to compaction temp file", 0) +>
+   new_kdir = KeyDir()
+   new_pos' = 5
+   err_opt' = <-->
+   all_keys = keys(db)
+   all_keys @ k =>
+      !<>(err_opt') |
+         (db.keydir ^ k)
+            | loc =>
+               read_exact_at(db.fd, loc.off, loc.vlen)
+                  | val =>
+                     rec = encode_record(FLAG_PUT, k, val)
+                     !write_all(tmp_fd, rec)
+                        | err_opt' = <+ kv_err("failed writing compacted record", new_pos') +>
+                        |
+                           val_off = new_pos' + 13 + ?k
+                           new_kdir ^ k = EntryLoc(val_off, ?val)
+                           new_pos' = new_pos' + ?rec
+                  | e => err_opt' = <+ e +>
+            | e => _
+   libc::close(tmp_fd)
+   err_opt'
+      | e =>
+         libc::unlink(tmp_path)
+         <- e +>
+      |
+         libc::close(db.fd)
+         libc::rename(tmp_path, db.path) != 0
+            | <- kv_err("failed to rename compacted KV store file", 0) +>
+            |
+               new_fd = libc::open_mode(db.path, open_rdwr_creat_append!, 0o644)
+               new_fd < 0
+                  | <- kv_err("failed to reopen compacted KV store file", 0) +>
+                  |
+                     db.fd = new_fd
+                     db.pos = new_pos'
+                     db.keydir = new_kdir
+                     <+ <+> ->
+
+// --- `#!` Compile-Time Structural Typed Serialization -----------------------
+
+// Encodes `val` of any structural type `T` via `binary::encode_le` and stores it under `key`.
+put_val: #! T: Type, Store, String, T => < <> | Error >
+put_val = db, key, val =>
+   put(db, key, binary::encode_le(val))
+
+// Reads and decodes a value of target type `T` stored under `key` via `binary::decode_le`.
+get_val: #! T: Type, Store, String => < T | Error >
+get_val = db, key =>
+   get(db, key)
+      | raw => binary::decode_le(T, raw)
+      | err => <- err +>

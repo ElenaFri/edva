@@ -1,0 +1,7 @@
+// Closing '--|' at the end of a function is prohibited (E3173).
+add_one: Int => Int
+add_one = x =>
+   y = x + 1
+   --| y
+
+main = add_one(41)

@@ -1,0 +1,38 @@
+---
+meta:
+  audience: "Edva developers compressing and decompressing DEFLATE, Zlib, and Gzip streams"
+  status: "current reference"
+  audited: "406e853"
+  evidence: "`std/flate.dva`, `tests/pass/401_std_flate_img_kv.dva`"
+---
+
+# `flate` standard library
+
+The `flate` module provides pure Edva implementations of RFC 1951 (DEFLATE),
+RFC 1950 (Zlib), and RFC 1952 (Gzip) lossless compression and decompression.
+The decompressor handles stored blocks (`BTYPE=00`), fixed-Huffman blocks
+(`BTYPE=01`), and dynamic-Huffman blocks (`BTYPE=10`), while the compressor
+uses a 32 KiB LZ77 sliding-window hash matcher paired with canonical
+fixed-Huffman encoding.
+
+```{.dva .run}
+#use flate
+#use io
+#use str
+
+msg = "Hello Edva DEFLATE! Hello Edva DEFLATE! Hello Edva DEFLATE!"
+z = flate::zlib_compress(msg)
+io::out $ "compressed bytes: " + str::from_int(?z)
+io::out $ (flate::zlib_decompress(z) | s => s | "")
+```
+
+## Function catalog
+
+| Symbol / Function | Signature | Description |
+|---|---|---|
+| `flate::deflate_raw(data)` | `String => String` | Compresses `data` into a raw RFC 1951 DEFLATE bitstream |
+| `flate::inflate_raw(data)` | `String => < String \| Error >` | Decompresses a raw RFC 1951 DEFLATE bitstream (`BTYPE=00/01/10`) |
+| `flate::zlib_compress(data)` | `String => String` | Compresses `data` into an RFC 1950 Zlib stream (header + DEFLATE + Adler-32) |
+| `flate::zlib_decompress(data)` | `String => < String \| Error >` | Decompresses an RFC 1950 Zlib stream and verifies its Adler-32 trailer |
+| `flate::gzip_compress(data)` | `String => String` | Compresses `data` into an RFC 1952 Gzip stream (10B header + DEFLATE + CRC-32 + ISIZE) |
+| `flate::gzip_decompress(data)` | `String => < String \| Error >` | Decompresses an RFC 1952 Gzip stream and verifies its CRC-32 and ISIZE trailers |

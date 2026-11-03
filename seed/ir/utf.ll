@@ -25,10 +25,10 @@ target triple = "x86_64-unknown-linux-gnu"
 @stale_addr_msg = internal unnamed_addr constant [51 x i8] c"E4011: stale Addr dereference after arena restore\0A\00"
 @clo.const.5 = internal constant { ptr, ptr } { ptr @"utf::decode_rune_addr", ptr null }
 @"var.utf::decode_rune_addr" = global ptr null
+@str_oob_msg = internal unnamed_addr constant [40 x i8] c"E4006: string byte index out of bounds\0A\00"
 @clo.const.6 = internal constant { ptr, ptr } { ptr @"utf::decode_rune_builder", ptr null }
 @"var.utf::decode_rune_builder" = global ptr null
 @stale_str_msg = internal unnamed_addr constant [46 x i8] c"E4010: stale String read after arena restore\0A\00"
-@str_oob_msg = internal unnamed_addr constant [40 x i8] c"E4006: string byte index out of bounds\0A\00"
 @clo.const.7 = internal constant { ptr, ptr } { ptr @"utf::decode_str_at", ptr null }
 @"var.utf::decode_str_at" = global ptr null
 @llvm.global_ctors = appending global [1 x { i32, ptr, ptr }] [{ i32, ptr, ptr } { i32 65535, ptr @__dva_global_init_utf, ptr null }]
@@ -1287,7 +1287,6 @@ choice.exit164:                                   ; preds = %choice.then163, %ch
 define i32 @"utf::decode_rune_builder"(ptr %0, i64 %1) #1 {
 entry:
   %var.need = alloca i64, align 8
-  %var.p = alloca ptr, align 8
   %var.n = alloca i64, align 8
   %var.i = alloca i64, align 8
   %var.b = alloca ptr, align 8
@@ -1329,57 +1328,52 @@ choice.then:                                      ; preds = %choice.exit
 
 choice.exit5:                                     ; preds = %ret.dead, %choice.exit
   %var.load6 = load ptr, ptr %var.b, align 8
-  %b.ptr = getelementptr inbounds { i64, ptr, i64 }, ptr %var.load6, i32 0, i32 1
-  %b.ptr7 = load ptr, ptr %b.ptr, align 8
-  store ptr %b.ptr7, ptr %var.p, align 8
-  %var.load8 = load ptr, ptr %var.p, align 8
+  %b.read.len = getelementptr inbounds { i64, ptr, i64 }, ptr %var.load6, i32 0, i32 0
+  %b.read.len7 = load i64, ptr %b.read.len, align 8
+  %b.read.data = getelementptr inbounds { i64, ptr, i64 }, ptr %var.load6, i32 0, i32 1
+  %b.read.data8 = load ptr, ptr %b.read.data, align 8
   %var.load9 = load i64, ptr %var.i, align 8
-  %ptr.int.l = ptrtoint ptr %var.load8 to i64
-  %addtmp = add i64 %ptr.int.l, %var.load9
-  %ptr.res = inttoptr i64 %addtmp to ptr
-  %raw.int = ptrtoint ptr %ptr.res to i64
-  %raw.clean.int = and i64 %raw.int, 281474976710655
-  %raw.clean.ptr = inttoptr i64 %raw.clean.int to ptr
-  %addr.tag = lshr i64 %raw.int, 48
-  %addr.immortal = icmp eq i64 %addr.tag, 0
-  br i1 %addr.immortal, label %addr_ok, label %addr_gen_check
+  %idx.neg = icmp slt i64 %var.load9, 0
+  br i1 %idx.neg, label %idx_oob, label %idx_big_check
 
 ret.dead:                                         ; No predecessors!
   br label %choice.exit5
 
-addr_gen_check:                                   ; preds = %choice.exit5
-  %arena.cur = call ptr @dva_arena_current()
-  %tag.valid = call i1 @dva_arena_validate_tag(ptr %arena.cur, i64 %addr.tag)
-  br i1 %tag.valid, label %addr_ok, label %addr_stale
+idx_big_check:                                    ; preds = %choice.exit5
+  %idx.big = icmp sge i64 %var.load9, %b.read.len7
+  br i1 %idx.big, label %idx_oob, label %idx_ok
 
-addr_ok:                                          ; preds = %addr_stale, %addr_gen_check, %choice.exit5
-  %raw.load = load volatile i8, ptr %raw.clean.ptr, align 1
-  %coerce.zext = zext i8 %raw.load to i64
-  %call.res = call i64 @"utf::seq_len"(i64 %coerce.zext)
+idx_ok:                                           ; preds = %idx_oob, %idx_big_check
+  %s.byte.gep = getelementptr i8, ptr %b.read.data8, i64 %var.load9
+  %s.byte = load i8, ptr %s.byte.gep, align 1
+  %s.byte.val = zext i8 %s.byte to i64
+  %call.res = call i64 @"utf::seq_len"(i64 %s.byte.val)
   store i64 %call.res, ptr %var.need, align 8
   %var.load10 = load i64, ptr %var.i, align 8
   %var.load11 = load i64, ptr %var.need, align 8
-  %addtmp12 = add i64 %var.load10, %var.load11
-  %var.load13 = load i64, ptr %var.n, align 8
-  %cmptmp14 = icmp sgt i64 %addtmp12, %var.load13
-  br i1 %cmptmp14, label %choice.then15, label %choice.exit16
+  %addtmp = add i64 %var.load10, %var.load11
+  %var.load12 = load i64, ptr %var.n, align 8
+  %cmptmp13 = icmp sgt i64 %addtmp, %var.load12
+  br i1 %cmptmp13, label %choice.then14, label %choice.exit15
 
-addr_stale:                                       ; preds = %addr_gen_check
-  %2 = call i64 @write(i32 2, ptr @stale_addr_msg, i64 50)
+idx_oob:                                          ; preds = %idx_big_check, %choice.exit5
+  %2 = call i64 @write(i32 2, ptr @str_oob_msg, i64 39)
   call void @exit(i32 1)
-  br label %addr_ok
+  br label %idx_ok
 
-choice.then15:                                    ; preds = %addr_ok
+choice.then14:                                    ; preds = %idx_ok
   ret i32 65533
 
-choice.exit16:                                    ; preds = %ret.dead17, %addr_ok
-  %var.load18 = load ptr, ptr %var.p, align 8
+choice.exit15:                                    ; preds = %ret.dead16, %idx_ok
+  %var.load17 = load ptr, ptr %var.b, align 8
+  %b.ptr = getelementptr inbounds { i64, ptr, i64 }, ptr %var.load17, i32 0, i32 1
+  %b.ptr18 = load ptr, ptr %b.ptr, align 8
   %var.load19 = load i64, ptr %var.i, align 8
-  %call.res20 = call i32 @"utf::decode_rune_addr"(ptr %var.load18, i64 %var.load19)
+  %call.res20 = call i32 @"utf::decode_rune_addr"(ptr %b.ptr18, i64 %var.load19)
   ret i32 %call.res20
 
-ret.dead17:                                       ; No predecessors!
-  br label %choice.exit16
+ret.dead16:                                       ; No predecessors!
+  br label %choice.exit15
 }
 
 define ptr @"utf::decode_str_at"(ptr %0, i64 %1) #1 {

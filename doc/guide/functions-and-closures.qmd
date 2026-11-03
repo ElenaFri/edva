@@ -28,7 +28,7 @@ A function evaluates to the value of its last expression, or exits early using t
 - Bare `--|`: Early return from a void function (`=> ()`).
 - Ram sugar: `|->`, `|+>`, `|-->`, `|++>` provide compact branch shortcuts for returning unit ramifications (`<->`, `<+>`, `<-->`, `<++>`).
 
-There is no bare `return` keyword in Edva. If a function's last expression is an assignment or an inexhaustive statement choice without an early return, its result is Unit; declare that result as `()` in the function signature. `()` is a declaration-only type spelling, not an expression value.
+There is no bare `return` keyword in Edva, and `--|` is strictly for **early** return — placing `--|` as the closing expression of a function is prohibited (`E3173`). If a function's last expression is an assignment, cycle, or inexhaustive statement choice without an early return, its result is Unit; declare that result as `()` in the function signature. `()` is a declaration-only type spelling, not an expression value.
 
 ```{.dva .run}
 clamp: Int, Int, Int => Int

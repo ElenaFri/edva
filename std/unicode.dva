@@ -14,6 +14,8 @@
 //   Other:        Cc (Control), Cf (Format), Cs (Surrogate),
 //                 Co (Private Use), Cn (Unassigned)
 
+#use utf
+
 #public
 #type Category < Lu, Ll, Lt, Lm, Lo, Mn, Mc, Me, Nd, Nl, No, Pc,
    Pd, Ps, Pe, Pi, Pf, Po, Sm, Sc, Sk, So, Zs, Zl, Zp,
@@ -791,14 +793,14 @@
    category = cp =>
       id = category_id(cp)
       id
-         [0] Lu [1] Ll [2] Lt [3] Lm [4] Lo
-         [5] Mn [6] Mc [7] Me
-         [8] Nd [9] Nl [10] No
-         [11] Pc [12] Pd [13] Ps [14] Pe [15] Pi [16] Pf [17] Po
-         [18] Sm [19] Sc [20] Sk [21] So
-         [22] Zs [23] Zl [24] Zp
-         [25] Cc [26] Cf [27] Cs [28] Co
-         | Cn
+         [0] Category(Lu) [1] Category(Ll) [2] Category(Lt) [3] Category(Lm) [4] Category(Lo)
+         [5] Category(Mn) [6] Category(Mc) [7] Category(Me)
+         [8] Category(Nd) [9] Category(Nl) [10] Category(No)
+         [11] Category(Pc) [12] Category(Pd) [13] Category(Ps) [14] Category(Pe) [15] Category(Pi) [16] Category(Pf) [17] Category(Po)
+         [18] Category(Sm) [19] Category(Sc) [20] Category(Sk) [21] Category(So)
+         [22] Category(Zs) [23] Category(Zl) [24] Category(Zp)
+         [25] Category(Cc) [26] Category(Cf) [27] Category(Cs) [28] Category(Co)
+         | Category(Cn)
 
    // Human-readable description of a Unicode general category.
    category_description: Category => String
@@ -961,38 +963,8 @@
    decode_rune = src, i =>
       n = ?src
       i ![0..n] | --| Rune(0xFFFD)
-      b0 = src(i)
-      Rune(b0
-         [< 0x80] b0
-         [< 0xC2] 0xFFFD
-         [< 0xE0]
-            i + 1 < n && (src(i + 1) .&. 0xC0) == 0x80
-               | (b0 - 0xC0) * 0x40 + (src(i + 1) - 0x80)
-               | 0xFFFD
-         [< 0xF0]
-            ok3 = i + 2 < n && (src(i + 1) .&. 0xC0) == 0x80 &&
-               (src(i + 2) .&. 0xC0) == 0x80
-            ok3
-               |
-                  cp3 = (b0 - 0xE0) * 0x1000 + (src(i + 1) - 0x80) * 0x40 +
-                     (src(i + 2) - 0x80)
-                  cp3 !< 0x800 && cp3 ![0xD800...0xDFFF]
-                     | cp3
-                     | 0xFFFD
-               | 0xFFFD
-         [< 0xF5]
-            ok4 = i + 3 < n && (src(i + 1) .&. 0xC0) == 0x80 &&
-               (src(i + 2) .&. 0xC0) == 0x80 && (src(i + 3) .&. 0xC0) == 0x80
-            ok4
-               |
-                  cp4 = (b0 - 0xF0) * 0x40000 + (src(i + 1) - 0x80) * 0x1000 +
-                     (src(i + 2) - 0x80) * 0x40 + (src(i + 3) - 0x80)
-                  cp4 [0x10000...0x10FFFF]
-                     | cp4
-                     | 0xFFFD
-               | 0xFFFD
-         | 0xFFFD
-      )
+      i + utf::seq_len(src(i)) > n | --| Rune(0xFFFD)
+      utf::decode_rune_addr(&src, i)
 
    // Byte width of a rune's UTF-8 encoding.
    utf8_width: Rune => Int
@@ -1023,60 +995,11 @@
 
    // Decode the UTF-8 rune at Addr + i into its codepoint.
    decode_rune_addr: Addr, Int => Rune
-   decode_rune_addr = p, i =>
-      b0 = Int(@[p + i u8])
-      Rune(b0
-         [< 0x80] b0
-         [< 0xC2] 0xFFFD
-         [< 0xE0]
-            b1 = Int(@[p + i + 1 u8])
-            (b1 .&. 0xC0) == 0x80
-               | (b0 - 0xC0) * 0x40 + (b1 - 0x80)
-               | 0xFFFD
-         [< 0xF0]
-            b1 = Int(@[p + i + 1 u8])
-            (b1 .&. 0xC0) == 0x80
-               |
-                  b2 = Int(@[p + i + 2 u8])
-                  (b2 .&. 0xC0) == 0x80
-                     |
-                        cp3 = (b0 - 0xE0) * 0x1000 + (b1 - 0x80) * 0x40 + (b2 - 0x80)
-                        cp3 !< 0x800 && cp3 ![0xD800...0xDFFF]
-                           | cp3
-                           | 0xFFFD
-                     | 0xFFFD
-               | 0xFFFD
-         [< 0xF5]
-            b1 = Int(@[p + i + 1 u8])
-            (b1 .&. 0xC0) == 0x80
-               |
-                  b2 = Int(@[p + i + 2 u8])
-                  (b2 .&. 0xC0) == 0x80
-                     |
-                        b3 = Int(@[p + i + 3 u8])
-                        (b3 .&. 0xC0) == 0x80
-                           |
-                              cp4 = (b0 - 0xF0) * 0x40000 + (b1 - 0x80) * 0x1000 +
-                                 (b2 - 0x80) * 0x40 + (b3 - 0x80)
-                              cp4 [0x10000...0x10FFFF]
-                                 | cp4
-                                 | 0xFFFD
-                           | 0xFFFD
-                     | 0xFFFD
-               | 0xFFFD
-         | 0xFFFD
-      )
+   decode_rune_addr = p, i => utf::decode_rune_addr(p, i)
 
    // Decode the UTF-8 rune at Builder buffer + i into its codepoint.
    decode_rune_builder: Builder, Int => Rune
-   decode_rune_builder = b, i =>
-      n = ?b
-      i ![0..n] | --| Rune(0xFFFD)
-      p = &b
-      b0 = Int(@[p + i u8])
-      need = b0 [< 0x80] 1 [< 0xE0] 2 [< 0xF0] 3 | 4
-      i + need > n | --| Rune(0xFFFD)
-      decode_rune_addr(p, i)
+   decode_rune_builder = b, i => utf::decode_rune_builder(b, i)
 
    // Polymorphic UAX #31 identifier check for String, Builder, etc.
    is_uax31: #! T: Type, T => <>
@@ -1084,18 +1007,14 @@
       n = ?target
       n == 0 |->
       p = &target
-      b0_first = Int(@[p u8])
-      need0 = b0_first [< 0x80] 1 [< 0xE0] 2 [< 0xF0] 3 | 4
-      need0 > n |->
-      r0 = unicode::decode_rune_addr(p, 0)
+      utf::seq_len(target(0)) > n |->
+      r0 = utf::decode_rune_addr(p, 0)
       !unicode::is_id_start(r0) |->
       i' = ?r0
       0.. @
          i' !< n | -->
-         b0 = Int(@[p + i' u8])
-         need = b0 [< 0x80] 1 [< 0xE0] 2 [< 0xF0] 3 | 4
-         i' + need > n |->
-         r = unicode::decode_rune_addr(p, i')
+         i' + utf::seq_len(target(i')) > n |->
+         r = utf::decode_rune_addr(p, i')
          !unicode::is_id_continue(r) |->
          i' = i' + ?r
       <+>

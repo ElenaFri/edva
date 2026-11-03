@@ -203,9 +203,9 @@ operators:
     kind: null
     kind_self: null
     assoc: left
-    operands: "Iterable (range, Int, array, slice, String)"
+    operands: "Iterable (range, Int, Flag, Ram, array, slice, String, Map)"
     result: "() statement, or < T | > with >-- escape"
-    desc: "cycle: iterate an iterable, binding each element to the body (an inline fn, a fn value, or an implicit _/_i block). --^ continues, --> breaks; an integer suffix targets an outer cycle."
+    desc: "cycle: iterate an iterable or repeat while a Flag/Ram condition is positive, binding each element to the body (an inline fn, a fn value, or an implicit _/_i block). --^ continues, --> breaks; an integer suffix targets an outer cycle."
   - symbol: "@@"
     tier: cycle
     kind: null

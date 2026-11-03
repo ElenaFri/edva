@@ -43,12 +43,10 @@ arr_get = arr, idx =>
 arr_set: #! T: Type, T{}, Int, T => ()
 arr_set = arr, idx, val =>
    arr(idx) = val
-   --|
 
 arr_push: #! T: Type, T{}, T => ()
 arr_push = arr, val =>
    arr += val
-   --|
 
 ensure_cap: #! T: Type, (buf: T{}, head: Int, tail: Int, count: Int), T => ()
 ensure_cap = d, fill_val =>
@@ -69,7 +67,6 @@ ensure_cap = d, fill_val =>
             (old_cap - h) @ _k =>
                arr_push(T, d.buf, fill_val)
             d.tail = (h + old_cap) % (old_cap * 2)
-   --|
 
 #public
 
@@ -109,7 +106,6 @@ clear = d =>
    d.head = 0
    d.tail = 0
    d.count = 0
-   --|
 
 // Appends `val` to the back of `d` in O(1) amortized time.
 push_back: #! T: Type, (buf: T{}, head: Int, tail: Int, count: Int), T => ()
@@ -119,7 +115,6 @@ push_back = d, val =>
    arr_set(T, d.buf, d.tail, val)
    d.tail = (d.tail + 1) % cap
    d.count = d.count + 1
-   --|
 
 // Prepends `val` to the front of `d` in O(1) amortized time.
 push_front: #! T: Type, (buf: T{}, head: Int, tail: Int, count: Int), T => ()
@@ -130,7 +125,6 @@ push_front = d, val =>
    arr_set(T, d.buf, new_head, val)
    d.head = new_head
    d.count = d.count + 1
-   --|
 
 // Removes and returns the front element of `d`, or `<-->` if empty.
 pop_front: #! T: Type, (buf: T{}, head: Int, tail: Int, count: Int) => < T | >

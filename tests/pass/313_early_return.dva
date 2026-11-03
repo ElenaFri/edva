@@ -40,7 +40,8 @@ validate_even = n =>
 
 make_origin: () => Point
 make_origin = !=>
-   --| Point(0, 0)
+   1 == 1 | --| Point(0, 0)
+   Point(1, 1)
 
 get_multiplier: Int => (Int => Int)
 get_multiplier = factor =>

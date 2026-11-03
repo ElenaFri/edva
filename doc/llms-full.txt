@@ -155,6 +155,10 @@ Iteration is performed using `@`:
    i [2] --^         // --^ skips this iteration (continue)
    i [8] -->         // --> terminates the loop (break)
    io::out $ i
+
+// Condition-controlled cycle (repeats while Flag/Ram condition is positive)
+(nbits' !< 8) @
+   nbits' = nbits' - 8
 ```
 
 Multi-level jumps support integer suffixes: `-->2` breaks out of two enclosing loops.

@@ -2077,29 +2077,23 @@ compile_ast_to_binary = prog, exports, opts, out_ll, out_bin, dmods, dpaths, nli
 // Returns < String | >: positive line on success, negative unit on EOF.
 read_stdin_line: Int => < String | >
 read_stdin_line = max =>
-   ar = mem::arena(max + 128)
-   buf = mem::alloc(ar, max + 1)
+   buf = {max + 1}
+   ?buf = max + 1
    n' = 0
    max @ i =>
-      rb = libc::read(0, buf + i, 1)
+      rb = libc::read(0, &buf + i, 1)
       rb < 1
          | -->
          |
             n' = i + 1
-            bval = Int(@[buf + i u8])
-            bval == 10
+            buf(i) == 10
                | -->
    n' == 0
+      | <-->
       |
-         mem::destroy(ar)
-         <-->
-      |
-         len = (Int(@[buf + (n' - 1) u8]) == 10) | n' - 1 | n'
-         out = {len}
-         len @ j =>
-            out += Int(@[buf + j u8])
-         mem::destroy(ar)
-         <+ +out +>
+         len = (buf(n' - 1) == 10) | n' - 1 | n'
+         ?buf = len
+         <+ +buf +>
 
 write_bytes_loop: Int, String, Int, Int => <>
 write_bytes_loop = fd, content, offset, remaining =>

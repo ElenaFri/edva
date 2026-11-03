@@ -1,0 +1,59 @@
+---
+meta:
+  audience: "Edva developers computing cryptographic digests, MACs, key derivations, and AEAD encryption"
+  status: "current reference"
+  audited: "22e2017"
+  evidence: "`std/crypto.dva`, `tests/pass/400_std_crypto.dva`"
+---
+
+# `crypto` standard library
+
+The `crypto` module provides pure Edva implementations of standard cryptographic
+primitives: constant-time comparison (`ct_eq`), SHA-1 (`sha1`, `sha1_bytes`),
+SHA-256 (`sha256`, `sha256_bytes`), SHA-512 (`sha512`, `sha512_bytes`),
+HMAC-SHA256 / HMAC-SHA512 (`hmac_sha256`, `hmac_sha512`), HKDF-SHA256
+(`hkdf_extract`, `hkdf_expand`, `hkdf_sha256`), PBKDF2-HMAC-SHA256
+(`pbkdf2_sha256`), ChaCha20 (`chacha20_block`, `chacha20_xor`), Poly1305
+(`poly1305_mac`, `poly1305_hex`), RFC 8439 ChaCha20-Poly1305 AEAD (`aead_seal`,
+`aead_open`), RFC 6455 WebSocket handshake calculation (`websocket_accept_key`),
+and OS CSPRNG reads (`random_bytes`, `random_hex`, `random_u64`).
+
+```{.dva .run}
+#use crypto
+#use io
+
+io::out $ crypto::sha256("abc")
+io::out $ crypto::hmac_sha256("Jefe", "what do ya want for nothing?")
+io::out $ crypto::websocket_accept_key("dGhlIHNhbXBsZSBub25jZQ==")
+```
+
+## Function catalog
+
+| Symbol / Function | Signature | Description |
+|---|---|---|
+| `crypto::ct_eq(a, b)` | `String, String => <>` | Constant-time byte-string equality check |
+| `crypto::sha1_bytes(msg)` | `String => String` | Raw 20-byte RFC 3174 SHA-1 digest |
+| `crypto::sha1(msg)` | `String => String` | 40-char lowercase hex SHA-1 digest |
+| `crypto::websocket_accept_key(key)` | `String => String` | RFC 6455 `Sec-WebSocket-Accept` Base64 digest |
+| `crypto::sha256_bytes(msg)` | `String => String` | Raw 32-byte FIPS 180-4 SHA-256 digest |
+| `crypto::sha256(msg)` | `String => String` | 64-char lowercase hex SHA-256 digest |
+| `crypto::sha512_bytes(msg)` | `String => String` | Raw 64-byte FIPS 180-4 SHA-512 digest |
+| `crypto::sha512(msg)` | `String => String` | 128-char lowercase hex SHA-512 digest |
+| `crypto::hmac_sha256_bytes(key, msg)` | `String, String => String` | Raw 32-byte RFC 2104 HMAC-SHA256 digest |
+| `crypto::hmac_sha256(key, msg)` | `String, String => String` | 64-char lowercase hex HMAC-SHA256 digest |
+| `crypto::hmac_sha512_bytes(key, msg)` | `String, String => String` | Raw 64-byte RFC 2104 HMAC-SHA512 digest |
+| `crypto::hmac_sha512(key, msg)` | `String, String => String` | 128-char lowercase hex HMAC-SHA512 digest |
+| `crypto::hkdf_extract(salt, ikm)` | `String, String => String` | RFC 5869 HKDF-Extract (32-byte PRK via HMAC-SHA256) |
+| `crypto::hkdf_expand(prk, info, len)` | `String, String, Int => < String \| Error >` | RFC 5869 HKDF-Expand (`len` output keying material bytes) |
+| `crypto::hkdf_sha256(salt, ikm, info, len)` | `String, String, String, Int => < String \| Error >` | Full RFC 5869 HKDF-SHA256 extract + expand |
+| `crypto::pbkdf2_sha256_bytes(pw, salt, iter, len)` | `String, String, Int, Int => < String \| Error >` | Raw `len`-byte RFC 2898 PBKDF2-HMAC-SHA256 derived key |
+| `crypto::pbkdf2_sha256(pw, salt, iter, len)` | `String, String, Int, Int => < String \| Error >` | Hex-encoded RFC 2898 PBKDF2-HMAC-SHA256 derived key |
+| `crypto::chacha20_block(key, counter, nonce)` | `String, Int, String => < String \| Error >` | 64-byte RFC 8439 ChaCha20 keystream block |
+| `crypto::chacha20_xor(key, nonce, counter, data)` | `String, String, Int, String => < String \| Error >` | Encrypts/decrypts `data` with RFC 8439 ChaCha20 |
+| `crypto::poly1305_mac(key, msg)` | `String, String => < String \| Error >` | Raw 16-byte RFC 8439 Poly1305 authenticator tag |
+| `crypto::poly1305_hex(key, msg)` | `String, String => < String \| Error >` | 32-char lowercase hex Poly1305 authenticator tag |
+| `crypto::aead_seal(key, nonce, aad, pt)` | `String, String, String, String => < String \| Error >` | RFC 8439 ChaCha20-Poly1305 AEAD encrypt (`ciphertext \|\| 16B tag`) |
+| `crypto::aead_open(key, nonce, aad, sealed)` | `String, String, String, String => < String \| Error >` | RFC 8439 ChaCha20-Poly1305 AEAD constant-time verify & decrypt |
+| `crypto::random_bytes(n)` | `Int => < String \| Error >` | Reads `n` CSPRNG bytes (`arc4random_buf` on macOS/BSD, `getrandom`/`/dev/urandom` on Linux, `BCryptGenRandom` on Windows) |
+| `crypto::random_hex(n)` | `Int => < String \| Error >` | Reads `n` CSPRNG bytes as `2 * n` lowercase hex characters |
+| `crypto::random_u64!` | `() => < Int \| Error >` | Reads a 64-bit random integer from the OS CSPRNG |

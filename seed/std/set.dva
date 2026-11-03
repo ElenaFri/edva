@@ -97,7 +97,6 @@ clear = s =>
                   ikeys += k
                ikeys @ k =>
                   _rem = s ^- k
-   --|
 
 // Returns a new set containing all elements present in `a` or `b` (`a ∪ b`).
 union: #! S: Type, S, S => S

@@ -477,7 +477,6 @@ hex_digit = n =>
                b += hex_digit(c)
             | b += c
       b += '"'
-      --|
 
    escape_string: String => String
    escape_string = s =>
@@ -517,13 +516,11 @@ stringify_into = b, val =>
             b += ':'
             stringify_into(b, p.value)
          b += '}'
-   --|
 
 append_indent: Builder, Int => ()
 append_indent = b, spaces =>
    spaces @
       b += ' '
-   --|
 
 stringify_pretty_into: Builder, Value, Int, Int => ()
 stringify_pretty_into = b, val, indent, depth =>
@@ -558,7 +555,6 @@ stringify_pretty_into = b, val, indent, depth =>
                b += '\n'
                append_indent(b, depth * indent)
                b += '}'
-   --|
 
 #public
    stringify: Value => String

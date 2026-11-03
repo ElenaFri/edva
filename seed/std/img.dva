@@ -1,0 +1,491 @@
+// Standard Image Codec Module — QOI & PNG (std/img.dva)
+// Pure Edva lossless RGBA8 image representation, QOI (Quite OK Image) encoder/decoder,
+// and PNG (RFC 2083) encoder/decoder (supporting Sub/Up/Average/Paeth scanline filters
+// and 8-bit grayscale, RGB, grayscale+alpha, and RGBA color types).
+
+#use binary
+#use color
+#use flate
+#use hash
+#use libc
+#use str
+
+#public
+
+// 2D RGBA8 image buffer (`width * height * 4` bytes: R, G, B, A in 0..255)
+#type Image (
+   width:  Int,
+   height: Int,
+   pixels: String
+)
+
+#private
+
+img_err: String, Int => Error
+img_err = msg, off =>
+   Error(400, "img: " + msg, "std/img.dva", 1, off + 1, (off, 0))
+
+clamp_u8: Int => Int
+clamp_u8 = v =>
+   v < 0 | 0 | (v > 255 | 255 | v)
+
+float_to_u8: Float => Int
+float_to_u8 = v =>
+   c = v < 0.0 | 0.0 | (v > 1.0 | 1.0 | v)
+   Int(%round(c * 255.0))
+
+qoi_hash: Int, Int, Int, Int => Int
+qoi_hash = r, g, b, a =>
+   (r * 3 + g * 5 + b * 7 + a * 11) .&. 63
+
+paeth_predictor: Int, Int, Int => Int
+paeth_predictor = a, b, c =>
+   p = a + b - c
+   pa = %abs(p - a)
+   pb = %abs(p - b)
+   pc = %abs(p - c)
+   (pa !> pb && pa !> pc)
+      | a
+      | (pb !> pc | b | c)
+
+write_png_chunk: Builder, String, String => ()
+write_png_chunk = out, ctype, data =>
+   binary::write_u32_be(out, u32(?data))
+   out += ctype
+   out += data
+   crc = hash::crc32(ctype + data)
+   binary::write_u32_be(out, crc)
+
+#public
+
+// Creates a solid-color `width x height` RGBA8 image with bytes `(r, g, b, a)` in `0..255`.
+new_rgba: Int, Int, Int, Int, Int, Int => Image
+new_rgba = width, height, r, g, b, a =>
+   rb = clamp_u8(r)
+   gb = clamp_u8(g)
+   bb = clamp_u8(b)
+   ab = clamp_u8(a)
+   total = width * height
+   buf = {total * 4}
+   total @
+      buf += rb
+      buf += gb
+      buf += bb
+      buf += ab
+   Image(width, height, +buf)
+
+// Rasterizes a procedural `(x: Int, y: Int => (Int, Int, Int, Int))` pixel function into an `Image`.
+from_fn: Int, Int, (Int, Int => (Int, Int, Int, Int)) => Image
+from_fn = width, height, f =>
+   buf = {width * height * 4}
+   height @ y =>
+      width @ x =>
+         px = f(x, y)
+         buf += clamp_u8(px.0)
+         buf += clamp_u8(px.1)
+         buf += clamp_u8(px.2)
+         buf += clamp_u8(px.3)
+   Image(width, height, +buf)
+
+// Rasterizes a UV color sampler `(u: Float, v: Float => color::Color)` into an `Image`.
+from_sampler: Int, Int, (Float, Float => color::Color) => Image
+from_sampler = width, height, sampler =>
+   buf = {width * height * 4}
+   wf = Float(width)
+   hf = Float(height)
+   height @ y =>
+      v = (Float(y) + 0.5) / hf
+      width @ x =>
+         u = (Float(x) + 0.5) / wf
+         c = sampler(u, v)
+         buf += float_to_u8(c.r)
+         buf += float_to_u8(c.g)
+         buf += float_to_u8(c.b)
+         buf += float_to_u8(c.a)
+   Image(width, height, +buf)
+
+// Reads pixel `(x, y)` as `(r, g, b, a)` in `0..255` (clamped to image bounds).
+get_rgba: Image, Int, Int => (Int, Int, Int, Int)
+get_rgba = im, x, y =>
+   (im.width !> 0 || im.height !> 0) | --| (0, 0, 0, 0)
+   cx = x < 0 | 0 | (x !< im.width | im.width - 1 | x)
+   cy = y < 0 | 0 | (y !< im.height | im.height - 1 | y)
+   base = (cy * im.width + cx) * 4
+   (
+      im.pixels(base) .&. 0xFF,
+      im.pixels(base + 1) .&. 0xFF,
+      im.pixels(base + 2) .&. 0xFF,
+      im.pixels(base + 3) .&. 0xFF
+   )
+
+// Reads pixel `(x, y)` as a normalized `color::Color`.
+get_color: Image, Int, Int => color::Color
+get_color = im, x, y =>
+   px = get_rgba(im, x, y)
+   color::color_rgba(Float(px.0) / 255.0, Float(px.1) / 255.0, Float(px.2) / 255.0, Float(px.3) / 255.0)
+
+// --- QOI (Quite OK Image Format) Codec --------------------------------------
+
+// Encodes an `Image` into the QOI binary format (14-byte header + chunks + 8-byte end marker).
+encode_qoi: Image => String
+encode_qoi = im =>
+   w = im.width
+   h = im.height
+   px = im.pixels
+   num_px = w * h
+   out = {num_px * 4 + 64}
+   // 14-byte QOI header: magic "qoif", width (u32 BE), height (u32 BE), channels=4, colorspace=0
+   out += "qoif"
+   binary::write_u32_be(out, u32(w))
+   binary::write_u32_be(out, u32(h))
+   out += 4
+   out += 0
+   // 64-entry seen pixel table (packed as (r << 24) | (g << 16) | (b << 8) | a, initialized to 0)
+   table = Int{}
+   64 @
+      table += 0
+   pr' = 0
+   pg' = 0
+   pb' = 0
+   pa' = 255
+   run' = 0
+   num_px @ i =>
+      base = i * 4
+      r = px(base) .&. 0xFF
+      g = px(base + 1) .&. 0xFF
+      b = px(base + 2) .&. 0xFF
+      a = px(base + 3) .&. 0xFF
+      (r == pr' && g == pg' && b == pb' && a == pa')
+         |
+            run' = run' + 1
+            (run' == 62 || i == num_px - 1) |
+               out += (0xC0 .|. (run' - 1))
+               run' = 0
+         |
+            run' > 0 |
+               out += (0xC0 .|. (run' - 1))
+               run' = 0
+            idx = qoi_hash(r, g, b, a)
+            packed = (r .<. 24) .|. (g .<. 16) .|. (b .<. 8) .|. a
+            table(idx)!! == packed
+               | out += idx // QOI_OP_INDEX (00xxxxxx)
+               |
+                  table(idx) = packed !| _
+                  a == pa'
+                     |
+                        vr = ((r - pr' + 384) .&. 0xFF) - 128
+                        vg = ((g - pg' + 384) .&. 0xFF) - 128
+                        vb = ((b - pb' + 384) .&. 0xFF) - 128
+                        vg_r = vr - vg
+                        vg_b = vb - vg
+                        (vr > -3 && vr < 2 && vg > -3 && vg < 2 && vb > -3 && vb < 2)
+                           |
+                              // QOI_OP_DIFF (01xxxxxx)
+                              out += (0x40 .|. ((vr + 2) .<. 4) .|. ((vg + 2) .<. 2) .|. (vb + 2))
+                           |
+                              (vg_r > -9 && vg_r < 8 && vg > -33 && vg < 32 && vg_b > -9 && vg_b < 8)
+                                 |
+                                    // QOI_OP_LUMA (10xxxxxx + dr_dg:4 db_dg:4)
+                                    out += (0x80 .|. (vg + 32))
+                                    out += (((vg_r + 8) .<. 4) .|. (vg_b + 8))
+                                 |
+                                    // QOI_OP_RGB (0xFE)
+                                    out += 0xFE
+                                    out += r
+                                    out += g
+                                    out += b
+                     |
+                        // QOI_OP_RGBA (0xFF)
+                        out += 0xFF
+                        out += r
+                        out += g
+                        out += b
+                        out += a
+            pr' = r
+            pg' = g
+            pb' = b
+            pa' = a
+   // 8-byte QOI end marker: seven 0x00 bytes followed by 0x01
+   7 @
+      out += 0
+   out += 1
+   +out
+
+// Decodes a QOI binary byte string into an RGBA8 `Image`.
+decode_qoi: String => < Image | Error >
+decode_qoi = data =>
+   n = ?data
+   n < 22 | --| <- img_err("QOI data too short", n) +>
+   data(0..4) != "qoif" | --| <- img_err("invalid QOI magic header", 0) +>
+   w = Int(binary::read_u32_be(data, 4)--!)
+   h = Int(binary::read_u32_be(data, 8)--!)
+   channels = data(12) .&. 0xFF
+   (w !> 0 || h !> 0) | --| <- img_err("invalid QOI dimensions", 4) +>
+   (channels != 3 && channels != 4) | --| <- img_err("invalid QOI channel count", 12) +>
+   num_px = w * h
+   out = {num_px * 4}
+   table = Int{}
+   64 @
+      table += 0
+   r' = 0
+   g' = 0
+   b' = 0
+   a' = 255
+   run' = 0
+   pos' = 14
+   chunks_end = n - 8
+   num_px @
+      run' > 0
+         | run' = run' - 1
+         |
+            pos' < chunks_end |
+               b1 = data(pos') .&. 0xFF
+               pos' = pos' + 1
+               b1 == 0xFE
+                  |
+                     r' = data(pos') .&. 0xFF
+                     g' = data(pos' + 1) .&. 0xFF
+                     b' = data(pos' + 2) .&. 0xFF
+                     pos' = pos' + 3
+                  |
+                     b1 == 0xFF
+                        |
+                           r' = data(pos') .&. 0xFF
+                           g' = data(pos' + 1) .&. 0xFF
+                           b' = data(pos' + 2) .&. 0xFF
+                           a' = data(pos' + 3) .&. 0xFF
+                           pos' = pos' + 4
+                        |
+                           tag = b1 .&. 0xC0
+                           tag
+                              [0x00]
+                                 pk = table(b1 .&. 63)!!
+                                 r' = (pk .>. 24) .&. 0xFF
+                                 g' = (pk .>. 16) .&. 0xFF
+                                 b' = (pk .>. 8) .&. 0xFF
+                                 a' = pk .&. 0xFF
+                              [0x40]
+                                 r' = (r' + ((b1 .>. 4) .&. 0x03) - 2) .&. 0xFF
+                                 g' = (g' + ((b1 .>. 2) .&. 0x03) - 2) .&. 0xFF
+                                 b' = (b' + (b1 .&. 0x03) - 2) .&. 0xFF
+                              [0x80]
+                                 b2 = data(pos') .&. 0xFF
+                                 pos' = pos' + 1
+                                 vg = (b1 .&. 0x3F) - 32
+                                 r' = (r' + vg - 8 + ((b2 .>. 4) .&. 0x0F)) .&. 0xFF
+                                 g' = (g' + vg) .&. 0xFF
+                                 b' = (b' + vg - 8 + (b2 .&. 0x0F)) .&. 0xFF
+                              |
+                                 run' = (b1 .&. 0x3F)
+               idx = qoi_hash(r', g', b', a')
+               table(idx) = ((r' .<. 24) .|. (g' .<. 16) .|. (b' .<. 8) .|. a') !| _
+      out += r'
+      out += g'
+      out += b'
+      out += a'
+   <+ Image(w, h, +out) ->
+
+// --- PNG (RFC 2083) Codec ---------------------------------------------------
+
+PNG_MAGIC = "\x89PNG\r\n\x1A\n"
+
+// Encodes an `Image` into a lossless RFC 2083 RGBA8 PNG byte string.
+encode_png: Image => String
+encode_png = im =>
+   w = im.width
+   h = im.height
+   px = im.pixels
+   stride = w * 4
+   // Build filtered scanlines using Sub filter (filter type 1) for crisp compression
+   raw = {h * (stride + 1)}
+   h @ y =>
+      row_off = y * stride
+      raw += 1 // Filter type 1 (Sub)
+      stride @ i =>
+         cur = px(row_off + i) .&. 0xFF
+         left = i !< 4 | (px(row_off + i - 4) .&. 0xFF) | 0
+         raw += ((cur - left) .&. 0xFF)
+   idat_payload = flate::zlib_compress(+raw)
+   out = {?idat_payload + 64}
+   out += PNG_MAGIC
+   // IHDR chunk (13 bytes)
+   ihdr = {13}
+   binary::write_u32_be(ihdr, u32(w))
+   binary::write_u32_be(ihdr, u32(h))
+   ihdr += 8 // bit depth = 8
+   ihdr += 6 // color type = 6 (RGBA)
+   ihdr += 0 // compression = 0 (Deflate/Zlib)
+   ihdr += 0 // filter = 0 (adaptive)
+   ihdr += 0 // interlace = 0 (none)
+   write_png_chunk(out, "IHDR", +ihdr)
+   write_png_chunk(out, "IDAT", idat_payload)
+   write_png_chunk(out, "IEND", "")
+   +out
+
+// Decodes an RFC 2083 PNG byte string (8-bit Grayscale, RGB, Grayscale+Alpha, or RGBA) into an RGBA8 `Image`.
+decode_png: String => < Image | Error >
+decode_png = data =>
+   n = ?data
+   n < 33 | --| <- img_err("PNG data too short", n) +>
+   data(0..8) != PNG_MAGIC | --| <- img_err("invalid PNG signature", 0) +>
+   off' = 8
+   w' = 0
+   h' = 0
+   bit_depth' = 0
+   color_type' = -1
+   interlace' = 0
+   idat_b = {n}
+   seen_iend' = <->
+   err_opt' = <-->
+   (off' + 12 !> n && !seen_iend' && !<>(err_opt')) @
+      clen = Int(binary::read_u32_be(data, off')--!)
+      ctype = data(off' + 4..off' + 8)
+      data_start = off' + 8
+      data_end = data_start + clen
+      data_end + 4 > n
+         | err_opt' = <+ img_err("truncated PNG chunk " + ctype, off') +>
+         |
+            exp_crc = binary::read_u32_be(data, data_end)--!
+            got_crc = hash::crc32(data(off' + 4..data_end))
+            exp_crc != got_crc
+               | err_opt' = <+ img_err("PNG chunk CRC-32 mismatch in " + ctype, data_end) +>
+               |
+                  ctype
+                     ["IHDR"]
+                        clen != 13
+                           | err_opt' = <+ img_err("invalid IHDR chunk length", off') +>
+                           |
+                              w' = Int(binary::read_u32_be(data, data_start)--!)
+                              h' = Int(binary::read_u32_be(data, data_start + 4)--!)
+                              bit_depth' = data(data_start + 8) .&. 0xFF
+                              color_type' = data(data_start + 9) .&. 0xFF
+                              interlace' = data(data_start + 12) .&. 0xFF
+                     ["IDAT"]
+                        idat_b += data(data_start..data_end)
+                     ["IEND"]
+                        seen_iend' = <+>
+                     | _
+            off' = data_end + 4
+   err_opt' | e => --| <- e +>
+   (w' !> 0 || h' !> 0) | --| <- img_err("missing or invalid PNG IHDR dimensions", 8) +>
+   bit_depth' != 8 | --| <- img_err("only 8-bit PNG bit depth is supported", 8) +>
+   interlace' != 0 | --| <- img_err("interlaced PNG is not supported", 8) +>
+   bpp = color_type'
+      [0] 1 // Grayscale
+      [2] 3 // RGB
+      [4] 2 // Grayscale + Alpha
+      [6] 4 // RGBA
+      |   0
+   bpp == 0 | --| <- img_err("unsupported PNG color type", 8) +>
+   raw = flate::zlib_decompress(+idat_b)--!
+   stride = w' * bpp
+   exp_raw_len = h' * (1 + stride)
+   ?raw < exp_raw_len | --| <- img_err("decompressed PNG IDAT data shorter than expected scanlines", ?raw) +>
+   // Reconstruct scanlines in-place into `recon`
+   recon = {h' * stride}
+   bad_filter' = <->
+   h' @ y =>
+      f_type = raw(y * (stride + 1)) .&. 0xFF
+      row_in = y * (stride + 1) + 1
+      prev_row = (y - 1) * stride
+      stride @ i =>
+         x_byte = raw(row_in + i) .&. 0xFF
+         a = i !< bpp | recon(y * stride + i - bpp) | 0
+         b = y > 0 | recon(prev_row + i) | 0
+         c = (y > 0 && i !< bpp) | recon(prev_row + i - bpp) | 0
+         val = f_type
+            [0] x_byte
+            [1] (x_byte + a) .&. 0xFF
+            [2] (x_byte + b) .&. 0xFF
+            [3] (x_byte + ((a + b) .>. 1)) .&. 0xFF
+            [4] (x_byte + paeth_predictor(a, b, c)) .&. 0xFF
+            |
+               bad_filter' = <+>
+               0
+         recon += val
+   bad_filter' | --| <- img_err("invalid PNG scanline filter type", 0) +>
+   recon_str = +recon
+   color_type' == 6 | --| <+ Image(w', h', recon_str) ->
+   // Expand Grayscale / RGB / Gray+Alpha into RGBA8
+   num_px = w' * h'
+   rgba = {num_px * 4}
+   num_px @ p =>
+      base = p * bpp
+      color_type'
+         [0]
+            v = recon_str(base) .&. 0xFF
+            rgba += v
+            rgba += v
+            rgba += v
+            rgba += 255
+         [2]
+            rgba += (recon_str(base) .&. 0xFF)
+            rgba += (recon_str(base + 1) .&. 0xFF)
+            rgba += (recon_str(base + 2) .&. 0xFF)
+            rgba += 255
+         [4]
+            v = recon_str(base) .&. 0xFF
+            a = recon_str(base + 1) .&. 0xFF
+            rgba += v
+            rgba += v
+            rgba += v
+            rgba += a
+         | _
+   <+ Image(w', h', +rgba) ->
+
+// Auto-detects PNG (`\x89PNG`) or QOI (`qoif`) magic header and decodes into an `Image`.
+decode: String => < Image | Error >
+decode = data =>
+   ?data !< 8 && data(0..8) == PNG_MAGIC
+      | decode_png(data)
+      |
+         ?data !< 4 && data(0..4) == "qoif"
+            | decode_qoi(data)
+            | <- img_err("unknown image format (expected PNG or QOI)", 0) +>
+
+open_wronly_creat_trunc: () => Int
+open_wronly_creat_trunc = !=> #! (os ["darwin"] 1537 | 577)
+
+// Loads and decodes a PNG or QOI image file from `path`.
+load: String => < Image | Error >
+load = path =>
+   fd = libc::open(path, 0)
+   fd < 0 | --| <- img_err("failed to open image file: " + path, 0) +>
+   out = {4096}
+   chunk = {4096}
+   err' = <->
+   0.. @
+      n = libc::read(fd, &chunk, 4096)
+      n < 0
+         |
+            err' = <+>
+            -->
+      n == 0 | -->
+      ?chunk = n
+      out += +chunk
+   libc::close(fd)
+   err'
+      | <- img_err("failed to read image file: " + path, 0) +>
+      | decode(+out)
+
+// Saves an `Image` to `path` as PNG (or QOI if `path` ends with `.qoi`).
+save: String, Image => <>
+save = path, im =>
+   bytes = str::ends_with(str::lower(path), ".qoi")
+      | encode_qoi(im)
+      | encode_png(im)
+   fd = libc::open_mode(path, open_wronly_creat_trunc!, 0o644)
+   fd < 0 | --| <->
+   len = ?bytes
+   off' = 0
+   ok' = <+>
+   (off' < len) @
+      v = bytes(off'..len)
+      w = libc::write(fd, v, ?v)
+      w !> 0
+         |
+            ok' = <->
+            -->
+         | off' = off' + w
+   rc = libc::close(fd)
+   ok' && rc == 0

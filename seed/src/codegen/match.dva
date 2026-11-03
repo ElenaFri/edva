@@ -1380,11 +1380,7 @@ ctfe_lower_record = cg, r =>
    cg.last_rt = <+ st +>
    cg.last_fnames = fnames
    cg.last_fvts = fvts
-   buf = {nf * 8}
-   esb = &buf
-   nf @ i =>
-      @[esb + i * 8] = fvals(i)!!
-   const_struct = LLVMConstStruct(esb, nf, 0)
+   const_struct = LLVMConstStruct(&types::addrs_buf(fvals), nf, 0)
    gname = "ctfe.rec." + str::from_int(types::g.tmpc)
    types::g.tmpc = types::g.tmpc + 1
    gv = LLVMAddGlobal(cg.module, st, gname)
@@ -1450,18 +1446,17 @@ ctfe_lower_map = cg, m =>
    map_id = str::from_int(types::g.tmpc)
    types::g.tmpc = types::g.tmpc + 1
 
-   kbuf = {cap' * 8}
-   ksb = &kbuf
+   kvals = types::Addrs()
    cap' @ i =>
       st1 = states(i)!!
       st1 == 1
          |
             k_ct = keys_slot(i)!!
             k_ev = ctfe_lower(cg, k_ct, ctfe_val_vt(k_ct))
-            @[ksb + i * 8] = k_ev.0
+            kvals += k_ev.0
          |
-            @[ksb + i * 8] = LLVMConstNull(key_elem_t)
-   const_keys = LLVMConstArray2(key_elem_t, ksb, cap')
+            kvals += LLVMConstNull(key_elem_t)
+   const_keys = LLVMConstArray2(key_elem_t, &types::addrs_buf(kvals), cap')
    keys_arr_t = LLVMArrayType(key_elem_t, cap')
    kg_name = "ctfe.map.keys." + map_id
    kg = LLVMAddGlobal(cg.module, keys_arr_t, kg_name)
@@ -1470,18 +1465,17 @@ ctfe_lower_map = cg, m =>
    LLVMSetUnnamedAddr(kg, 1)
    LLVMSetLinkage(kg, 8)
 
-   vbuf = {cap' * 8}
-   vsb = &vbuf
+   vvals = types::Addrs()
    cap' @ i =>
       st2 = states(i)!!
       st2 == 1
          |
             v_ct = vals_slot(i)!!
             v_ev = ctfe_lower(cg, v_ct, ctfe_val_vt(v_ct))
-            @[vsb + i * 8] = v_ev.0
+            vvals += v_ev.0
          |
-            @[vsb + i * 8] = LLVMConstNull(val_elem_t)
-   const_vals = LLVMConstArray2(val_elem_t, vsb, cap')
+            vvals += LLVMConstNull(val_elem_t)
+   const_vals = LLVMConstArray2(val_elem_t, &types::addrs_buf(vvals), cap')
    vals_arr_t = LLVMArrayType(val_elem_t, cap')
    vg_name = "ctfe.map.vals." + map_id
    vg = LLVMAddGlobal(cg.module, vals_arr_t, vg_name)
@@ -1490,12 +1484,11 @@ ctfe_lower_map = cg, m =>
    LLVMSetUnnamedAddr(vg, 1)
    LLVMSetLinkage(vg, 8)
 
-   sbuf = {cap' * 8}
-   ssb = &sbuf
+   svals = types::Addrs()
    cap' @ i =>
       st3 = states(i)!!
-      @[ssb + i * 8] = LLVMConstInt(i8t, st3, 0)
-   const_states = LLVMConstArray2(i8t, ssb, cap')
+      svals += LLVMConstInt(i8t, st3, 0)
+   const_states = LLVMConstArray2(i8t, &types::addrs_buf(svals), cap')
    states_arr_t = LLVMArrayType(i8t, cap')
    sg_name = "ctfe.map.states." + map_id
    sg = LLVMAddGlobal(cg.module, states_arr_t, sg_name)

@@ -39,12 +39,35 @@
    // The reason phrase for a status code ("" for unknown codes).
    reason_of: Int => String
    reason_of =
+      [101] "Switching Protocols"
       [200] "OK"
+      [201] "Created"
+      [204] "No Content"
+      [206] "Partial Content"
       [301] "Moved Permanently"
       [302] "Found"
+      [303] "See Other"
+      [304] "Not Modified"
+      [307] "Temporary Redirect"
+      [308] "Permanent Redirect"
       [400] "Bad Request"
+      [401] "Unauthorized"
+      [403] "Forbidden"
       [404] "Not Found"
+      [405] "Method Not Allowed"
+      [408] "Request Timeout"
+      [411] "Length Required"
+      [413] "Payload Too Large"
+      [414] "URI Too Long"
+      [416] "Range Not Satisfiable"
+      [422] "Unprocessable Entity"
+      [431] "Request Header Fields Too Large"
       [500] "Internal Server Error"
+      [501] "Not Implemented"
+      [502] "Bad Gateway"
+      [503] "Service Unavailable"
+      [504] "Gateway Timeout"
+      [505] "HTTP Version Not Supported"
       | ""
 
    // One header line "Name: Value\r\n" (Name and Value must not contain CR/LF).
@@ -350,19 +373,21 @@
          peek_sz = rem < 1024 | rem | 1024
          p = libc::recv(fd, &peek_buf, peek_sz, 2)
          p [< 1] -->
+         ?peek_buf = p
          found' = -1
          0..p @ i =>
-            byte = @[&peek_buf + i i8]
+            byte = peek_buf(i)
             byte [10]
                found' = i
                -->
          to_consume = found' !< 0 | found' + 1 | p
          r = libc::recv(fd, &peek_buf, to_consume, 0)
          r [< 1] -->
+         ?peek_buf = r
          got_any' = <+>
          limit = found' !< 0 | found' | r
          0..limit @ j =>
-            c = @[&peek_buf + j i8]
+            c = peek_buf(j)
             c != 13 | (b += c)
          found' !< 0 | -->
       got_any'

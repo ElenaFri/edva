@@ -66,18 +66,22 @@ book:
         - reference/stdlib/cli.qmd
         - reference/stdlib/color.qmd
         - reference/stdlib/const.qmd
+        - reference/stdlib/crypto.qmd
         - reference/stdlib/csv.qmd
         - reference/stdlib/deque.qmd
         - reference/stdlib/event.qmd
+        - reference/stdlib/flate.qmd
         - reference/stdlib/fmt.qmd
         - reference/stdlib/fp.qmd
         - reference/stdlib/fs.qmd
         - reference/stdlib/hash.qmd
         - reference/stdlib/heap.qmd
         - reference/stdlib/hex.qmd
+        - reference/stdlib/img.qmd
         - reference/stdlib/in.qmd
         - reference/stdlib/io.qmd
         - reference/stdlib/json.qmd
+        - reference/stdlib/kv.qmd
         - reference/stdlib/libc.qmd
         - reference/stdlib/log.qmd
         - reference/stdlib/math.qmd

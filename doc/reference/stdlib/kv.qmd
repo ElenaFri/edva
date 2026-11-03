@@ -1,0 +1,48 @@
+---
+meta:
+  audience: "Edva developers persisting key-value records and typed structs to disk"
+  status: "current reference"
+  audited: "406e853"
+  evidence: "`std/kv.dva`, `tests/pass/401_std_flate_img_kv.dva`"
+---
+
+# `kv` standard library
+
+The `kv` module implements a Bitcask-inspired embedded log-structured
+key-value store. Writes append CRC-32-protected records to an append-only log
+file while maintaining an in-memory `KeyDir` (`String ^ EntryLoc`) that maps
+every live key to its exact file offset and byte length for $O(1)$ single-seek
+reads. It also provides online log compaction (`compact`) and `#!` compile-time
+structural typed serialization (`put_val`, `get_val`) powered by `std/binary`.
+
+```{.dva .run}
+#use kv
+#use libc
+#use io
+
+path = "/tmp/edva_doc_kv_demo.kv"
+libc::unlink(path)
+db = kv::open(path)!!
+kv::put(db, "greeting", "Hello from std/kv!")!!
+io::out $ (kv::get(db, "greeting") | s => s | "")
+kv::close(db)
+libc::unlink(path)
+```
+
+## Types & function catalog
+
+| Symbol / Function | Signature | Description |
+|---|---|---|
+| `kv::Store` | `(path: String, fd: Int, pos: Int, keydir: KeyDir)` | Handle to an open log-structured key-value store |
+| `kv::open(path)` | `String => < Store \| Error >` | Opens or creates a persistent KV store at `path` and replays its log |
+| `kv::close(db)` | `Store => <>` | Closes the underlying file descriptor of `db` |
+| `kv::len(db)` | `Store => Int` | Number of live keys currently in `db` |
+| `kv::has(db, key)` | `Store, String => <>` | Returns `<+>` if `key` is present in `db` |
+| `kv::put(db, key, val)` | `Store, String, String => < <> \| Error >` | Appends a CRC-32-verified `key -> val` record and updates `keydir` |
+| `kv::get(db, key)` | `Store, String => < String \| Error >` | Reads the value for `key` (`Error` if missing or on I/O failure) |
+| `kv::get_opt(db, key)` | `Store, String => < String \| >` | Reads the value for `key` if present (`<-->` if missing) |
+| `kv::delete(db, key)` | `Store, String => < <> \| Error >` | Appends a deletion tombstone for `key` and removes it from `keydir` |
+| `kv::keys(db)` | `Store => String{}` | Returns all live keys in sorted lexicographical order |
+| `kv::compact(db)` | `Store => < <> \| Error >` | Rewrites only live entries to a new log file and atomically replaces `db.path` |
+| `kv::put_val(db, key, val)` | `#! T: Type, Store, String, T => < <> \| Error >` | Encodes `val` via `binary::encode_le` and stores it under `key` |
+| `kv::get_val(T, db, key)` | `#! T: Type, Store, String => < T \| Error >` | Reads and decodes a value of type `T` stored under `key` |

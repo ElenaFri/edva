@@ -1535,6 +1535,52 @@ codegen_eval_str_index = cg, t =>
    ev = expr::codegen_eval(cg, ast::Expr(Var, t.fn_name))
    codegen_eval_base_str_access(cg, t, ev.0)
 
+codegen_eval_base_builder_access: types::Cg, ast::CallExpr, Addr => (Addr, ast::ValueType)
+codegen_eval_base_builder_access = cg, t, b_val =>
+   i64t = LLVMInt64Type!
+   i8t = LLVMInt8Type!
+   types::llvm_val_opt(b_val)
+      | bv =>
+         len_val = builder_len(cg, bv, "b.read.len")
+         data_ptr = builder_data(cg, bv, "b.read.data")
+         arg = t.args(0)!!
+         arg
+            [Range rng]
+               start_val' = LLVMConstInt(i64t, 0, 0)
+               rng.has_lhs | start_val' = expr::codegen_eval(cg, rng.lhs).0
+               end_val' = len_val
+               rng.has_rhs | end_val' = expr::codegen_eval(cg, rng.rhs).0
+               c_res = codegen_clamp_slice_range(cg, start_val', end_val',
+                  rng.has_lhs, rng.has_rhs, len_val)
+               final_start = c_res.0
+               view_len = c_res.1
+               view_data = types::gep1(cg, i8t, data_ptr, final_start, "view.data")
+               (expr::codegen_string_build(cg, view_len, view_data, "str.view"),
+                  ast::ValueType(Str))
+            |
+               idx_ev = expr::codegen_eval(cg, arg)
+               idx_val = idx_ev.0
+               idx_type = idx_ev.1
+               types::llvm_val_opt(idx_val)
+                  | iv =>
+                     idx_i64 = codegen_widen_idx_to_i64(cg, iv, idx_type,
+                        "idx")
+                     codegen_emit_runtime_bounds_check(cg, iv, idx_type,
+                        len_val, "str_oob_msg")
+                     byte_ptr = types::gep1(cg, i8t, data_ptr, idx_i64, "b.byte.gep")
+                     byte_val = LLVMBuildLoad2(cg.builder, i8t,
+                        byte_ptr, "b.byte")
+                     (LLVMBuildZExt(cg.builder, byte_val, i64t,
+                        "b.byte.val"), ast::ValueType(Int))
+                  | (LLVMConstInt(i64t, 0, 0), ast::ValueType(Unknown))
+      | (LLVMConstInt(i64t, 0, 0), ast::ValueType(Unknown))
+
+// "b(i)" — Builder byte read, returns Int; "b(a..b)" — Builder String view/slice.
+codegen_eval_builder_index: types::Cg, ast::CallExpr => (Addr, ast::ValueType)
+codegen_eval_builder_index = cg, t =>
+   ev = expr::codegen_eval(cg, ast::Expr(Var, t.fn_name))
+   codegen_eval_base_builder_access(cg, t, ev.0)
+
 array_elem_vt: types::Cg, String => ast::ValueType
 array_elem_vt = cg, arr_name =>
    v_dt = types::var_dtype(cg, arr_name)
@@ -1905,22 +1951,15 @@ codegen_emit_error_panic = cg, err_ptr =>
          LLVMBuildStore(cg.builder, err_ptr,
             LLVMBuildStructGEP2(cg.builder, rec_t, rec_ptr, 7,
                "err.err.gep"))
-         pex = {8}
-         peb = &pex
-         @[peb] = LLVMConstNull(i8p)
          pfn = cg.pthread_exit_fn | _ | LLVMConstNull(i8p)
-         LLVMBuildCall2(cg.builder,
-            types::fn_type1(LLVMVoidType!, i8p), pfn, peb, 1, "")
+         types::call1(cg, types::fn_type1(LLVMVoidType!, i8p), pfn, LLVMConstNull(i8p), "")
          LLVMBuildUnreachable(cg.builder)
          LLVMPositionBuilderAtEnd(cg.builder, normal_bb)
          pf = types::ensure_printf_fn(cg)
          ef = types::ensure_exit_fn(cg)
          LLVMBuildCall2(cg.builder,
             pf.0, pf.1, &pargs, 8, "err.panic.printf")
-         eargs = {16}
-         eb = &eargs
-         @[eb] = LLVMConstInt(i32t, 1, 0)
-         LLVMBuildCall2(cg.builder, ef.0, ef.1, eb, 1, "")
+         types::call1(cg, ef.0, ef.1, LLVMConstInt(i32t, 1, 0), "")
          LLVMBuildUnreachable(cg.builder)
 
 codegen_ensure_pthread: types::Cg => Addr
@@ -2010,15 +2049,11 @@ fn_type4 = ret, p0, p1, p2, p3 =>
    parr = (p0, p1, p2, p3)
    LLVMFunctionType(ret, &parr, 4, 0)
 
-// free(ptr) — one-shot (a raw store to the i8* buffer).
+// free(ptr) — one-shot.
 free1: types::Cg, Addr => ()
 free1 = cg, p =>
    free_t = types::fn_type1(LLVMVoidType!, LLVMPointerType(LLVMInt8Type!, 0))
-   fargs = {16}
-   fb = &fargs
-   @[fb] = p
-   LLVMBuildCall2(cg.builder, free_t,
-      LLVMGetNamedFunction(cg.module, "free"), fb, 1, "")
+   types::call1(cg, free_t, LLVMGetNamedFunction(cg.module, "free"), p, "")
 
 // Coerces any result value into the single i8* word stored in the thread
 // record's `ret` slot (pointers stay pointers, integers become opaque words,
@@ -2148,16 +2183,12 @@ codegen_emit_thread_wrapper = cg, wfn, wfty, nargs, arg_ts, ret_vt, is_cap =>
       "rec.env.gep")
    env_val = LLVMBuildLoad2(cg.builder, i8p, env_gep, "rec.env")
    total_args = is_cap | nargs + 1 | nargs
-   cap = total_args > 0
-      | total_args * 8
-      | 8
-   abuf = {cap}
-   asb = &abuf
+   call_args = types::Addrs()
    total_args > 0
       |
          is_cap
             |
-               @[asb] = env_val
+               call_args += env_val
          nargs > 0
             |
                agep = LLVMBuildStructGEP2(cg.builder, rec_t, rec, 4,
@@ -2170,13 +2201,12 @@ codegen_emit_thread_wrapper = cg, wfn, wfty, nargs, arg_ts, ret_vt, is_cap =>
                   av = LLVMBuildLoad2(cg.builder, arg_ts(i)!!,
                      LLVMBuildStructGEP2(cg.builder, at, atp, i,
                         "rec.arg.gep"), "rec.arg")
-                  off = is_cap | (i + 1) * 8 | i * 8
-                  @[asb + off] = av
+                  call_args += av
    typed = LLVMBuildPointerCast(cg.builder, fptr,
       LLVMPointerType(wfty, 0), "rec.fn.typed")
    is_void = ret_vt [Unit]
    res_name = is_void | "" | "thread.res"
-   res = LLVMBuildCall2(cg.builder, wfty, typed, asb, total_args,
+   res = LLVMBuildCall2(cg.builder, wfty, typed, &types::addrs_buf(call_args), total_args,
       res_name)
    !is_void
       |
@@ -2426,13 +2456,10 @@ codegen_eval_join = cg, je =>
       LLVMPointerType(rec_t, 0), "join.rec")
    tid_p = LLVMBuildStructGEP2(cg.builder, rec_t, rec, 0, "join.tid.gep")
    tid = LLVMBuildLoad2(cg.builder, i64t, tid_p, "join.tid")
-   jargs = {16}
-   jb = &jargs
-   @[jb] = tid
-   @[jb + 8] = LLVMConstNull(i8p)
+   jargs = (tid, LLVMConstNull(i8p))
    jpfn = cg.pthread_join_fn | _ | LLVMConstNull(i8p)
    LLVMBuildCall2(cg.builder, types::fn_type2(cg, LLVMInt32Type!, i64t, i8p),
-      jpfn, jb, 2, "join.wait")
+      jpfn, &jargs, 2, "join.wait")
    raw = expr::codegen_call_arena_alloc(cg,
       LLVMConstInt(i64t, 16, 0), "join.alloc")
    union_ptr = LLVMBuildPointerCast(cg.builder, raw,
@@ -2482,11 +2509,8 @@ codegen_eval_join = cg, je =>
    adopt_t = types::fn_type2(cg, LLVMVoidType!, atp, atp)
    child_arena = LLVMBuildPointerCast(cg.builder, arena_raw, atp,
       "join.child.arena")
-   aargs = {16}
-   ab = &aargs
-   @[ab] = parent_arena
-   @[ab + 8] = child_arena
-   LLVMBuildCall2(cg.builder, adopt_t, adopt_fn, ab, 2, "")
+   aargs = (parent_arena, child_arena)
+   LLVMBuildCall2(cg.builder, adopt_t, adopt_fn, &aargs, 2, "")
    free1(cg, arena_raw)
    args_gep = LLVMBuildStructGEP2(cg.builder, rec_t, rec, 4,
       "join.args.gep")
@@ -2508,13 +2532,10 @@ codegen_typed_eval_join = cg, je, ti =>
    tid_p = LLVMBuildStructGEP2(cg.builder, rec_t, rec, 0,
       "join.tid.gep")
    tid = LLVMBuildLoad2(cg.builder, i64t, tid_p, "join.tid")
-   jargs = {16}
-   jb = &jargs
-   @[jb] = tid
-   @[jb + 8] = LLVMConstNull(i8p)
+   jargs = (tid, LLVMConstNull(i8p))
    jpfn = cg.pthread_join_fn | _ | LLVMConstNull(i8p)
    LLVMBuildCall2(cg.builder, types::fn_type2(cg, LLVMInt32Type!,
-      i64t, i8p), jpfn, jb, 2, "join.wait")
+      i64t, i8p), jpfn, &jargs, 2, "join.wait")
    has_gep = LLVMBuildStructGEP2(cg.builder, rec_t, rec, 6,
       "join.haserr.gep")
    has = LLVMBuildLoad2(cg.builder, i64t, has_gep, "join.haserr")
@@ -2567,11 +2588,8 @@ codegen_typed_eval_join = cg, je, ti =>
    adopt_t = types::fn_type2(cg, LLVMVoidType!, atp, atp)
    child_arena = LLVMBuildPointerCast(cg.builder, arena_raw, atp,
       "join.child.arena")
-   aargs = {16}
-   ab = &aargs
-   @[ab] = parent_arena
-   @[ab + 8] = child_arena
-   LLVMBuildCall2(cg.builder, adopt_t, adopt_fn, ab, 2, "")
+   aargs = (parent_arena, child_arena)
+   LLVMBuildCall2(cg.builder, adopt_t, adopt_fn, &aargs, 2, "")
    free1(cg, arena_raw)
    args_gep = LLVMBuildStructGEP2(cg.builder, rec_t, rec, 4,
       "join.args.gep")
@@ -2932,12 +2950,8 @@ codegen_typed_eval = cg, te =>
                cg.last_fvts = fvts'
                all_const' && all_same_ty' && !any_rec' && !is_packed && (nf !< 64)
                   |
-                     buf = {nf * 8}
-                     esb = &buf
-                     nf @ k =>
-                        @[esb + k * 8] = fvals(k)!!
                      arr_ty = LLVMArrayType(first_ty', nf)
-                     const_arr = LLVMConstArray2(first_ty', esb, nf)
+                     const_arr = LLVMConstArray2(first_ty', &types::addrs_buf(fvals), nf)
                      gname = "$const_arr." + str::from_int(?cg.typedefs) + "." + str::from_int(types::g.tmpc)
                      types::g.tmpc = types::g.tmpc + 1
                      gv = LLVMAddGlobal(cg.module, arr_ty, gname)

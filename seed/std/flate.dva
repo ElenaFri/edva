@@ -1,0 +1,595 @@
+// Standard DEFLATE, Zlib & Gzip Compression Module (std/flate.dva)
+// Pure Edva implementation of RFC 1951 (DEFLATE), RFC 1950 (Zlib), and RFC 1952 (Gzip).
+// Decompresses stored (BTYPE=00), fixed-Huffman (BTYPE=01), and dynamic-Huffman (BTYPE=10)
+// DEFLATE streams, and compresses via LZ77 sliding-window matching + fixed-Huffman coding.
+
+#use binary
+#use hash
+#use str
+
+#private
+
+flate_err: String, Int => Error
+flate_err = msg, off =>
+   Error(400, "flate: " + msg, "std/flate.dva", 1, off + 1, (off, 0))
+
+// --- BitReader (LSB-first per RFC 1951 Section 3.1.1) -----------------------
+
+#type BitReader (
+   src:   String,
+   len:   Int,
+   pos:   Int,
+   rbuf:  Int,
+   nbits: Int
+)
+
+new_reader: String, Int, Int => BitReader
+new_reader = src, start, end =>
+   BitReader(src, end, start, 0, 0)
+
+fill_bits: BitReader, Int => <>
+fill_bits = br, need =>
+   (br.nbits < need && br.pos < br.len) @
+      b = br.src(br.pos) .&. 0xFF
+      br.pos = br.pos + 1
+      rbuf = br.rbuf .|. (b .<. br.nbits)
+      br.rbuf = rbuf
+      br.nbits = br.nbits + 8
+   br.nbits !< need
+
+read_bits: BitReader, Int => < Int | Error >
+read_bits = br, count =>
+   count == 0 | --| <+ 0 ->
+   !fill_bits(br, count)
+      | <- flate_err("unexpected EOF in DEFLATE bit stream", br.pos) +>
+      |
+         mask = (1 .<. count) - 1
+         val = br.rbuf .&. mask
+         br.rbuf = br.rbuf .>. count
+         br.nbits = br.nbits - count
+         <+ val ->
+
+align_byte: BitReader => ()
+align_byte = br =>
+   rem = br.nbits .&. 7
+   rem > 0 |
+      br.rbuf = br.rbuf .>. rem
+      br.nbits = br.nbits - rem
+
+read_aligned_u16_le: BitReader => < Int | Error >
+read_aligned_u16_le = br =>
+   align_byte(br)
+   read_bits(br, 16)
+
+// --- Canonical Huffman Tree (RFC 1951 Section 3.2.2) ------------------------
+
+#type HuffTree (
+   counts:   Int{},
+   symbols:  Int{},
+   max_bits: Int
+)
+
+build_huff: Int{}, Int => < HuffTree | Error >
+build_huff = lengths, num_syms =>
+   counts = Int{}
+   16 @
+      counts += 0
+   max_l' = 0
+   num_syms @ s =>
+      l = lengths(s)!!
+      l > 0 |
+         counts(l) = counts(l)!! + 1 !| _
+         l > max_l' | max_l' = l
+   // Validate canonical tree completeness / non-oversubscription
+   left' = 1
+   over' = <->
+   1..16 @ bits =>
+      left' = left' .<. 1
+      left' = left' - counts(bits)!!
+      left' < 0 | over' = <+>
+   over' | --| <- flate_err("oversubscribed Huffman code lengths", 0) +>
+   offs = Int{}
+   16 @
+      offs += 0
+   acc' = 0
+   1..15 @ bits =>
+      acc' = acc' + counts(bits)!!
+      offs(bits + 1) = acc' !| _
+   total_codes = acc' + counts(15)!!
+   symbols = Int{}
+   total_codes @
+      symbols += 0
+   num_syms @ sym =>
+      l = lengths(sym)!!
+      l > 0 |
+         idx = offs(l)!!
+         offs(l) = idx + 1 !| _
+         symbols(idx) = sym !| _
+   <+ HuffTree(counts, symbols, max_l') ->
+
+decode_sym: BitReader, HuffTree => < Int | Error >
+decode_sym = br, tree =>
+   code' = 0
+   first' = 0
+   index' = 0
+   hit' = -1
+   eof' = <->
+   1..(tree.max_bits + 1) @ len =>
+      !fill_bits(br, 1)
+         |
+            eof' = <+>
+            -->
+         |
+            bit = br.rbuf .&. 1
+            br.rbuf = br.rbuf .>. 1
+            br.nbits = br.nbits - 1
+            code' = (code' .<. 1) .|. bit
+            cnt = tree.counts(len)!!
+            code' - cnt < first'
+               |
+                  sym_idx = index' + (code' - first')
+                  hit' = tree.symbols(sym_idx)!!
+                  -->
+               |
+                  index' = index' + cnt
+                  first' = (first' + cnt) .<. 1
+   eof'
+      | <- flate_err("unexpected EOF decoding Huffman symbol", br.pos) +>
+      |
+         hit' < 0
+            | <- flate_err("invalid Huffman code in DEFLATE stream", br.pos) +>
+            | <+ hit' ->
+
+// Fixed Huffman tables (RFC 1951 Section 3.2.6)
+fixed_lit_tree: () => HuffTree
+fixed_lit_tree = !=>
+   lens = Int{}
+   288 @ sym =>
+      l = sym
+         [0...143]   8
+         [144...255] 9
+         [256...279] 7
+         |           8
+      lens += l
+   build_huff(lens, 288) | t => t | HuffTree(Int{}, Int{}, 0)
+
+fixed_dist_tree: () => HuffTree
+fixed_dist_tree = !=>
+   lens = Int{}
+   32 @
+      lens += 5
+   build_huff(lens, 32) | t => t | HuffTree(Int{}, Int{}, 0)
+
+// Length & Distance base/extra tables (RFC 1951 Section 3.2.5)
+LEN_BASE = (
+   3, 4, 5, 6, 7, 8, 9, 10, 11, 13,
+   15, 17, 19, 23, 27, 31, 35, 43, 51, 59,
+   67, 83, 99, 115, 131, 163, 195, 227, 258
+)
+
+LEN_EXTRA = (
+   0, 0, 0, 0, 0, 0, 0, 0, 1, 1,
+   1, 1, 2, 2, 2, 2, 3, 3, 3, 3,
+   4, 4, 4, 4, 5, 5, 5, 5, 0
+)
+
+DIST_BASE = (
+   1, 2, 3, 4, 5, 7, 9, 13, 17, 25,
+   33, 49, 65, 97, 129, 193, 257, 385, 513, 769,
+   1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577
+)
+
+DIST_EXTRA = (
+   0, 0, 0, 0, 1, 1, 2, 2, 3, 3,
+   4, 4, 5, 5, 6, 6, 7, 7, 8, 8,
+   9, 9, 10, 10, 11, 11, 12, 12, 13, 13
+)
+
+CLEN_ORDER = (
+   16, 17, 18, 0, 8, 7, 9, 6, 10, 5,
+   11, 4, 12, 3, 13, 2, 14, 1, 15
+)
+
+decode_dynamic_trees: BitReader => < (HuffTree, HuffTree) | Error >
+decode_dynamic_trees = br =>
+   hlit_r = read_bits(br, 5)--!
+   hdist_r = read_bits(br, 5)--!
+   hclen_r = read_bits(br, 4)--!
+   hlit = hlit_r + 257
+   hdist = hdist_r + 1
+   hclen = hclen_r + 4
+   clen_lens = Int{}
+   19 @
+      clen_lens += 0
+   bad_cl' = <->
+   hclen @ i =>
+      read_bits(br, 3)
+         | v =>
+            clen_lens(CLEN_ORDER(i)) = v !| _
+         | e =>
+            bad_cl' = <+>
+            -->
+   bad_cl' | --| <- flate_err("unexpected EOF reading code length alphabet", br.pos) +>
+   cl_tree = build_huff(clen_lens, 19)--!
+   total_lens = hlit + hdist
+   all_lens = Int{}
+   total_lens @
+      all_lens += 0
+   idx' = 0
+   err_opt' = <-->
+   (idx' < total_lens && !<>(err_opt')) @
+      decode_sym(br, cl_tree)
+         | sym =>
+            sym
+               [0...15]
+                  all_lens(idx') = sym !| _
+                  idx' = idx' + 1
+               [16]
+                  idx' == 0
+                     | err_opt' = <+ flate_err("repeat code 16 with no previous length", br.pos) +>
+                     |
+                        read_bits(br, 2)
+                           | rep_extra =>
+                              rep = 3 + rep_extra
+                              prev = all_lens(idx' - 1)!!
+                              idx' + rep > total_lens
+                                 | err_opt' = <+ flate_err("repeat code 16 exceeds alphabet size", br.pos) +>
+                                 |
+                                    rep @
+                                       all_lens(idx') = prev !| _
+                                       idx' = idx' + 1
+                           | e => err_opt' = <+ e +>
+               [17]
+                  read_bits(br, 3)
+                     | rep_extra =>
+                        rep = 3 + rep_extra
+                        idx' + rep > total_lens
+                           | err_opt' = <+ flate_err("repeat code 17 exceeds alphabet size", br.pos) +>
+                           |
+                              rep @
+                                 all_lens(idx') = 0 !| _
+                                 idx' = idx' + 1
+                     | e => err_opt' = <+ e +>
+               [18]
+                  read_bits(br, 7)
+                     | rep_extra =>
+                        rep = 11 + rep_extra
+                        idx' + rep > total_lens
+                           | err_opt' = <+ flate_err("repeat code 18 exceeds alphabet size", br.pos) +>
+                           |
+                              rep @
+                                 all_lens(idx') = 0 !| _
+                                 idx' = idx' + 1
+                     | e => err_opt' = <+ e +>
+               | err_opt' = <+ flate_err("invalid code length symbol", br.pos) +>
+         | e => err_opt' = <+ e +>
+   err_opt' | e => --| <- e +>
+   lit_lens = Int{}
+   hlit @ i =>
+      lit_lens += all_lens(i)!!
+   dist_lens = Int{}
+   hdist @ i =>
+      dist_lens += all_lens(hlit + i)!!
+   lit_t = build_huff(lit_lens, hlit)--!
+   dist_t = build_huff(dist_lens, hdist)--!
+   <+ (lit_t, dist_t) ->
+
+inflate_huff_block: BitReader, HuffTree, HuffTree, Builder => < <> | Error >
+inflate_huff_block = br, lit_tree, dist_tree, out =>
+   done' = <->
+   err_opt' = <-->
+   (!done' && !<>(err_opt')) @
+      decode_sym(br, lit_tree)
+         | sym =>
+            sym
+               [0...255]
+                  out += sym
+               [256]
+                  done' = <+>
+               [257...285]
+                  l_idx = sym - 257
+                  base_len = LEN_BASE(l_idx)
+                  ext_bits = LEN_EXTRA(l_idx)
+                  read_bits(br, ext_bits)
+                     | ext_v =>
+                        match_len = base_len + ext_v
+                        decode_sym(br, dist_tree)
+                           | d_sym =>
+                              d_sym > 29
+                                 | err_opt' = <+ flate_err("invalid distance symbol", br.pos) +>
+                                 |
+                                    d_base = DIST_BASE(d_sym)
+                                    d_ext = DIST_EXTRA(d_sym)
+                                    read_bits(br, d_ext)
+                                       | d_ext_v =>
+                                          dist = d_base + d_ext_v
+                                          cur_len = ?out
+                                          dist > cur_len
+                                             | err_opt' = <+ flate_err("LZ77 distance exceeds output history", br.pos) +>
+                                             |
+                                                src_start = cur_len - dist
+                                                match_len @ k =>
+                                                   out += out(src_start + k)
+                                       | e => err_opt' = <+ e +>
+                           | e => err_opt' = <+ e +>
+                     | e => err_opt' = <+ e +>
+               |
+                  err_opt' = <+ flate_err("reserved literal/length symbol", br.pos) +>
+         | e => err_opt' = <+ e +>
+   err_opt'
+      | err => <- err +>
+      | <+ <+> ->
+
+inflate_stream: BitReader => < String | Error >
+inflate_stream = br =>
+   out = {?br.src * 2 + 64}
+   fix_lit = fixed_lit_tree!
+   fix_dist = fixed_dist_tree!
+   bfinal' = 0
+   err_opt' = <-->
+   (bfinal' == 0 && !<>(err_opt')) @
+      read_bits(br, 1)
+         | bf =>
+            bfinal' = bf
+            read_bits(br, 2)
+               | btype =>
+                  btype
+                     [0]
+                        // Uncompressed stored block
+                        read_aligned_u16_le(br)
+                           | blk_len =>
+                              read_aligned_u16_le(br)
+                                 | blk_nlen =>
+                                    ((blk_len .^. 0xFFFF) .&. 0xFFFF) != (blk_nlen .&. 0xFFFF)
+                                       | err_opt' = <+ flate_err("stored block LEN/NLEN mismatch", br.pos) +>
+                                       |
+                                          br.pos + blk_len > br.len
+                                             | err_opt' = <+ flate_err("unexpected EOF in stored block", br.pos) +>
+                                             |
+                                                out += br.src(br.pos..br.pos + blk_len)
+                                                br.pos = br.pos + blk_len
+                                 | e => err_opt' = <+ e +>
+                           | e => err_opt' = <+ e +>
+                     [1]
+                        // Fixed Huffman block
+                        inflate_huff_block(br, fix_lit, fix_dist, out)
+                           | ok => _
+                           | e => err_opt' = <+ e +>
+                     [2]
+                        // Dynamic Huffman block
+                        decode_dynamic_trees(br)
+                           | pair =>
+                              inflate_huff_block(br, pair.0, pair.1, out)
+                                 | ok => _
+                                 | e => err_opt' = <+ e +>
+                           | e => err_opt' = <+ e +>
+                     |
+                        err_opt' = <+ flate_err("invalid DEFLATE block BTYPE=3", br.pos) +>
+               | e => err_opt' = <+ e +>
+         | e => err_opt' = <+ e +>
+   err_opt'
+      | err => <- err +>
+      | <+ +out ->
+
+// --- BitWriter & Fixed-Huffman + LZ77 Compressor ----------------------------
+
+#type BitWriter (
+   out:   Builder,
+   wbuf:  Int,
+   nbits: Int
+)
+
+new_writer: Int => BitWriter
+new_writer = cap =>
+   BitWriter({cap}, 0, 0)
+
+write_bits: BitWriter, Int, Int => ()
+write_bits = bw, val, count =>
+   wbuf = bw.wbuf .|. ((val .&. ((1 .<. count) - 1)) .<. bw.nbits)
+   bw.wbuf = wbuf
+   bw.nbits = bw.nbits + count
+   (bw.nbits !< 8) @
+      bw.out += (bw.wbuf .&. 0xFF)
+      bw.wbuf = bw.wbuf .>. 8
+      bw.nbits = bw.nbits - 8
+
+// Canonical Huffman codes are emitted MSB-first into the LSB-first bit stream
+write_bits_rev: BitWriter, Int, Int => ()
+write_bits_rev = bw, code, count =>
+   rev' = 0
+   c' = code
+   count @
+      rev' = (rev' .<. 1) .|. (c' .&. 1)
+      c' = c' .>. 1
+   write_bits(bw, rev', count)
+
+flush_bits: BitWriter => String
+flush_bits = bw =>
+   bw.nbits > 0 |
+      bw.out += (bw.wbuf .&. 0xFF)
+      bw.wbuf = 0
+      bw.nbits = 0
+   +bw.out
+
+emit_fixed_sym: BitWriter, Int => ()
+emit_fixed_sym = bw, sym =>
+   sym
+      [0...143]   write_bits_rev(bw, 0x30 + sym, 8)
+      [144...255] write_bits_rev(bw, 0x190 + (sym - 144), 9)
+      [256...279] write_bits_rev(bw, sym - 256, 7)
+      |           write_bits_rev(bw, 0xC0 + (sym - 280), 8)
+
+emit_fixed_len: BitWriter, Int => ()
+emit_fixed_len = bw, match_len =>
+   idx' = 28
+   29 @ i =>
+      next_base = i < 28 | LEN_BASE(i + 1) | 259
+      (match_len !< LEN_BASE(i) && match_len < next_base)
+         |
+            idx' = i
+            -->
+   emit_fixed_sym(bw, 257 + idx')
+   ext = LEN_EXTRA(idx')
+   ext > 0 | write_bits(bw, match_len - LEN_BASE(idx'), ext)
+
+emit_fixed_dist: BitWriter, Int => ()
+emit_fixed_dist = bw, dist =>
+   idx' = 29
+   30 @ i =>
+      next_base = i < 29 | DIST_BASE(i + 1) | 32769
+      (dist !< DIST_BASE(i) && dist < next_base)
+         |
+            idx' = i
+            -->
+   write_bits_rev(bw, idx', 5)
+   ext = DIST_EXTRA(idx')
+   ext > 0 | write_bits(bw, dist - DIST_BASE(idx'), ext)
+
+hash3: String, Int => Int
+hash3 = s, pos =>
+   b0 = s(pos) .&. 0xFF
+   b1 = s(pos + 1) .&. 0xFF
+   b2 = s(pos + 2) .&. 0xFF
+   (((b0 .<. 10) .^. (b1 .<. 5) .^. b2) * 0x9E37) .&. 0xFFF
+
+#public
+
+// Compresses `data` into a raw RFC 1951 DEFLATE bitstream using LZ77 + fixed-Huffman coding.
+deflate_raw: String => String
+deflate_raw = data =>
+   n = ?data
+   bw = new_writer(n + 64)
+   // BFINAL=1, BTYPE=01 (fixed Huffman)
+   write_bits(bw, 1, 1)
+   write_bits(bw, 1, 2)
+   htab = Int{}
+   4096 @
+      htab += -1
+   pos' = 0
+   (pos' < n) @
+      pos' + 3 > n
+         |
+            emit_fixed_sym(bw, data(pos') .&. 0xFF)
+            pos' = pos' + 1
+         |
+            h = hash3(data, pos')
+            prev = htab(h)!!
+            htab(h) = pos' !| _
+            dist = pos' - prev
+            (prev !< 0 && dist > 0 && dist !> 32768 && data(prev) == data(pos') && data(prev + 1) == data(pos' + 1) && data(prev + 2) == data(pos' + 2))
+               |
+                  max_l = n - pos' < 258 | n - pos' | 258
+                  mlen' = 3
+                  (mlen' < max_l && data(prev + mlen') == data(pos' + mlen')) @
+                     mlen' = mlen' + 1
+                  emit_fixed_len(bw, mlen')
+                  emit_fixed_dist(bw, dist)
+                  // Update hash table for intermediate positions
+                  1..mlen' @ step =>
+                     p_step = pos' + step
+                     p_step + 3 !> n |
+                        hs = hash3(data, p_step)
+                        htab(hs) = p_step !| _
+                  pos' = pos' + mlen'
+               |
+                  emit_fixed_sym(bw, data(pos') .&. 0xFF)
+                  pos' = pos' + 1
+   // End-of-block symbol 256
+   emit_fixed_sym(bw, 256)
+   flush_bits(bw)
+
+// Decompresses a raw RFC 1951 DEFLATE bitstream.
+inflate_raw: String => < String | Error >
+inflate_raw = compressed =>
+   br = new_reader(compressed, 0, ?compressed)
+   inflate_stream(br)
+
+// Compresses `data` into an RFC 1950 Zlib stream (2-byte header + DEFLATE + 4-byte big-endian Adler-32).
+zlib_compress: String => String
+zlib_compress = data =>
+   raw = deflate_raw(data)
+   b = {?raw + 6}
+   // CMF = 0x78 (Deflate, 32K window), FLG = 0x9C (default compression, (0x78*256 + 0x9C) % 31 == 0)
+   b += 0x78
+   b += 0x9C
+   b += raw
+   binary::write_u32_be(b, hash::adler32(data))
+   +b
+
+// Decompresses an RFC 1950 Zlib stream and verifies its Adler-32 checksum.
+zlib_decompress: String => < String | Error >
+zlib_decompress = zdata =>
+   n = ?zdata
+   n < 6 | --| <- flate_err("zlib stream too short", n) +>
+   cmf = zdata(0) .&. 0xFF
+   flg = zdata(1) .&. 0xFF
+   (cmf .&. 0x0F) != 8 | --| <- flate_err("unsupported zlib compression method (expected DEFLATE=8)", 0) +>
+   ((cmf .<. 8) + flg) % 31 != 0 | --| <- flate_err("invalid zlib header FCHECK checksum", 0) +>
+   fdict = (flg .&. 0x20) != 0
+   fdict | --| <- flate_err("zlib preset dictionary (FDICT) is not supported", 1) +>
+   br = new_reader(zdata, 2, n - 4)
+   plain = inflate_stream(br)--!
+   align_byte(br)
+   exp_adler = binary::read_u32_be(zdata, n - 4)--!
+   got_adler = hash::adler32(plain)
+   exp_adler != got_adler
+      | <- flate_err("zlib Adler-32 checksum mismatch", n - 4) +>
+      | <+ plain ->
+
+// Compresses `data` into an RFC 1952 Gzip stream (10-byte header + DEFLATE + CRC-32 + ISIZE).
+gzip_compress: String => String
+gzip_compress = data =>
+   raw = deflate_raw(data)
+   b = {?raw + 18}
+   b += 0x1F
+   b += 0x8B
+   b += 0x08 // CM = deflate
+   b += 0x00 // FLG = 0
+   binary::write_u32_le(b, 0u32) // MTIME = 0
+   b += 0x00 // XFL = 0
+   b += 0xFF // OS = unknown
+   b += raw
+   binary::write_u32_le(b, hash::crc32(data))
+   binary::write_u32_le(b, u32(?data .&. 0xFFFFFFFF))
+   +b
+
+// Decompresses an RFC 1952 Gzip stream and verifies its CRC-32 and ISIZE trailer.
+gzip_decompress: String => < String | Error >
+gzip_decompress = gz =>
+   n = ?gz
+   n < 18 | --| <- flate_err("gzip stream too short", n) +>
+   id1 = gz(0) .&. 0xFF
+   id2 = gz(1) .&. 0xFF
+   cm = gz(2) .&. 0xFF
+   flg = gz(3) .&. 0xFF
+   (id1 != 0x1F || id2 != 0x8B) | --| <- flate_err("invalid gzip magic bytes", 0) +>
+   cm != 8 | --| <- flate_err("unsupported gzip compression method", 2) +>
+   off' = 10
+   // FEXTRA
+   (flg .&. 0x04) != 0 |
+      off' + 2 > n | --| <- flate_err("truncated gzip FEXTRA", off') +>
+      xlen = Int(binary::read_u16_le(gz, off')--!)
+      off' = off' + 2 + xlen
+   // FNAME (zero-terminated)
+   (flg .&. 0x08) != 0 |
+      (off' < n && gz(off') != 0) @
+         off' = off' + 1
+      off' = off' + 1
+   // FCOMMENT (zero-terminated)
+   (flg .&. 0x10) != 0 |
+      (off' < n && gz(off') != 0) @
+         off' = off' + 1
+      off' = off' + 1
+   // FHCRC (2 bytes)
+   (flg .&. 0x02) != 0 |
+      off' = off' + 2
+   off' > n - 8 | --| <- flate_err("truncated gzip header", off') +>
+   br = new_reader(gz, off', n - 8)
+   plain = inflate_stream(br)--!
+   exp_crc = binary::read_u32_le(gz, n - 8)--!
+   exp_isize = binary::read_u32_le(gz, n - 4)--!
+   got_crc = hash::crc32(plain)
+   got_isize = u32(?plain .&. 0xFFFFFFFF)
+   exp_crc != got_crc | --| <- flate_err("gzip CRC-32 mismatch", n - 8) +>
+   exp_isize != got_isize | --| <- flate_err("gzip ISIZE length mismatch", n - 4) +>
+   <+ plain ->

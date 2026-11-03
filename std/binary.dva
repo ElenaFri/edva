@@ -56,26 +56,22 @@ raw_u64_be = buf, off =>
 write_u8: Builder, u8 => ()
 write_u8 = b, v =>
    b += (Int(v) .&. 0xFF)
-   --|
 
 write_i8: Builder, i8 => ()
 write_i8 = b, v =>
    b += (Int(v) .&. 0xFF)
-   --|
 
 write_u16_le: Builder, u16 => ()
 write_u16_le = b, v =>
    iv = Int(v)
    b += (iv .&. 0xFF)
    b += ((iv .>. 8) .&. 0xFF)
-   --|
 
 write_u16_be: Builder, u16 => ()
 write_u16_be = b, v =>
    iv = Int(v)
    b += ((iv .>. 8) .&. 0xFF)
    b += (iv .&. 0xFF)
-   --|
 
 write_i16_le: Builder, i16 => ()
 write_i16_le = b, v =>
@@ -92,7 +88,6 @@ write_u32_le = b, v =>
    b += ((iv .>. 8) .&. 0xFF)
    b += ((iv .>. 16) .&. 0xFF)
    b += ((iv .>. 24) .&. 0xFF)
-   --|
 
 write_u32_be: Builder, u32 => ()
 write_u32_be = b, v =>
@@ -101,7 +96,6 @@ write_u32_be = b, v =>
    b += ((iv .>. 16) .&. 0xFF)
    b += ((iv .>. 8) .&. 0xFF)
    b += (iv .&. 0xFF)
-   --|
 
 write_i32_le: Builder, i32 => ()
 write_i32_le = b, v =>
@@ -121,7 +115,6 @@ write_u64_le = b, v =>
    b += Int((v .>. 40u64) .&. 0xFFu64)
    b += Int((v .>. 48u64) .&. 0xFFu64)
    b += Int((v .>. 56u64) .&. 0xFFu64)
-   --|
 
 write_u64_be: Builder, u64 => ()
 write_u64_be = b, v =>
@@ -133,7 +126,6 @@ write_u64_be = b, v =>
    b += Int((v .>. 16u64) .&. 0xFFu64)
    b += Int((v .>. 8u64) .&. 0xFFu64)
    b += Int(v .&. 0xFFu64)
-   --|
 
 write_i64_le: Builder, Int => ()
 write_i64_le = b, v =>
@@ -311,7 +303,6 @@ write_uleb128 = b, val =>
          |
             b += byte_v
             more' = <->
-   --|
 
 // Reads an unsigned LEB128 varint starting at `off`, returning `(value, next_offset)`.
 read_uleb128: String, Int => < (u64, Int) | Error >
@@ -355,7 +346,6 @@ write_sleb128 = b, val =>
             more' = <->
          |
             b += (byte_v .|. 0x80)
-   --|
 
 // Reads a signed LEB128 varint starting at `off`, returning `(value, next_offset)`.
 read_sleb128: String, Int => < (Int, Int) | Error >
@@ -450,7 +440,6 @@ pack_into = b, val, is_be =>
                   v.type
                      [()] b += ""
                      | pack_into(v.type, b, pay, is_be)
-   --|
 
 #type OffsetCursor (
    pos: Int,

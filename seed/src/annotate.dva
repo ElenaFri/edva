@@ -1739,7 +1739,9 @@ annotate_expr = ctx, env, expr =>
                                        cur_expected_ut ::= <+ f.ret +>
                                        body_te = cached
                                           | _
-                                          | annotate_expr(ctx, env, fe.body)
+                                          |
+                                             check_no_closing_return(ctx, fe.body)
+                                             annotate_expr(ctx, env, fe.body)
                                        cur_expected_ut ::= saved_assign_exp
                                        is_view_expr(fe.body)
                                           | unify::add_error(ctx, 3150,
@@ -2390,7 +2392,7 @@ annotate_unary_op = ctx, env, op, t, operand_expr =>
             [Prim p]
                p
                   [Builder, Str] unify::prim_rawptr()
-                  [Int, I8, I16, I32, I64, U8, U16, U32, U64, Float, F32, Rune, Flag]
+                  [Int, I8, I16, I32, I64, U8, U16, U32, U64, Float, F32, Rune, Flag, RawPtr]
                      operand_expr
                         [Var]
                            !cur_is_call_arg
@@ -4168,15 +4170,12 @@ annotate_call_normal = ctx, env, ce =>
                            fn_ut' = resolve_fn_ut(ctx, env, ce.fn_name, b.ut)
                         [Prim p]
                            p
-                              [Str]
+                              [Str, Builder]
                                  is_var_index' = <+>
                                  first_a = ce.args(0) | _ | ast::Expr(Int, 0)
                                  is_rng = is_range_expr(first_a)
                                  index_ret_ut' = is_rng | unify::prim_str() |
                                     unify::prim_int()
-                              [Builder]
-                                 is_var_index' = <+>
-                                 index_ret_ut' = unify::prim_int()
                               |
                                  fn_ut' = resolve_fn_ut(ctx, env, ce.fn_name,
                                     b.ut)
@@ -4239,15 +4238,12 @@ annotate_call_normal = ctx, env, ce =>
                c_tgt
                   [Prim p2]
                      p2
-                        [Str]
+                        [Str, Builder]
                            is_var_index' = <+>
                            first_a2 = ce.args(0) | _ | ast::Expr(Int, 0)
                            is_rng2 = is_range_expr(first_a2)
                            index_ret_ut' = is_rng2 | unify::prim_str() |
                               unify::prim_int()
-                        [Builder]
-                           is_var_index' = <+>
-                           index_ret_ut' = unify::prim_int()
                         | fn_ut' = instantiate_unbound_fn(ctx, target_te.ut)
                   [Array arr2]
                      is_var_index' = <+>
@@ -4408,6 +4404,7 @@ annotate_fn = ctx, env, fe, is_disc =>
    env.discard_result = is_disc
    saved_exp = cur_expected_ut
    cur_expected_ut ::= exp_ret_ut
+   check_no_closing_return(ctx, fe.body)
    body_te = annotate_expr(ctx, env, fe.body)
    cur_expected_ut ::= saved_exp
    type_env::init_restore(env, saved_init)
@@ -4420,6 +4417,24 @@ annotate_fn = ctx, env, fe, is_disc =>
    fn_ut = unify::mk_fn(param_uts, ret_ut)
    ti = unify::type_info_from_utype(ctx, fn_ut)
    mk_lambda_te(fe.params, body_te, fn_ut, ti)
+
+body_closing_return: ast::Expr => <ast::ReturnExpr|>
+body_closing_return = e =>
+   e
+      [Return r] <+ r +>
+      [Block b]
+         n = ?b
+         n > 0 | body_closing_return(b(n - 1)!!) | <-->
+      [Bin t]
+         t.0 [Seq] body_closing_return(t.2) | <-->
+      | <-->
+
+check_no_closing_return: unify::Ctx, ast::Expr => ()
+check_no_closing_return = ctx, body =>
+   body_closing_return(body) | r =>
+      r.line > 0 | unify::set_pos(ctx, r.line, r.col)
+      unify::add_error(ctx, 3173,
+         "Closing '--|' at the end of a function is prohibited; '--|' is only for early return.")
 
 expr_is_jump: tast::TypedExpr => <>
 expr_is_jump = te =>
@@ -5372,6 +5387,7 @@ annotate_scc = ctx, env, exprs, name, is_recursive =>
                                        saved_decl_exp = cur_expected_ut
                                        saved_views = view_vars
                                        cur_expected_ut ::= <+ f.ret +>
+                                       check_no_closing_return(ctx, fe.body)
                                        body_te = annotate_expr(ctx, env,
                                           fe.body)
                                        cur_expected_ut ::= saved_decl_exp
@@ -5972,6 +5988,7 @@ elaborate_program_with_ctx = exprs =>
                                     has_already_gen = <>(already_gen)
                                     ?fe.ct_params > 0 && !has_already_gen
                                        |
+                                          check_no_closing_return(ctx, fe.body)
                                           p_vinfos = ast::VInfos()
                                           ?fe.params @ p_k =>
                                              p_ti = ast::TypeInfo(TypeVar, "T")

@@ -986,8 +986,8 @@ entry:
   %var._46 = alloca ptr, align 8
   %var._i = alloca i64, align 8
   %var.f = alloca ptr, align 8
-  %loop.step.127 = alloca i64, align 8
-  %loop.idx.127 = alloca i64, align 8
+  %loop.step.135 = alloca i64, align 8
+  %loop.idx.135 = alloca i64, align 8
   %"var.max_align'" = alloca i64, align 8
   %"var.cur_off'" = alloca i64, align 8
   %var.r = alloca ptr, align 8
@@ -1049,8 +1049,8 @@ choice.exit9:                                     ; preds = %choice.else8, %choi
   %tag.match = icmp eq i64 %tag.id, 0
   br i1 %tag.match, label %choice.case, label %choice.next
 
-choice.exit14:                                    ; preds = %choice.next179, %choice.case178, %choice.case158, %choice.case146, %choice.exit92, %loop.exit.127, %choice.case17, %choice.case
-  %choice.res201 = phi ptr [ %call.res16, %choice.case ], [ %rec.alloc, %choice.case17 ], [ %call.res70, %loop.exit.127 ], [ %choice.res145, %choice.exit92 ], [ %call.res157, %choice.case146 ], [ %rec.alloc174, %choice.case158 ], [ %rec.alloc194, %choice.case178 ], [ %call.res200, %choice.next179 ]
+choice.exit14:                                    ; preds = %choice.next179, %choice.case178, %choice.case158, %choice.case146, %choice.exit92, %loop.exit.135, %choice.case17, %choice.case
+  %choice.res201 = phi ptr [ %call.res16, %choice.case ], [ %rec.alloc, %choice.case17 ], [ %call.res70, %loop.exit.135 ], [ %choice.res145, %choice.exit92 ], [ %call.res157, %choice.case146 ], [ %rec.alloc174, %choice.case158 ], [ %rec.alloc194, %choice.case178 ], [ %call.res200, %choice.next179 ]
   ret ptr %choice.res201
 
 choice.case:                                      ; preds = %choice.exit9
@@ -1135,18 +1135,18 @@ a.after:                                          ; preds = %a.create, %choice.c
   %arr.cycle.len44 = load i64, ptr %arr.cycle.len, align 8
   %arr.cycle.data = getelementptr inbounds { i64, ptr, i64 }, ptr %a.load2, i32 0, i32 1
   %arr.cycle.data45 = load ptr, ptr %arr.cycle.data, align 8
-  store i64 0, ptr %loop.idx.127, align 8
+  store i64 0, ptr %loop.idx.135, align 8
   %cycle.prev.u = load ptr, ptr %var._39, align 8
-  br label %loop.header.127
+  br label %loop.header.135
 
-loop.header.127:                                  ; preds = %loop.latch.127, %a.after
-  %counter.load = load i64, ptr %loop.idx.127, align 8
+loop.header.135:                                  ; preds = %loop.latch.135, %a.after
+  %counter.load = load i64, ptr %loop.idx.135, align 8
   %loop.cond = icmp slt i64 %counter.load, %arr.cycle.len44
-  br i1 %loop.cond, label %loop.body.127, label %loop.exit.nat.127
+  br i1 %loop.cond, label %loop.body.135, label %loop.exit.nat.135
 
-loop.body.127:                                    ; preds = %loop.header.127
+loop.body.135:                                    ; preds = %loop.header.135
   %loop.rel.i = sub i64 %counter.load, 0
-  store i64 1, ptr %loop.step.127, align 8
+  store i64 1, ptr %loop.step.135, align 8
   %arr.elem.gep = getelementptr i64, ptr %arr.cycle.data45, i64 %counter.load
   %arr.elem.raw = load i64, ptr %arr.elem.gep, align 8
   %slot.i2p = inttoptr i64 %arr.elem.raw to ptr
@@ -1176,18 +1176,18 @@ loop.body.127:                                    ; preds = %loop.header.127
   %fld.load61 = load i64, ptr %fld.gep60, align 8
   %addtmp = add i64 %call.res58, %fld.load61
   store i64 %addtmp, ptr %"var.cur_off'", align 8
-  br label %loop.latch.127
+  br label %loop.latch.135
 
-loop.exit.nat.127:                                ; preds = %loop.header.127
-  br label %loop.exit.127
+loop.exit.nat.135:                                ; preds = %loop.header.135
+  br label %loop.exit.135
 
-loop.latch.127:                                   ; preds = %loop.body.127
-  %step.val = load i64, ptr %loop.step.127, align 8
+loop.latch.135:                                   ; preds = %loop.body.135
+  %step.val = load i64, ptr %loop.step.135, align 8
   %loop.next = add i64 %counter.load, %step.val
-  store i64 %loop.next, ptr %loop.idx.127, align 8
-  br label %loop.header.127
+  store i64 %loop.next, ptr %loop.idx.135, align 8
+  br label %loop.header.135
 
-loop.exit.127:                                    ; preds = %loop.exit.nat.127
+loop.exit.135:                                    ; preds = %loop.exit.nat.135
   store ptr %cycle.prev.u, ptr %var._39, align 8
   %var.load62 = load i64, ptr %"var.cur_off'", align 8
   %var.load63 = load i64, ptr %"var.max_align'", align 8
@@ -1218,7 +1218,7 @@ choice.case71:                                    ; preds = %choice.next33
   %fld.load87 = load i1, ptr %fld.gep86, align 1
   store i1 %fld.load87, ptr %var.has_n, align 1
   %var.load88 = load i1, ptr %var.has_p, align 1
-  br i1 %var.load88, label %and.128.then, label %and.128.else
+  br i1 %var.load88, label %and.136.then, label %and.136.else
 
 choice.next72:                                    ; preds = %choice.next33
   %tag.gep148 = getelementptr inbounds { i64, ptr }, ptr %var.load13, i32 0, i32 0
@@ -1226,19 +1226,19 @@ choice.next72:                                    ; preds = %choice.next33
   %tag.match150 = icmp eq i64 %tag.id149, 5
   br i1 %tag.match150, label %choice.case146, label %choice.next147
 
-and.128.then:                                     ; preds = %choice.case71
+and.136.then:                                     ; preds = %choice.case71
   %var.load89 = load i1, ptr %var.has_n, align 1
   %nottmp = xor i1 %var.load89, true
-  br label %and.128.exit
+  br label %and.136.exit
 
-and.128.else:                                     ; preds = %choice.case71
-  br label %and.128.exit
+and.136.else:                                     ; preds = %choice.case71
+  br label %and.136.exit
 
-and.128.exit:                                     ; preds = %and.128.else, %and.128.then
-  %and.128.phi = phi i1 [ %nottmp, %and.128.then ], [ %var.load88, %and.128.else ]
-  br i1 %and.128.phi, label %choice.then90, label %choice.else91
+and.136.exit:                                     ; preds = %and.136.else, %and.136.then
+  %and.136.phi = phi i1 [ %nottmp, %and.136.then ], [ %var.load88, %and.136.else ]
+  br i1 %and.136.phi, label %choice.then90, label %choice.else91
 
-choice.then90:                                    ; preds = %and.128.exit
+choice.then90:                                    ; preds = %and.136.exit
   %var.load93 = load ptr, ptr %var.ctx, align 8
   %var.load94 = load ptr, ptr %var.r79, align 8
   %fld.gep95 = getelementptr inbounds { { i1, ptr }, { i1, ptr } }, ptr %var.load94, i32 0, i32 0
@@ -1247,10 +1247,10 @@ choice.then90:                                    ; preds = %and.128.exit
   %call.res98 = call i1 @"layout::is_niche_utype"(ptr %var.load93, ptr %fld.load97)
   br i1 %call.res98, label %choice.then99, label %choice.else100
 
-choice.else91:                                    ; preds = %and.128.exit
+choice.else91:                                    ; preds = %and.136.exit
   %var.load110 = load i1, ptr %var.has_p, align 1
   %nottmp111 = xor i1 %var.load110, true
-  br i1 %nottmp111, label %and.129.then, label %and.129.else
+  br i1 %nottmp111, label %and.137.then, label %and.137.else
 
 choice.exit92:                                    ; preds = %choice.exit115, %choice.exit101
   %choice.res145 = phi ptr [ %choice.res109, %choice.exit101 ], [ %choice.res144, %choice.exit115 ]
@@ -1273,18 +1273,18 @@ choice.exit101:                                   ; preds = %choice.else100, %ch
   %choice.res109 = phi ptr [ %call.res104, %choice.then99 ], [ %call.res108, %choice.else100 ]
   br label %choice.exit92
 
-and.129.then:                                     ; preds = %choice.else91
+and.137.then:                                     ; preds = %choice.else91
   %var.load112 = load i1, ptr %var.has_n, align 1
-  br label %and.129.exit
+  br label %and.137.exit
 
-and.129.else:                                     ; preds = %choice.else91
-  br label %and.129.exit
+and.137.else:                                     ; preds = %choice.else91
+  br label %and.137.exit
 
-and.129.exit:                                     ; preds = %and.129.else, %and.129.then
-  %and.129.phi = phi i1 [ %var.load112, %and.129.then ], [ %nottmp111, %and.129.else ]
-  br i1 %and.129.phi, label %choice.then113, label %choice.else114
+and.137.exit:                                     ; preds = %and.137.else, %and.137.then
+  %and.137.phi = phi i1 [ %var.load112, %and.137.then ], [ %nottmp111, %and.137.else ]
+  br i1 %and.137.phi, label %choice.then113, label %choice.else114
 
-choice.then113:                                   ; preds = %and.129.exit
+choice.then113:                                   ; preds = %and.137.exit
   %var.load116 = load ptr, ptr %var.ctx, align 8
   %var.load117 = load ptr, ptr %var.r79, align 8
   %fld.gep118 = getelementptr inbounds { { i1, ptr }, { i1, ptr } }, ptr %var.load117, i32 0, i32 1
@@ -1293,9 +1293,9 @@ choice.then113:                                   ; preds = %and.129.exit
   %call.res121 = call i1 @"layout::is_niche_utype"(ptr %var.load116, ptr %fld.load120)
   br i1 %call.res121, label %choice.then122, label %choice.else123
 
-choice.else114:                                   ; preds = %and.129.exit
+choice.else114:                                   ; preds = %and.137.exit
   %var.load133 = load i1, ptr %var.has_p, align 1
-  br i1 %var.load133, label %or.130.then, label %or.130.else
+  br i1 %var.load133, label %or.138.then, label %or.138.else
 
 choice.exit115:                                   ; preds = %choice.exit137, %choice.exit124
   %choice.res144 = phi ptr [ %choice.res132, %choice.exit124 ], [ %choice.res143, %choice.exit137 ]
@@ -1318,25 +1318,25 @@ choice.exit124:                                   ; preds = %choice.else123, %ch
   %choice.res132 = phi ptr [ %call.res127, %choice.then122 ], [ %call.res131, %choice.else123 ]
   br label %choice.exit115
 
-or.130.then:                                      ; preds = %choice.else114
-  br label %or.130.exit
+or.138.then:                                      ; preds = %choice.else114
+  br label %or.138.exit
 
-or.130.else:                                      ; preds = %choice.else114
+or.138.else:                                      ; preds = %choice.else114
   %var.load134 = load i1, ptr %var.has_n, align 1
-  br label %or.130.exit
+  br label %or.138.exit
 
-or.130.exit:                                      ; preds = %or.130.else, %or.130.then
-  %or.130.phi = phi i1 [ %var.load133, %or.130.then ], [ %var.load134, %or.130.else ]
-  br i1 %or.130.phi, label %choice.then135, label %choice.else136
+or.138.exit:                                      ; preds = %or.138.else, %or.138.then
+  %or.138.phi = phi i1 [ %var.load133, %or.138.then ], [ %var.load134, %or.138.else ]
+  br i1 %or.138.phi, label %choice.then135, label %choice.else136
 
-choice.then135:                                   ; preds = %or.130.exit
+choice.then135:                                   ; preds = %or.138.exit
   %var.load138 = load i64, ptr %var.ptr_sz, align 8
   %multmp139 = mul i64 %var.load138, 2
   %var.load140 = load i64, ptr %var.ptr_align, align 8
   %call.res141 = call ptr @"tast::layout_ram"(i64 %multmp139, i64 %var.load140)
   br label %choice.exit137
 
-choice.else136:                                   ; preds = %or.130.exit
+choice.else136:                                   ; preds = %or.138.exit
   %call.res142 = call ptr @"tast::layout_scalar"(i64 1, i64 1)
   br label %choice.exit137
 

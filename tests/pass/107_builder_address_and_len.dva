@@ -27,3 +27,13 @@ c = {16}
 io::out $ ?c
 t = +c
 io::out $ @[&t + 2 i8]
+
+// Unfrozen Builder read indexing b(i) and slicing b(a..b):
+d = {16}
+d += "Hello, Edva!"
+io::out $ d(0)
+io::out $ d(7)
+io::out $ d(0..5)
+io::out $ d(7..11)
+io::out $ d(..5)
+io::out $ d(7..)

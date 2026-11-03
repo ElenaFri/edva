@@ -24,12 +24,18 @@
    SOCK_DGRAM  = 2
 
    // Protocol
-   IPPROTO_TCP = 6
-   IPPROTO_UDP = 17
+   IPPROTO_TCP  = 6
+   IPPROTO_UDP  = 17
+   IPPROTO_IPV6 = 41
 
-   // SOL_SOCKET / SO_REUSEADDR / SO_*TIMEO
+   // TCP / IPv6 options
+   TCP_NODELAY = 1
+   IPV6_V6ONLY = #! (os ["darwin"] 27 | 26)
+
+   // SOL_SOCKET / SO_REUSEADDR / SO_REUSEPORT / SO_*TIMEO
    SOL_SOCKET   = #! (os ["darwin"] 0xFFFF | 1)
    SO_REUSEADDR = #! (os ["darwin"] 4 | 2)
+   SO_REUSEPORT = #! (os ["darwin"] 0x0200 | 15)
    SO_RCVTIMEO  = #! (os ["darwin"] 4102 | 20)
    SO_SNDTIMEO  = #! (os ["darwin"] 4101 | 21)
 
@@ -71,6 +77,16 @@
       sin_port:   u16,
       sin_addr:   InAddr,
       sin_zero:   u64,
+   )
+
+   // sockaddr_in6 layout (28 bytes, matches struct sockaddr_in6)
+   #type SockAddrIn6 #packed (
+      sin6_family:   u16,
+      sin6_port:     u16,
+      sin6_flowinfo: u32,
+      sin6_addr_hi:  u64,
+      sin6_addr_lo:  u64,
+      sin6_scope_id: u32,
    )
 
    // struct timeval for SO_RCVTIMEO/SO_SNDTIMEO.
@@ -129,6 +145,10 @@
    #type Host < Addr | String >
    #type Chunk < String | >
 
+   // Sign-extend a 32-bit C `int` return value from `libc` into 64-bit `Int`.
+   c_int: Int => Int
+   c_int = x => Int(i32(x))
+
    // Endian byte-swap helpers using LLVM intrinsics (%bswap).
    htons: Int => Int
    htons = x => %bswap(x) .>. 48
@@ -157,6 +177,38 @@
    in_addr_any = !=>
       InAddr(0u8, 0u8, 0u8, 0u8)
 
+   // Parse a strict dotted-quad IPv4 address "a.b.c.d" into a 32-bit integer in
+   // network byte order (little-endian [b0, b1, b2, b3]).
+   parse_ipv4: String => < Int | >
+   parse_ipv4 = s =>
+      slen = ?s
+      slen == 0 |-->
+      parts = Int{}
+      cur' = 0
+      has_digit' = <->
+      slen @ i =>
+         c = s(i)
+         c == '.'
+            |
+               !has_digit' | -->
+               parts += cur'
+               cur' = 0
+               has_digit' = <->
+            |
+               !str::is_digit(c) | -->
+               has_digit' = <+>
+               cur' = cur' * 10 + (c - '0')
+               cur' > 255 | (has_digit' = <->; -->)
+      !has_digit' |-->
+      parts += cur'
+      ?parts != 4 |-->
+      b0 = parts(0)!!
+      b1 = parts(1)!!
+      b2 = parts(2)!!
+      b3 = parts(3)!!
+      (b0 > 255 || b1 > 255 || b2 > 255 || b3 > 255) |-->
+      <+ b0 .|. (b1 .<. 8) .|. (b2 .<. 16) .|. (b3 .<. 24) +>
+
    // Open a TCP client socket connected to host:port. Host may be a numeric IP
    // or a DNS name (resolved via getaddrinfo).
    // Returns Conn: <+ fd +> on success,
@@ -166,11 +218,11 @@
       ip = libc::inet_addr $ host
       ip [< 0] --| net::tcp_connect_name(host, port)
       ip [0xFFFFFFFF] --| net::tcp_connect_name(host, port)
-      sock = libc::socket(net::AF_INET, net::SOCK_STREAM, net::IPPROTO_TCP)
+      sock = c_int(libc::socket(net::AF_INET, net::SOCK_STREAM, net::IPPROTO_TCP))
       sock [< 0] --| Conn(<- "socket failed" +>)
       addr = SockAddrIn(net::sin_fam_inet!,
          u16(htons $ port), in_addr_u32(ip), 0u64)
-      ret = libc::connect(sock, &addr, 16)
+      ret = c_int(libc::connect(sock, &addr, 16))
       ret [0]
          Conn(<+ sock ->)
       |
@@ -219,10 +271,10 @@
    resolve: String, Int => Host
    resolve = host, port =>
       port_str = str::from_int(port)
-      out = {8}
+      out = 0
       gai = libc::getaddrinfo(host, port_str, sys::addr_null, &out)
       gai [0]
-         Host(<+ Addr(@[&out Int]) ->)
+         Host(<+ Addr(out) ->)
       |
          Host(<- "resolve failed" +>)
 
@@ -232,25 +284,95 @@
    // Returns Conn: <+ fd +> on success, <- error -> on failure.
    tcp_listen: Int, Int => Conn
    tcp_listen = port, backlog =>
-      sock = libc::socket(net::AF_INET, net::SOCK_STREAM, net::IPPROTO_TCP)
+      sock = c_int(libc::socket(net::AF_INET, net::SOCK_STREAM, net::IPPROTO_TCP))
       sock [< 0] --| Conn(<- "socket failed" +>)
       one = 1i32
       libc::setsockopt(sock, net::sol_socket!, net::so_reuseaddr!, &one, 4)
       addr = SockAddrIn(net::sin_fam_inet!,
          u16(htons $ port), in_addr_any!, 0u64)
-      ret_b = libc::bind(sock, &addr, 16)
-      ret_l = ret_b [0] libc::listen(sock, backlog) | -1
+      ret_b = c_int(libc::bind(sock, &addr, 16))
+      ret_l = ret_b [0] c_int(libc::listen(sock, backlog)) | -1
       ret_l [0]
          Conn(<+ sock ->)
       |
          net::close_fd(sock)
          Conn(<- "bind/listen failed" +>)
 
+   // Probe whether an IPv4 address:port can be bound WITHOUT SO_REUSEPORT.
+   // Fails if any existing TCP_LISTEN socket (including SO_REUSEPORT) is bound to ip_addr:port.
+   probe_ipv4: Int, Int => <>
+   probe_ipv4 = ip_addr, port =>
+      sock = c_int(libc::socket(net::AF_INET, net::SOCK_STREAM, 0))
+      sock < 0 |->
+      one = 1i32
+      libc::setsockopt(sock, net::sol_socket!, net::so_reuseaddr!, &one, 4)
+      addr = SockAddrIn(net::sin_fam_inet!, u16(htons(port)), in_addr_u32(ip_addr), 0u64)
+      rc = c_int(libc::bind(sock, &addr, 16))
+      libc::close(sock)
+      rc == 0
+
+   // Probe whether an IPv6 address:port ([::1] or [::]) can be bound WITHOUT SO_REUSEPORT.
+   probe_ipv6: Int, <> => <>
+   probe_ipv6 = port, is_loopback =>
+      sock = c_int(libc::socket(net::AF_INET6, net::SOCK_STREAM, 0))
+      sock < 0 |+>
+      one = 1i32
+      libc::setsockopt(sock, net::sol_socket!, net::so_reuseaddr!, &one, 4)
+      libc::setsockopt(sock, net::IPPROTO_IPV6, net::IPV6_V6ONLY, &one, 4)
+      addr_lo = is_loopback | (1u64 .<. 56) | 0u64
+      addr6 = SockAddrIn6(u16(net::AF_INET6), u16(htons(port)), 0u32, 0u64, addr_lo, 0u32)
+      rc = c_int(libc::bind(sock, &addr6, 28))
+      libc::close(sock)
+      rc == 0
+
+   // Ensure no existing TCP listener (IPv4, wildcard, IPv6, or SO_REUSEPORT) is
+   // already occupying the target port before workers bind with SO_REUSEPORT.
+   ensure_port_free: String, Int => < | String >
+   ensure_port_free = ip_str, port =>
+      parse_ipv4(ip_str)
+         | ip_addr =>
+            err_msg = "Failed to bind to " + ip_str + ":" + str::from_int(port) + " (address already in use)"
+            !probe_ipv4(ip_addr, port) | --| <- err_msg ->
+            ip_addr != 0 && !probe_ipv4(0, port) | --| <- err_msg ->
+            loopback_ip = 0x0100007F
+            ip_addr == 0 && !probe_ipv4(loopback_ip, port) | --| <- err_msg ->
+            (ip_addr == 0 || ip_addr == loopback_ip)
+               |
+                  (!probe_ipv6(port, <+>) || !probe_ipv6(port, <->)) | --| <- err_msg ->
+            <++>
+         | <- "Invalid IPv4 address: " + ip_str ->
+
+   // Create a TCP listener with SO_REUSEADDR, SO_REUSEPORT, and TCP_NODELAY.
+   // SO_REUSEPORT allows multiple worker processes/rings to bind the same port.
+   create_listener: String, Int, Int => Conn
+   create_listener = ip_str, port, backlog =>
+      parse_ipv4(ip_str)
+         | ip_addr =>
+            sock = c_int(libc::socket(net::AF_INET, net::SOCK_STREAM, 0))
+            sock < 0 | --| Conn(<- "Failed to create socket" +>)
+            one = 1i32
+            libc::setsockopt(sock, net::sol_socket!, net::so_reuseaddr!, &one, 4)
+            libc::setsockopt(sock, net::sol_socket!, net::SO_REUSEPORT, &one, 4)
+            libc::setsockopt(sock, net::IPPROTO_TCP, net::TCP_NODELAY, &one, 4)
+            addr = SockAddrIn(net::sin_fam_inet!, u16(htons(port)), in_addr_u32(ip_addr), 0u64)
+            bind_res = c_int(libc::bind(sock, &addr, 16))
+            bind_res < 0
+               |
+                  libc::close(sock)
+                  --| Conn(<- "Failed to bind to " + ip_str + ":" + str::from_int(port) +>)
+            listen_res = c_int(libc::listen(sock, backlog))
+            listen_res < 0
+               |
+                  libc::close(sock)
+                  --| Conn(<- "Failed to listen on socket" +>)
+            Conn(<+ sock ->)
+         | Conn(<- "Invalid IPv4 address: " + ip_str +>)
+
    // Accept one incoming connection on server socket fd.
    // Returns Conn: <+ client fd +> on success, <- error -> on failure.
    tcp_accept: Int => Conn
    tcp_accept = server_fd =>
-      s = libc::accept(server_fd, sys::addr_null, sys::addr_null)
+      s = c_int(libc::accept(server_fd, sys::addr_null, sys::addr_null))
       s [< 0] Conn(<- "accept failed" +>) | Conn(<+ s ->)
 
    // Send a string over a socket fd, looping until every byte is written:
@@ -304,10 +426,16 @@
    // Put fd in non-blocking mode (<+>) or back to blocking (<->).
    set_nonblocking: Int, <> => Int
    set_nonblocking = fd, flag =>
-      flags = libc::fcntl(fd, net::F_GETFL, 0)
+      flags = c_int(libc::fcntl(fd, net::F_GETFL, 0))
       flags [< 0] -1 |
          new_flags = flag | (flags .|. net::O_NONBLOCK) | (flags .&. .!. net::O_NONBLOCK)
-         libc::fcntl(fd, net::F_SETFL, new_flags)
+         c_int(libc::fcntl(fd, net::F_SETFL, new_flags))
+
+   // Disable (<+>) or enable (<->) Nagle's algorithm (TCP_NODELAY) on a TCP socket.
+   set_nodelay: Int, <> => Int
+   set_nodelay = fd, flag =>
+      opt = flag | 1i32 | 0i32
+      c_int(libc::setsockopt(fd, net::IPPROTO_TCP, net::TCP_NODELAY, &opt, 4))
 
    // Send FIN on fd without closing the read side.
    shutdown_fd: Int => Int
@@ -415,10 +543,10 @@
             libc::close(sock)
             rc2 [0]
                ip = ip_str(addr)
-               ifap_buf = {8}
-               rc_if = libc::getifaddrs(&ifap_buf)
+               head_raw = 0
+               rc_if = libc::getifaddrs(&head_raw)
                iface = rc_if [< 0] "" |
-                  head = Addr(@[&ifap_buf Int])
+                  head = Addr(head_raw)
                   name = find_iface(head, addr.sin_addr)
                   libc::freeifaddrs(head)
                   name

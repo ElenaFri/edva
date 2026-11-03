@@ -98,12 +98,9 @@ codegen_call_arena_alloc_live = cg, size, name =>
    atp = LLVMPointerType(runtime::arena_type(cg), 0)
    i8p = LLVMPointerType(LLVMInt8Type!, 0)
    fty = types::fn_type2(cg, i8p, atp, LLVMInt64Type!)
-   args = {16}
-   sb = &args
-   @[sb] = codegen_arena_current(cg, "arena.cur")
-   @[sb + 8] = size
+   args = (codegen_arena_current(cg, "arena.cur"), size)
    fn = LLVMGetNamedFunction(cg.module, "dva_arena_alloc")
-   LLVMBuildCall2(cg.builder, fty, fn, sb, 2, name)
+   LLVMBuildCall2(cg.builder, fty, fn, &args, 2, name)
 
 // Allocate in an explicitly selected arena. Thread hand-offs use this rather
 // than the ambient TLS arena: spawn copies into the child arena and join copies
@@ -113,32 +110,25 @@ codegen_call_arena_alloc_in = cg, arena, size, name =>
    atp = LLVMPointerType(runtime::arena_type(cg), 0)
    i8p = LLVMPointerType(LLVMInt8Type!, 0)
    fty = types::fn_type2(cg, i8p, atp, LLVMInt64Type!)
-   args = {16}
-   sb = &args
-   @[sb] = arena
-   @[sb + 8] = size
+   args = (arena, size)
    fn = LLVMGetNamedFunction(cg.module, "dva_arena_alloc")
-   LLVMBuildCall2(cg.builder, fty, fn, sb, 2, name)
+   LLVMBuildCall2(cg.builder, fty, fn, &args, 2, name)
 
 codegen_call_arena_save: types::Cg, String => Addr
 codegen_call_arena_save = cg, name =>
    atp = LLVMPointerType(runtime::arena_type(cg), 0)
    fty = types::fn_type1(LLVMInt64Type!, atp)
-   args = {8}
-   @[&args] = codegen_arena_current(cg, name)
+   cur = codegen_arena_current(cg, name)
    fn = LLVMGetNamedFunction(cg.module, "dva_arena_save")
-   LLVMBuildCall2(cg.builder, fty, fn, &args, 1, name)
+   types::call1(cg, fty, fn, cur, name)
 
 codegen_call_arena_restore: types::Cg, Addr => Addr
 codegen_call_arena_restore = cg, mark =>
    atp = LLVMPointerType(runtime::arena_type(cg), 0)
    fty = types::fn_type2(cg, LLVMVoidType!, atp, LLVMInt64Type!)
-   args = {16}
-   sb = &args
-   @[sb] = codegen_arena_current(cg, "arena.cur")
-   @[sb + 8] = mark
+   args = (codegen_arena_current(cg, "arena.cur"), mark)
    fn = LLVMGetNamedFunction(cg.module, "dva_arena_restore")
-   LLVMBuildCall2(cg.builder, fty, fn, sb, 2, "")
+   LLVMBuildCall2(cg.builder, fty, fn, &args, 2, "")
 
 // The arena generation is encoded in the top sixteen bits of mortal String
 // lengths. Literal strings retain tag zero and are immortal.
@@ -155,11 +145,8 @@ codegen_call_arena_validate_tag = cg, arena, tag =>
    params += LLVMPointerType(runtime::arena_type(cg), 0)
    params += LLVMInt64Type!
    fn_t = stmt::fn_type_n(cg, LLVMInt1Type!, params, 2)
-   args = {16}
-   ab = &args
-   @[ab] = arena
-   @[ab + 8] = tag
-   LLVMBuildCall2(cg.builder, fn_t, fn, ab, 2, "tag.valid")
+   args = (arena, tag)
+   LLVMBuildCall2(cg.builder, fn_t, fn, &args, 2, "tag.valid")
 
 // Reads and validates the stored String length. A value stamped by a
 // save/restore scope must still carry the current arena generation.
@@ -410,11 +397,8 @@ noncap_closure = cg, name, fn =>
          clo_t = stmt::closure_struct_type(cg)
          gv = LLVMAddGlobal(cg.module, clo_t, "clo.const")
          i8p = LLVMPointerType(LLVMInt8Type!, 0)
-         vals = {16}
-         vsb = &vals
-         @[vsb] = LLVMConstPointerCast(fn, i8p)
-         @[vsb + 8] = LLVMConstNull(i8p)
-         LLVMSetInitializer(gv, LLVMConstStruct(vsb, 2, 0))
+         vals = (LLVMConstPointerCast(fn, i8p), LLVMConstNull(i8p))
+         LLVMSetInitializer(gv, LLVMConstStruct(&vals, 2, 0))
          LLVMSetGlobalConstant(gv, 1)
          LLVMSetLinkage(gv, 8)
          cg.noncap_names += name
@@ -927,6 +911,7 @@ codegen_eval_call_target = cg, t =>
       [Slice] main::codegen_eval_evaluated_slice_access(cg, t, bv.0)
       [Array] main::codegen_eval_evaluated_array_access(cg, t, bv.0)
       [Str] main::codegen_eval_base_str_access(cg, t, bv.0)
+      [Builder] main::codegen_eval_base_builder_access(cg, t, bv.0)
       | codegen_eval_indirect_target_call(cg, t, bv.0, bv.1)
 
 is_cast_type_name: String => <>
@@ -995,6 +980,7 @@ codegen_eval_call_var_dispatch = cg, call =>
             | stmt::codegen_dynamic_record_index_error(cg)
             | main::codegen_eval_record_index(cg, call)
       [Str] main::codegen_eval_str_index(cg, call)
+      [Builder] main::codegen_eval_builder_index(cg, call)
       [Slice] main::slice_or_range(cg, call)
       [Array] main::codegen_eval_array_index(cg, call)
       |
@@ -1438,16 +1424,12 @@ call_lambda = cg, cl, args =>
          arg_vals += stmt::closure_env_ptr(cg, cl.0, "clo.env")
          args @ a => arg_vals += a
          n = ?arg_vals
-         buf = {n * 8}
-         sb = &buf
-         n @ i =>
-            @[sb + i * 8] = arg_vals(i)!!
          fptr = stmt::closure_fn_ptr(cg, cl.0, "clo.fn")
          typed = LLVMBuildBitCast(cg.builder, fptr,
             LLVMPointerType(fi.llvm_type!!, 0), "clo.typed")
          res_name = fi.ret_vt [Unit] "" | "clo.call"
          res = LLVMBuildCall2(cg.builder, fi.llvm_type!!, typed,
-            sb, n, res_name)
+            &types::addrs_buf(arg_vals), n, res_name)
          (res, fi.ret_vt)
       | (LLVMConstInt(LLVMInt64Type!, 0, 0), ast::ValueType(Unknown))
 
@@ -1556,13 +1538,9 @@ call_named = cg, name, args =>
       | uid =>
          fi = cg.fninfos(uid)!!
          n = ?args
-         buf = {n * 8}
-         sb = &buf
-         n @ i =>
-            @[sb + i * 8] = args(i)!!
          res_name = fi.ret_vt [Unit] "" | "call.res"
          res = LLVMBuildCall2(cg.builder, fi.llvm_type!!,
-            fi.llvm_fn!!, sb, n, res_name)
+            fi.llvm_fn!!, &types::addrs_buf(args), n, res_name)
          fn_to_call = <>(idx) | fname | name
          stmt::apply_call_ret_meta(cg, fn_to_call)
          (res, fi.ret_vt)
@@ -1663,10 +1641,9 @@ elem_byte_size = vt =>
 
 codegen_vector_type: Addr, Int => Addr
 codegen_vector_type = elem_llvm, count =>
-   zero_buf = {count * 8}
-   zero_p = &zero_buf
-   count @ i => @[zero_p + i * 8] = LLVMConstNull(elem_llvm)
-   vec = LLVMConstVector(zero_p, count)
+   zeros = types::Addrs()
+   count @ zeros += LLVMConstNull(elem_llvm)
+   vec = LLVMConstVector(&types::addrs_buf(zeros), count)
    LLVMTypeOf(vec)
 
 codegen_build_splat: types::Cg, Addr, Addr, Int => Addr
@@ -1684,17 +1661,15 @@ codegen_build_splat = cg, scalar, elem_llvm, count =>
                      (elem_llvm == LLVMDoubleType!) && (sty == LLVMFloatType!)
                         | LLVMBuildFPExt(cg.builder, scalar, elem_llvm, "splat.fpext")
                         | scalar
-   zero_buf = {count * 8}
-   zero_p = &zero_buf
-   count @ i => @[zero_p + i * 8] = LLVMConstNull(elem_llvm)
-   base_vec = LLVMConstVector(zero_p, count)
+   zeros = types::Addrs()
+   count @ zeros += LLVMConstNull(elem_llvm)
+   base_vec = LLVMConstVector(&types::addrs_buf(zeros), count)
    zero32 = LLVMConstInt(LLVMInt32Type!, 0, 0)
    inserted = LLVMBuildInsertElement(cg.builder, base_vec, c_scalar,
       zero32, "arr.splat.ins")
-   mask_buf = {count * 8}
-   mask_p = &mask_buf
-   count @ i => @[mask_p + i * 8] = zero32
-   mask = LLVMConstVector(mask_p, count)
+   masks = types::Addrs()
+   count @ masks += zero32
+   mask = LLVMConstVector(&types::addrs_buf(masks), count)
    LLVMBuildShuffleVector(cg.builder, inserted, base_vec, mask,
       "arr.splat")
 
@@ -2020,10 +1995,9 @@ make_flag_fvts = count =>
 load_flag_vector: types::Cg, Addr, Int => Addr
 load_flag_vector = cg, ptr, count =>
    i1t = LLVMInt1Type!
-   zero_buf = {count * 8}
-   zero_p = &zero_buf
-   count @ i => @[zero_p + i * 8] = LLVMConstNull(i1t)
-   base_vec = LLVMConstVector(zero_p, count)
+   zeros = types::Addrs()
+   count @ zeros += LLVMConstNull(i1t)
+   base_vec = LLVMConstVector(&types::addrs_buf(zeros), count)
    load_flag_vector_step(cg, ptr, base_vec, count, 0)
 
 load_flag_vector_step: types::Cg, Addr, Addr, Int, Int => Addr
@@ -4657,8 +4631,7 @@ named_call_emit_pre = cg, fname, fn, fty, ret, args, arg_vts =>
       call_args += ca
       call_vts += (arg_vts(ci) | _ | ast::ValueType(Unknown))
    n = ?call_args
-   buf = {n * 8}
-   sb = &buf
+   fin_args = types::Addrs()
    n @ i =>
       a = call_args(i)!!
       has_fn = (types::llvm_val_opt(fn) | f => i < LLVMCountParams(f) | <->)
@@ -4669,8 +4642,7 @@ named_call_emit_pre = cg, fname, fn, fty, ret, args, arg_vts =>
       av = is_int_p | stmt::coerce_int_ext(cg, a, pty_raw, types::is_unsigned_vt(avt)) | a
       av_null = pty_opt | p => LLVMConstNull(p) | LLVMConstInt(LLVMInt64Type!, 0, 0)
       av_val = types::llvm_val_opt(av) | _ | av_null
-      a_fin = coerce_arg_ptr_int(cg, av_val, pty_raw, has_fn)
-      @[sb + i * 8] = a_fin
+      fin_args += coerce_arg_ptr_int(cg, av_val, pty_raw, has_fn)
    res_name = ret [Unit] "" | "call.res"
    call_target = stmt::is_module_dynamic(cg, fname)
       |
@@ -4678,7 +4650,7 @@ named_call_emit_pre = cg, fname, fn, fty, ret, args, arg_vts =>
          i8p = LLVMPointerType(LLVMInt8Type!, 0)
          LLVMBuildLoad2(cg.builder, i8p, gptr, "dyn_fn_load")
       | fn
-   res = LLVMBuildCall2(cg.builder, fty, call_target, sb, n, res_name)
+   res = LLVMBuildCall2(cg.builder, fty, call_target, &types::addrs_buf(fin_args), n, res_name)
    out = ret [Fn] LLVMBuildIntToPtr(cg.builder, res,
       LLVMPointerType(LLVMInt8Type!, 0), "res.ptr") | res
    stmt::apply_call_ret_meta(cg, fname)
@@ -4764,11 +4736,8 @@ codegen_eval_named_call_emit = cg, t, fname, fn, fty, ret, ptypes =>
    is_for = stmt::is_foreign_fn(fname)
    args = eval_named_args_step(cg, t, fname, fn, is_for, ptypes, 0, types::Addrs())
    n = ?args
-   buf = {n * 8}
-   sb = &buf
-   n @ i => @[sb + i * 8] = args(i)!!
    res_name = ret [Unit] "" | "call.res"
-   res = LLVMBuildCall2(cg.builder, fty, fn, sb, n, res_name)
+   res = LLVMBuildCall2(cg.builder, fty, fn, &types::addrs_buf(args), n, res_name)
    is_void = ret [Unit]
    is_void
       | (LLVMConstInt(LLVMInt64Type!, 0, 0), ret)
@@ -4921,22 +4890,15 @@ codegen_closure_call_indirect_val = cg, t, clo_val, ret =>
    cap_args = types::Addrs()
    cap_args += envp
    n @ i => cap_args += arg_vals(i)!!
-   cap_buf = {8 * (n + 1)}
-   csb = &cap_buf
-   n + 1 @ i => @[csb + i * 8] = cap_args(i)!!
    is_void = ret [Unit]
    cap_name = is_void | "" | "clo.cap.res"
-   cap_res = LLVMBuildCall2(cg.builder, cap_ty, fptr, csb,
+   cap_res = LLVMBuildCall2(cg.builder, cap_ty, fptr, &types::addrs_buf(cap_args),
       n + 1, cap_name)
    LLVMBuildBr(cg.builder, merge_bb)
 
    LLVMPositionBuilderAtEnd(cg.builder, plain_bb)
-   p_sz = n == 0 | 8 | 8 * n
-   plain_buf = {p_sz}
-   psb = &plain_buf
-   n @ i => @[psb + i * 8] = arg_vals(i)!!
    plain_name = is_void | "" | "clo.plain.res"
-   plain_res = LLVMBuildCall2(cg.builder, plain_ty, fptr, psb,
+   plain_res = LLVMBuildCall2(cg.builder, plain_ty, fptr, &types::addrs_buf(arg_vals),
       n, plain_name)
    LLVMBuildBr(cg.builder, merge_bb)
 
@@ -5022,13 +4984,10 @@ codegen_closure_call_plain = cg, t, fty, ret, cfn =>
       arg_vals += ev.0
    cg.discard_result = saved_discard
    n = ?t.args
-   buf = {n * 8}
-   sb = &buf
-   n @ i => @[sb + i * 8] = arg_vals(i)!!
    typed = LLVMBuildBitCast(cg.builder, fn_ptr,
       LLVMPointerType(fty, 0), "clo.plain.fn")
    res_name = ret [Unit] "" | "clo.plain.res"
-   res = LLVMBuildCall2(cg.builder, fty, typed, sb, n, res_name)
+   res = LLVMBuildCall2(cg.builder, fty, typed, &types::addrs_buf(arg_vals), n, res_name)
    out = ret [Fn] LLVMBuildIntToPtr(cg.builder, res, i8p, "res.ptr") | res
    stmt::apply_call_ret_meta(cg, cfn)
    coerce_untyped_call_ret(cg, (out, ret))
@@ -5051,14 +5010,10 @@ codegen_closure_call_env = cg, t, fty, ret =>
    cg.discard_result = saved_discard
    n = ?t.args
    total = n + 1
-   buf = {total * 8}
-   sb = &buf
-   total @ i =>
-      @[sb + i * 8] = arg_vals(i)!!
    typed = LLVMBuildBitCast(cg.builder, fptr,
       LLVMPointerType(fty, 0), "clo.fn.typed")
    res_name = ret [Unit] "" | "clo.call"
-   res = LLVMBuildCall2(cg.builder, fty, typed, sb, total, res_name)
+   res = LLVMBuildCall2(cg.builder, fty, typed, &types::addrs_buf(arg_vals), total, res_name)
    cfn = closure_fn_of(cg, t.fn_name)
    cfn != "" | stmt::apply_call_ret_meta(cg, cfn)
    coerce_untyped_call_ret(cg, (res, ret))
@@ -6340,21 +6295,14 @@ codegen_typed_eval_indirect_call = cg, clo_val, args, ti =>
    cap_args = types::Addrs()
    cap_args += envp
    n @ i => cap_args += arg_vals(i)!!
-   cap_buf = {8 * (n + 1)}
-   csb = &cap_buf
-   n + 1 @ i => @[csb + i * 8] = cap_args(i)!!
    cap_name = is_void | "" | "clo.cap.res"
-   cap_res = LLVMBuildCall2(cg.builder, cap_ty, fptr, csb,
+   cap_res = LLVMBuildCall2(cg.builder, cap_ty, fptr, &types::addrs_buf(cap_args),
       n + 1, cap_name)
    LLVMBuildBr(cg.builder, merge_bb)
 
    LLVMPositionBuilderAtEnd(cg.builder, plain_bb)
-   p_sz = n == 0 | 8 | 8 * n
-   plain_buf = {p_sz}
-   psb = &plain_buf
-   n @ i => @[psb + i * 8] = arg_vals(i)!!
    plain_name = is_void | "" | "clo.plain.res"
-   plain_res = LLVMBuildCall2(cg.builder, plain_ty, fptr, psb,
+   plain_res = LLVMBuildCall2(cg.builder, plain_ty, fptr, &types::addrs_buf(arg_vals),
       n, plain_name)
    LLVMBuildBr(cg.builder, merge_bb)
 
@@ -6413,11 +6361,7 @@ codegen_typed_eval_exit = cg, e =>
             |
                runtime::emit_arena_destroy(cg)
                ef = types::ensure_exit_fn(cg)
-               eargs = {16}
-               esb = &eargs
-               @[esb] = tr
-               LLVMBuildCall2(cg.builder, ef.0, ef.1, esb, 1,
-                  "")
+               types::call1(cg, ef.0, ef.1, tr, "")
                LLVMBuildUnreachable(cg.builder)
                cg.exited = <+>
                dead' = LLVMAppendBasicBlock(cg.current_fn, "exit.done")
@@ -6641,7 +6585,7 @@ codegen_typed_eval_call = cg, fname, ftarget, args, ti =>
       |
          tgt_e = ftarget | _ | tast::mk_lit_unit(0, 0)
          tgt_vt = types::vt_from_ti_cg(cg, tgt_e.ti)
-         is_idx = tgt_vt [Array, Slice, Map, Str, Record]
+         is_idx = tgt_vt [Array, Slice, Map, Str, Builder, Record]
          is_idx
             |
                arg0' = args(0) | _ | tast::mk_lit_unit(0, 0)
@@ -6813,35 +6757,22 @@ get_or_add_intrinsic = cg, name, fty =>
 
 intrin_fn_type2: Addr, Addr, Addr => Addr
 intrin_fn_type2 = ret, p0, p1 =>
-   parr = {16}
-   sb = &parr
-   @[sb] = p0
-   @[sb + 8] = p1
-   LLVMFunctionType(ret, sb, 2, 0)
+   parr = (p0, p1)
+   LLVMFunctionType(ret, &parr, 2, 0)
 
 call_fn1: types::Cg, Addr, Addr, Addr, String => Addr
 call_fn1 = cg, fty, fn, a0, name =>
-   buf = {16}
-   p = &buf
-   @[p] = a0
-   LLVMBuildCall2(cg.builder, fty, fn, p, 1, name)
+   types::call1(cg, fty, fn, a0, name)
 
 call_fn2: types::Cg, Addr, Addr, Addr, Addr, String => Addr
 call_fn2 = cg, fty, fn, a0, a1, name =>
-   buf = {16}
-   p = &buf
-   @[p] = a0
-   @[p + 8] = a1
-   LLVMBuildCall2(cg.builder, fty, fn, p, 2, name)
+   args = (a0, a1)
+   LLVMBuildCall2(cg.builder, fty, fn, &args, 2, name)
 
 call_fn3: types::Cg, Addr, Addr, Addr, Addr, Addr, String => Addr
 call_fn3 = cg, fty, fn, a0, a1, a2, name =>
-   buf = {24}
-   p = &buf
-   @[p] = a0
-   @[p + 8] = a1
-   @[p + 16] = a2
-   LLVMBuildCall2(cg.builder, fty, fn, p, 3, name)
+   args = (a0, a1, a2)
+   LLVMBuildCall2(cg.builder, fty, fn, &args, 3, name)
 
 rec_elem_vt: ast::VTypes => ast::ValueType
 rec_elem_vt = fvts =>
@@ -6955,12 +6886,11 @@ codegen_eval_swizzle = cg, target, fname, ti =>
             |
                v0 = load_rec_vec(cg, tv.0, elem_llvm, elem_vt, in_count)
                i32t = LLVMInt32Type!
-               mask_buf = {out_count * 8}
-               mask_p = &mask_buf
+               masks = types::Addrs()
                out_count @ mi =>
                   c_idx = swizzle_char_to_idx(cg, eff_tgt_ti, fname, mi)
-                  @[mask_p + mi * 8] = LLVMConstInt(i32t, c_idx, 0)
-               mask_vec = LLVMConstVector(mask_p, out_count)
+                  masks += LLVMConstInt(i32t, c_idx, 0)
+               mask_vec = LLVMConstVector(&types::addrs_buf(masks), out_count)
                res_vec = LLVMBuildShuffleVector(cg.builder, v0, v0,
                   mask_vec, "swizzle")
                store_rec_vec(cg, res_vec, ti, elem_llvm, elem_vt, out_count)
@@ -7577,8 +7507,7 @@ codegen_typed_eval_intrinsic = cg, fname, args, ti =>
             | load_rec_vec(cg, ev1.0, elem_llvm, elem_vt, ?fvts1)
             | v0
          i32t = LLVMInt32Type!
-         mask_buf = {mask_count * 8}
-         mask_p = &mask_buf
+         masks = types::Addrs()
          mask_te.kind
             [Record m_fields]
                mask_count @ mi =>
@@ -7588,13 +7517,11 @@ codegen_typed_eval_intrinsic = cg, fname, args, ti =>
                         unify::prim_int())
                   m_kind = mfld.val.kind
                   m_idx = m_kind [LitInt idx_val] idx_val | 0
-                  c_idx = LLVMConstInt(i32t, m_idx, 0)
-                  @[mask_p + mi * 8] = c_idx
+                  masks += LLVMConstInt(i32t, m_idx, 0)
             |
                mask_count @ mi =>
-                  c_mi = LLVMConstInt(i32t, mi, 0)
-                  @[mask_p + mi * 8] = c_mi
-         mask_vec = LLVMConstVector(mask_p, mask_count)
+                  masks += LLVMConstInt(i32t, mi, 0)
+         mask_vec = LLVMConstVector(&types::addrs_buf(masks), mask_count)
          res_vec = LLVMBuildShuffleVector(cg.builder, v0, v1,
             mask_vec, "shuffle")
          store_rec_vec(cg, res_vec, ti, elem_llvm, elem_vt, mask_count)
@@ -7707,6 +7634,7 @@ codegen_typed_eval_index = cg, target, index, ti =>
    tv = main::codegen_typed_eval(cg, target)
    ret_vt = types::vt_from_ti(ti)
    is_str = tv.1 [Str]
+   is_bldr = tv.1 [Builder]
    is_sl = tv.1 [Slice]
    is_arr = tv.1 [Array]
    is_rec = tv.1 [Record]
@@ -7831,12 +7759,16 @@ codegen_typed_eval_index = cg, target, index, ti =>
                            (slice', ast::ValueType(Slice))
                         | (LLVMConstInt(LLVMInt64Type!, 0, 0), ast::ValueType(Unknown))
       |
-         is_str
+         is_str || is_bldr
             |
                i64t' = LLVMInt64Type!
                i8t = LLVMInt8Type!
-               len_val = codegen_string_len(cg, tv.0, "s.read.len")
-               data_ptr = codegen_string_data(cg, tv.0, "s.read.data")
+               len_val = is_bldr
+                  | main::builder_len(cg, tv.0, "b.read.len")
+                  | codegen_string_len(cg, tv.0, "s.read.len")
+               data_ptr = is_bldr
+                  | main::builder_data(cg, tv.0, "b.read.data")
+                  | codegen_string_data(cg, tv.0, "s.read.data")
                str_is_range = ret_vt [Str]
                str_is_range
                   |

@@ -73,10 +73,9 @@
    decode_rune_builder = b, i =>
       n = ?b
       i ![0..n] | --| Rune(0xFFFD)
-      p = &b
-      need = seq_len(Int(@[p + i u8]))
+      need = seq_len(b(i))
       i + need > n | --| Rune(0xFFFD)
-      decode_rune_addr(p, i)
+      decode_rune_addr(&b, i)
 
    // Decode the UTF-8 rune at String s + i, returning (codepoint, byte_len) or (-1, 1) if invalid
    decode_str_at: String, Int => (Int, Int)

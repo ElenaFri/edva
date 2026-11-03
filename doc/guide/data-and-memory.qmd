@@ -63,6 +63,8 @@ All inspection and manipulation is performed via symbolic prefix operators:
 |---|---|---|---|
 | Creation | `"hello"` / `+b` | `{64}` | Allocate buffer with capacity `64` |
 | Measure length | `?s` | `?b` | Current byte count |
+| Byte read | `s(i)` | `b(i)` | Unsigned byte (`Int` `0..255`, bounds-checked `0 <= i < ?b`) |
+| Slice view | `s(a..b)` | `b(a..b)` | Zero-copy `String` view over `[a, b)` |
 | Buffer address | `&s` | `&b` | `Addr` address for FFI / syscalls |
 | Pure append | `s + "world"` | `b + "world"` | Returns a *new* value (O(N) copy) |
 | In-place append | N/A | `b += "world"` | Mutates existing buffer in place |

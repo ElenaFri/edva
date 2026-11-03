@@ -137,16 +137,9 @@ emit_abort_msg = cg, msg, gname =>
                zero = LLVMConstInt(LLVMInt64Type!, 0, 0)
                garr = LLVMTypeOf(gv)
                msg_ptr = types::gep2(cg, garr, gv, zero, zero, "fail.msg.ptr")
-               wargs = {24}
-               sb = &wargs
-               @[sb] = LLVMConstInt(i32t, 2, 0)
-               @[sb + 8] = msg_ptr
-               @[sb + 16] = LLVMConstInt(LLVMInt64Type!, mlen, 0)
-               LLVMBuildCall2(cg.builder, wf.0, wf.1, sb, 3, "")
-               eargs = {16}
-               esb = &eargs
-               @[esb] = LLVMConstInt(i32t, 1, 0)
-               LLVMBuildCall2(cg.builder, ef.0, ef.1, esb, 1, "")
+               wargs = (LLVMConstInt(i32t, 2, 0), msg_ptr, LLVMConstInt(LLVMInt64Type!, mlen, 0))
+               LLVMBuildCall2(cg.builder, wf.0, wf.1, &wargs, 3, "")
+               types::call1(cg, ef.0, ef.1, LLVMConstInt(i32t, 1, 0), "")
 
 // Emits the full runtime: the arena globals + helper functions, the message
 // globals, the FNV hash, and the string-overflow intrinsic declaration.
@@ -248,9 +241,6 @@ codegen_emit_runtime_full = cg =>
    i8p = LLVMPointerType(LLVMInt8Type!, 0)
    at = arena_type(cg)
    atp = LLVMPointerType(at, 0)
-   pp = {8}
-   psb = &pp
-   @[psb] = i8p
    chunks_arr = LLVMArrayType(i8p, 16384)
    sg_arr = LLVMArrayType(i64t, 64)
    zero = LLVMConstInt(i64t, 0, 0)
@@ -384,16 +374,9 @@ codegen_emit_runtime_full = cg =>
       |
          pf = types::ensure_printf_fn(cg)
          ef = types::ensure_exit_fn(cg)
-         pargs = {24}
-         pb = &pargs
-         @[pb] = LLVMGetNamedGlobal(cg.module, "arena_toobig_msg")
-         @[pb + 8] = s1_al
-         @[pb + 16] = cap_phi
-         LLVMBuildCall2(cg.builder, pf.0, pf.1, pb, 3, "")
-         eargs = {16}
-         eb = &eargs
-         @[eb] = LLVMConstInt(i32t, 1, 0)
-         LLVMBuildCall2(cg.builder, ef.0, ef.1, eb, 1, "")
+         pargs = (LLVMGetNamedGlobal(cg.module, "arena_toobig_msg"), s1_al, cap_phi)
+         LLVMBuildCall2(cg.builder, pf.0, pf.1, &pargs, 3, "")
+         types::call1(cg, ef.0, ef.1, LLVMConstInt(i32t, 1, 0), "")
    LLVMBuildRet(cg.builder, LLVMConstNull(i8p))
    LLVMPositionBuilderAtEnd(cg.builder, al_c)
    no_c = LLVMBuildICmp(cg.builder, 32, nc_vl, zero, "no_chunks")
@@ -563,10 +546,7 @@ codegen_emit_runtime_full = cg =>
    r_chunks = LLVMBuildStructGEP2(cg.builder, at, a3, 3, "chunks_gep")
    r_slot = types::gep2(cg, chunks_arr, r_chunks, zero, free_i, "chunk_slot")
    r_chunk = LLVMBuildLoad2(cg.builder, i8p, r_slot, "chunk_ptr")
-   freeargs = {16}
-   fsb = &freeargs
-   @[fsb] = r_chunk
-   LLVMBuildCall2(cg.builder, free_t, LLVMGetNamedFunction(cg.module, "free"), fsb, 1, "")
+   types::call1(cg, free_t, LLVMGetNamedFunction(cg.module, "free"), r_chunk, "")
    free_next = LLVMBuildAdd(cg.builder, free_i, one, "free_i_next")
    free_more = LLVMBuildICmp(cg.builder, 40, free_next, r_nc, "free_more")
    stmt::llvm_add_incoming1(cg, free_i, free_next, rs_l)
@@ -687,10 +667,7 @@ codegen_emit_runtime_full = cg =>
    d_chunks = LLVMBuildStructGEP2(cg.builder, at, a4, 3, "chunks_gep")
    d_slot = types::gep2(cg, chunks_arr, d_chunks, zero, d_i, "chunk_slot")
    d_chunk = LLVMBuildLoad2(cg.builder, i8p, d_slot, "chunk_ptr")
-   dargs = {16}
-   dsb = &dargs
-   @[dsb] = d_chunk
-   LLVMBuildCall2(cg.builder, free_t, LLVMGetNamedFunction(cg.module, "free"), dsb, 1, "")
+   types::call1(cg, free_t, LLVMGetNamedFunction(cg.module, "free"), d_chunk, "")
    d_next = LLVMBuildAdd(cg.builder, d_i, one, "free_i_next")
    d_more = LLVMBuildICmp(cg.builder, 40, d_next, d_nc, "free_more")
    stmt::llvm_add_incoming1(cg, d_i, d_next, ds_l)
@@ -2063,11 +2040,7 @@ codegen_emit_exit = cg, e =>
             |
                emit_arena_destroy(cg)
                ef = types::ensure_exit_fn(cg)
-               eargs = {16}
-               esb = &eargs
-               @[esb] = tr
-               LLVMBuildCall2(cg.builder, ef.0, ef.1, esb, 1,
-                  "")
+               types::call1(cg, ef.0, ef.1, tr, "")
                LLVMBuildUnreachable(cg.builder)
                cg.exited = <+>
                dead' = LLVMAppendBasicBlock(cg.current_fn, "exit.done")
@@ -2137,22 +2110,12 @@ codegen_register_global_ctor: types::Cg, Addr => ()
 codegen_register_global_ctor = cg, fn =>
    i32t = LLVMInt32Type!
    i8p = LLVMPointerType(LLVMInt8Type!, 0)
-   buf3 = {24}
-   sb3 = &buf3
-   @[sb3] = i32t
-   @[sb3 + 8] = i8p
-   @[sb3 + 16] = i8p
-   ctor_struct_type = LLVMStructType(sb3, 3, 0)
-   vbuf = {24}
-   svbuf = &vbuf
-   @[svbuf] = LLVMConstInt(i32t, const::max_u16, 0)
-   @[svbuf + 8] = fn
-   @[svbuf + 16] = LLVMConstNull(i8p)
-   ctor_const = LLVMConstStruct(svbuf, 3, 0)
-   cbuf = {8}
-   scbuf = &cbuf
-   @[scbuf] = ctor_const
-   ctor_array = LLVMConstArray2(ctor_struct_type, scbuf, 1)
+   t3 = (i32t, i8p, i8p)
+   ctor_struct_type = LLVMStructType(&t3, 3, 0)
+   v3 = (LLVMConstInt(i32t, const::max_u16, 0), fn, LLVMConstNull(i8p))
+   ctor_const = LLVMConstStruct(&v3, 3, 0)
+   ca = (ctor_const, ctor_const)
+   ctor_array = LLVMConstArray2(ctor_struct_type, &ca, 1)
    gv = LLVMAddGlobal(cg.module, LLVMTypeOf(ctor_array), "llvm.global_ctors")
    LLVMSetLinkage(gv, 7)
    LLVMSetInitializer(gv, ctor_array)
@@ -2169,17 +2132,14 @@ codegen_finish = cg, out_path =>
          codegen_register_global_ctor(cg, mfn)
       |
          LLVMBuildRet(cg.builder, LLVMConstInt(LLVMInt32Type!, 0, 0))
-   ar = mem::arena(1024)
-   err_buf = mem::alloc(ar, 8)
-   @[err_buf] = sys::addr_null
+   err_out = (sys::addr_null, sys::addr_null)
    tmp_out = out_path + ".tmp"
-   p_res = LLVMPrintModuleToFile(cg.module, tmp_out, err_buf)
-   v_err_buf = mem::alloc(ar, 8)
-   @[v_err_buf] = sys::addr_null
-   v_res = LLVMVerifyModule(cg.module, 2, v_err_buf)
+   p_res = LLVMPrintModuleToFile(cg.module, tmp_out, &err_out)
+   v_err_out = (sys::addr_null, sys::addr_null)
+   v_res = LLVMVerifyModule(cg.module, 2, &v_err_out)
    v_res != 0
       |
-         v_msg_opt = types::llvm_val_opt(@[v_err_buf Addr])
+         v_msg_opt = types::llvm_val_opt(v_err_out.0)
          v_msg_opt
             | v_msg =>
                v_str = c_str(v_msg)
@@ -2191,7 +2151,7 @@ codegen_finish = cg, out_path =>
       |
          p_res != 0
             |
-               err_msg_opt = types::llvm_val_opt(@[err_buf Addr])
+               err_msg_opt = types::llvm_val_opt(err_out.0)
                err_msg_opt
                   | err_msg =>
                      err_str = c_str(err_msg)
@@ -2208,7 +2168,6 @@ codegen_finish = cg, out_path =>
                      log::error $ "E5012: Failed to publish LLVM IR to '" + out_path + "'"
                      unlink(tmp_out)
                      cg.error = <+>
-   mem::destroy(ar)
 
 // call void @dva_arena_destroy(ptr @global_arena) before a function returns.
 emit_arena_destroy: types::Cg => ()
@@ -2218,10 +2177,7 @@ emit_arena_destroy = cg =>
    dest_t = types::fn_type1(LLVMVoidType!, atp)
    dest_fn = LLVMGetNamedFunction(cg.module, "dva_arena_destroy")
    ga = LLVMGetNamedGlobal(cg.module, "global_arena")
-   dargs = {16}
-   sb = &dargs
-   @[sb] = ga
-   LLVMBuildCall2(cg.builder, dest_t, dest_fn, sb, 1, "")
+   types::call1(cg, dest_t, dest_fn, ga, "")
 
 // --- maps (slice 17) ---------------------------------------------------------
 
@@ -2322,11 +2278,8 @@ codegen_map_hash = cg, key_val, key_vt =>
                hash_t = types::fn_type2(cg, i64t', i8p, i64t')
                hash_fn = LLVMGetNamedFunction(cg.module,
                   "dva_hash_string")
-               hargs = {16}
-               sb = &hargs
-               @[sb] = data
-               @[sb + 8] = len
-               LLVMBuildCall2(cg.builder, hash_t, hash_fn, sb, 2,
+               hargs = (data, len)
+               LLVMBuildCall2(cg.builder, hash_t, hash_fn, &hargs, 2,
                   "hash.str")
 
 // Native maps compare String keys: check length equality first so memcmp

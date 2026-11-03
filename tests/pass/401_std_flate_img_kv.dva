@@ -1,0 +1,160 @@
+// Test 401: std/flate, std/img, and std/kv — DEFLATE/Zlib/Gzip compression,
+// QOI & PNG lossless image codecs, and log-structured persistent KV store.
+
+#use color
+#use flate
+#use fs
+#use hex
+#use img
+#use io
+#use kv
+#use str
+#use test
+
+#type UserProfile (
+   id:     Int,
+   name:   String,
+   active: <>,
+   score:  Float
+)
+
+test::suite("std/flate + std/img + std/kv")
+
+// --- 1. std/flate: Raw DEFLATE, Zlib (RFC 1950), and Gzip (RFC 1952) ---
+
+msg = "Hello Edva DEFLATE! Hello Edva DEFLATE! Repeated LZ77 sliding window test string 1234567890."
+raw_def = flate::deflate_raw(msg)
+test::check(?raw_def < ?msg, "DEFLATE compressed repetitive string smaller than input")
+raw_inf = flate::inflate_raw(raw_def) | s => s | ""
+test::eq(raw_inf, msg, "deflate_raw / inflate_raw roundtrip")
+
+// Zlib roundtrip + Adler-32 verification
+z_comp = flate::zlib_compress(msg)
+z_dec = flate::zlib_decompress(z_comp) | s => s | ""
+test::eq(z_dec, msg, "zlib_compress / zlib_decompress roundtrip")
+
+// Corrupt last byte (Adler-32 checksum) and verify rejection
+z_bad = z_comp(0..?z_comp - 1) + "\x00"
+test::check(!<>(flate::zlib_decompress(z_bad)), "zlib_decompress rejects corrupted Adler-32")
+
+// Standard zlib fixed-Huffman vector: zlib.compress(b"abracadabra! " * 20)
+fix_zlib_hex = "789c4b4c2a4a4c4e4c4904528a0a8923930300f4285ba5"
+fix_zlib_bytes = hex::decode(fix_zlib_hex) | s => s | ""
+fix_out = flate::zlib_decompress(fix_zlib_bytes) | s => s | ""
+exp_abra_b = {260}
+20 @
+   exp_abra_b += "abracadabra! "
+test::eq(fix_out, +exp_abra_b, "zlib_decompress C zlib fixed-Huffman vector")
+
+// Standard zlib dynamic-Huffman (BTYPE=10) vector
+dyn_zlib_hex = "78daedcec915c1001400c05a3ce291939ddc7c620b620f71d07f19a6057753c144442c5892b362cd862d3b0af61c385272e2cc852b37ee3ca878f2a2e64d8f3e03868c183361ca8c8cc6bcd94a3eedb4d38dffece7d917a23f7c75"
+dyn_zlib_bytes = hex::decode(dyn_zlib_hex) | s => s | ""
+dyn_out = flate::zlib_decompress(dyn_zlib_bytes) | s => s | ""
+pat = "AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKKKLLLLMMMMNNNNOOOOPPPPQQQQRRRRSSSSTTTTUUUUVVVVWWWWXXXXYYYYZZZZ0000111122223333444455556666777788889999!@#$%^&*()"
+exp_dyn_b = {?pat * 3}
+3 @
+   exp_dyn_b += pat
+test::eq(dyn_out, +exp_dyn_b, "zlib_decompress dynamic Huffman (BTYPE=10) vector")
+
+// Gzip roundtrip + CRC-32 / ISIZE verification
+gz_comp = flate::gzip_compress(msg)
+gz_dec = flate::gzip_decompress(gz_comp) | s => s | ""
+test::eq(gz_dec, msg, "gzip_compress / gzip_decompress roundtrip")
+
+// --- 2. std/img: QOI & PNG RGBA8 Image Codecs ---
+
+px_fn: Int, Int => (Int, Int, Int, Int)
+px_fn = x, y =>
+   r = (x * 17) .&. 0xFF
+   g = (y * 17) .&. 0xFF
+   b = ((x + y) * 9) .&. 0xFF
+   a = (x == y) | 128 | 255
+   (r, g, b, a)
+
+im0 = img::from_fn(16, 16, px_fn)
+test::eq(im0.width, 16, "image width == 16")
+test::eq(im0.height, 16, "image height == 16")
+test::eq(?im0.pixels, 16 * 16 * 4, "image pixels byte length == 1024")
+
+px_3_3 = img::get_rgba(im0, 3, 3)
+test::eq(px_3_3.0, 51, "pixel (3,3) R == 51")
+test::eq(px_3_3.3, 128, "pixel (3,3) A == 128")
+
+// QOI encode / decode roundtrip
+qoi_bytes = img::encode_qoi(im0)
+test::check(qoi_bytes(0..4) == "qoif", "QOI magic header")
+im_qoi = img::decode_qoi(qoi_bytes) | i => i | img::new_rgba(1, 1, 0, 0, 0, 0)
+test::eq(im_qoi.width, 16, "decoded QOI width")
+test::eq(im_qoi.height, 16, "decoded QOI height")
+test::eq(im_qoi.pixels, im0.pixels, "decoded QOI pixel-exact roundtrip")
+
+// PNG encode / decode roundtrip
+png_bytes = img::encode_png(im0)
+test::check(png_bytes(1..4) == "PNG", "PNG magic header")
+im_png = img::decode_png(png_bytes) | i => i | img::new_rgba(1, 1, 0, 0, 0, 0)
+test::eq(im_png.width, 16, "decoded PNG width")
+test::eq(im_png.height, 16, "decoded PNG height")
+test::eq(im_png.pixels, im0.pixels, "decoded PNG pixel-exact roundtrip")
+
+// Auto-detect decode and file save/load
+tmp_png = "/tmp/edva_test_401.png"
+tmp_qoi = "/tmp/edva_test_401.qoi"
+test::check(img::save(tmp_png, im0), "img::save PNG")
+test::check(img::save(tmp_qoi, im0), "img::save QOI")
+loaded_png = img::load(tmp_png) | i => i | img::new_rgba(1, 1, 0, 0, 0, 0)
+loaded_qoi = img::load(tmp_qoi) | i => i | img::new_rgba(1, 1, 0, 0, 0, 0)
+test::eq(loaded_png.pixels, im0.pixels, "img::load PNG matches original")
+test::eq(loaded_qoi.pixels, im0.pixels, "img::load QOI matches original")
+fs::remove(tmp_png)
+fs::remove(tmp_qoi)
+
+// --- 3. std/kv: Persistent Log-Structured Key-Value Store ---
+
+kv_path = "/tmp/edva_test_401.kv"
+fs::remove(kv_path)
+
+db = kv::open(kv_path)!!
+test::eq(kv::len(db), 0, "new kv store has 0 keys")
+
+kv::put(db, "alpha", "first")!!
+kv::put(db, "beta", "second")!!
+kv::put(db, "alpha", "updated_first")!!
+kv::put(db, "temp", "to_be_deleted")!!
+del_ok = kv::delete(db, "temp")!!
+test::check(del_ok, "kv::delete existing key returns <+>")
+test::eq(kv::len(db), 2, "kv::len after put + overwrite + delete")
+test::eq(kv::get(db, "alpha") | s => s | "", "updated_first", "kv::get overwritten key")
+test::check(!kv::has(db, "temp"), "deleted key not in keydir")
+
+// Typed `#!` structural serialization in KV store
+u1 = UserProfile(42, "Ada Lovelace", <+>, 99.5)
+kv::put_val(db, "user:42", u1)!!
+u1_out = kv::get_val(UserProfile, db, "user:42")!!
+test::eq(u1_out.id, 42, "kv::get_val struct id")
+test::eq(u1_out.name, "Ada Lovelace", "kv::get_val struct name")
+test::check(u1_out.active, "kv::get_val struct active")
+test::eq(u1_out.score, 99.5, "kv::get_val struct score")
+
+size_before_compact = fs::size(kv_path)
+kv::compact(db)!!
+size_after_compact = fs::size(kv_path)
+test::check(size_after_compact < size_before_compact, "kv::compact shrinks log file by removing dead records")
+kv::close(db)
+
+// Reopen persisted store from disk and verify state survived
+db2 = kv::open(kv_path)!!
+test::eq(kv::len(db2), 3, "reopened kv store has 3 live keys")
+test::eq(kv::get(db2, "alpha") | s => s | "", "updated_first", "reopened alpha value")
+test::eq(kv::get(db2, "beta") | s => s | "", "second", "reopened beta value")
+u2_out = kv::get_val(UserProfile, db2, "user:42")!!
+test::eq(u2_out.name, "Ada Lovelace", "reopened typed struct value")
+all_k = kv::keys(db2)
+test::eq(?all_k, 3, "kv::keys count == 3")
+test::eq(all_k(0)!!, "alpha", "kv::keys sorted [0] == alpha")
+test::eq(all_k(1)!!, "beta", "kv::keys sorted [1] == beta")
+test::eq(all_k(2)!!, "user:42", "kv::keys sorted [2] == user:42")
+kv::close(db2)
+fs::remove(kv_path)
+
+test::finish!
+io::out("flate-img-kv-ok")

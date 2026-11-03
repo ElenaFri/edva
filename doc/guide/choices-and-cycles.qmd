@@ -198,7 +198,7 @@ is_valid = n =>
 
 ## Cycles (`@`)
 
-Cycles iterate over counts, ranges, or collections without keywords:
+Cycles iterate over counts, ranges, conditions, or collections without keywords:
 
 | Cycle Form | Syntax | Iteration Behavior |
 |---|---|---|
@@ -206,6 +206,7 @@ Cycles iterate over counts, ranges, or collections without keywords:
 | Indexed count | `N @ i =>` | Iterate `i` from `0` to `N - 1` |
 | Bounded range | `start..end @ i =>` | Iterate `i` from `start` up to (exclusive) `end` |
 | Inclusive range | `start...end @ i =>` / `start..=end @ i =>` | Iterate `i` from `start` through (inclusive) `end` |
+| Condition cycle | `(cond) @` / `cond @` | Re-evaluate `Flag` (`<>`) or `Ram` condition before each iteration; repeat while positive (`while` loop) |
 | Infinite cycle | `0.. @` | Unbounded cycle (must break with `-->`) |
 | Collection cycle | `collection @ item =>` | Iterate elements of an array, string, or map |
 

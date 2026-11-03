@@ -325,8 +325,7 @@
       avail = ?r.buf - r.pos
       take = avail < max | avail | max
       res = {take}
-      take > 0 | %memcpy(&res, &r.buf + r.pos, take)
-      ?res = take
+      res += r.buf(r.pos..r.pos + take)
       r.pos = r.pos + take
       <+ +res +>
 
@@ -341,9 +340,7 @@
       avail > 0
          |
             take = avail < max | avail | max
-            cur = ?res_b
-            %memcpy(&res_b + cur, &r.buf + r.pos, take)
-            ?res_b = cur + take
+            res_b += r.buf(r.pos..r.pos + take)
             r.pos = r.pos + take
       chunk = 4096
       0.. @
@@ -376,7 +373,7 @@
    read_byte = r =>
       r.pos !< ?r.buf | refill(r)
       r.pos !< ?r.buf |-->
-      b = Int(@[&r.buf + r.pos i8]) .&. 255
+      b = r.buf(r.pos)
       r.pos = r.pos + 1
       <+ b +>
 
@@ -403,29 +400,25 @@
                scan_count = in_buf < rem_budget | in_buf | rem_budget
                found_idx' = -1
                scan_count @ i =>
-                  (Int(@[&r.buf + r.pos + i i8]) .&. 255) == delim
+                  r.buf(r.pos + i) == delim
                      |
                         found_idx' = i
                         -->
                found_idx' !< 0
                   |
-                     cur = ?out
                      found_idx' > 0
-                        | %memcpy(&out + cur, &r.buf + r.pos, found_idx')
-                     ?out = cur + found_idx'
+                        | out += r.buf(r.pos..r.pos + found_idx')
                      r.pos = r.pos + found_idx' + 1
                      done' = <+>
                      -->
                   |
-                     cur = ?out
                      scan_count > 0
-                        | %memcpy(&out + cur, &r.buf + r.pos, scan_count)
-                     ?out = cur + scan_count
+                        | out += r.buf(r.pos..r.pos + scan_count)
                      r.pos = r.pos + scan_count
                      ?out !< max
                         |
                            has_delim = r.pos < ?r.buf &&
-                              (Int(@[&r.buf + r.pos i8]) .&. 255) == delim
+                              r.buf(r.pos) == delim
                            has_delim | r.pos = r.pos + 1
                            done' = <+>
                            -->

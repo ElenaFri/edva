@@ -134,6 +134,7 @@ Cycles iterate at LBP 10, RBP 20 without keywords.
 |---|---|---|---|---|
 | Count | `n @ body` | `i =>` (`0..n`) | `_` (`Int`), `_i` (`Int`) | Repeats `n` times (`0` to `n - 1`) |
 | Bounded range | `a..b @ body`<br>`a...b @ body` | `i =>` (`Int`) | `_` (`Int`), `_i` (`Int`) | Iterates integer interval $[a, b)$ or $[a, b]$ |
+| Condition (`Flag` `<>` / `Ram`) | `(cond) @ body` / `cond @ body` | — | — | Re-evaluates `cond` before each iteration; repeats while positive (`<+>` / `<+ ... +>`) |
 | Infinite range | `0.. @ body` | `i =>` (`Int`) | `_` (`Int`), `_i` (`Int`) | Unbounded loop; terminate via `-->` or `--|` |
 | `String` | `s @ body` | `b =>` or `b, i =>` | `_` (`Int` byte), `_i` (`Int` index) | Iterates raw UTF-8 bytes; index `i` persists after `-->` break |
 | `T{}` / `T[]` / `(T * N)` | `xs @ body` | `elem =>` or `elem, i =>` | `_` (`T`), `_i` (`Int` index) | Iterates elements in index order `0..?xs` |

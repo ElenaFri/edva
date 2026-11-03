@@ -76,6 +76,23 @@ append_bytes = b, src, n =>
    #type Child (pid: Int, stdin_fd: Int, stdout_fd: Int, stderr_fd: Int)
 
 #private
+   #type PipeFds #packed (
+      r: i32,
+      w: i32
+   )
+
+   #type PollFd3 #packed (
+      fd0: i32,
+      ev0: i16,
+      rev0: i16,
+      fd1: i32,
+      ev1: i16,
+      rev1: i16,
+      fd2: i32,
+      ev2: i16,
+      rev2: i16
+   )
+
    build_argv_args: mem::Arena, String, Args => (Addr, Addr)
    build_argv_args = ar, prog, args =>
       n = ?args
@@ -150,21 +167,16 @@ append_bytes = b, src, n =>
    // Spawns a process. Accepts an argv array (Addr) and waits for exit.
    spawn: String, Addr => Int
    spawn = path, argv =>
-      ar = mem::arena(64)
-      pid_ptr = mem::alloc(ar, 8)
-      status_ptr = mem::alloc(ar, 8)
-      @[pid_ptr] = 0
-      @[status_ptr] = 0
-      spawn_res = libc::posix_spawn(pid_ptr, path, sys::addr_null, sys::addr_null,
+      pid_v = 0i32
+      status_v = 0i32
+      spawn_res = libc::posix_spawn(&pid_v, path, sys::addr_null, sys::addr_null,
          argv, environ)
       failed = spawn_res != 0
       result' = -1
       !failed
          |
-            pid = Int(@[pid_ptr i32])
-            libc::waitpid(pid, status_ptr, 0)
-            result' = Int(@[status_ptr i32])
-      mem::destroy(ar)
+            libc::waitpid(Int(pid_v), &status_v, 0)
+            result' = Int(status_v)
       result'
 
    // --- Environment Variables -------------------------------------------------
@@ -225,23 +237,21 @@ append_bytes = b, src, n =>
    wait_pid: Int => < Int | >
    wait_pid = child_pid =>
       child_pid !> 0 | --| <-->
-      st_buf = {8}
-      @[&st_buf] = 0
-      r = libc::waitpid(child_pid, &st_buf, 0)
+      st = 0i32
+      r = libc::waitpid(child_pid, &st, 0)
       r < 0
          | <-->
-         | <+ decode_wait_status(Int(@[&st_buf i32])) +>
+         | <+ decode_wait_status(Int(st)) +>
 
    // Non-blocking check for child `child_pid` completion (`WNOHANG = 1`).
    // Returns `<+ exit_status +>` if exited, or `<-->` if still running or invalid.
    try_wait_pid: Int => < Int | >
    try_wait_pid = child_pid =>
       child_pid !> 0 | --| <-->
-      st_buf = {8}
-      @[&st_buf] = 0
-      r = libc::waitpid(child_pid, &st_buf, 1)
+      st = 0i32
+      r = libc::waitpid(child_pid, &st, 1)
       r > 0
-         | <+ decode_wait_status(Int(@[&st_buf i32])) +>
+         | <+ decode_wait_status(Int(st)) +>
          | <-->
 
    // Sends signal `sig` to `target_pid`. Returns `<+>` on success.
@@ -254,10 +264,10 @@ append_bytes = b, src, n =>
    spawn_bg: String, Args => < Int | >
    spawn_bg = prog, args =>
       ?prog == 0 | --| <-->
-      exec_p = {8}
+      exec_p = PipeFds(0i32, 0i32)
       libc::pipe(&exec_p) != 0 | --| <-->
-      exec_r = Int(@[&exec_p i32])
-      exec_w = Int(@[&exec_p + 4 i32])
+      exec_r = Int(exec_p.r)
+      exec_w = Int(exec_p.w)
       libc::fcntl(exec_w, 2, 1)
       ar = mem::arena(512)
       built = build_argv_args(ar, prog, args)
@@ -272,8 +282,7 @@ append_bytes = b, src, n =>
             |
                libc::close(exec_r)
                c_execvp(built.0, built.1)
-               err_b = {4}
-               @[&err_b] = 1i32
+               err_b = 1i32
                libc::write_ptr(exec_w, &err_b, 4)
                libc::close(exec_w)
                c_exit(127i32)
@@ -281,7 +290,7 @@ append_bytes = b, src, n =>
             |
                libc::close(exec_w)
                mem::destroy(ar)
-               chk = {4}
+               chk = 0i32
                n = libc::read(exec_r, &chk, 4)
                libc::close(exec_r)
                n > 0
@@ -304,27 +313,30 @@ append_bytes = b, src, n =>
    spawn_piped: String, Args => < Child | >
    spawn_piped = prog, args =>
       ?prog == 0 | --| <-->
-      pipes = {32}
-      libc::pipe(&pipes) != 0 | --| <-->
-      in_r = Int(@[&pipes i32])
-      in_w = Int(@[&pipes + 4 i32])
-      libc::pipe(&pipes + 8) != 0
+      in_p = PipeFds(0i32, 0i32)
+      libc::pipe(&in_p) != 0 | --| <-->
+      in_r = Int(in_p.r)
+      in_w = Int(in_p.w)
+      out_p = PipeFds(0i32, 0i32)
+      libc::pipe(&out_p) != 0
          |
             libc::close(in_r)
             libc::close(in_w)
             --| <-->
-      out_r = Int(@[&pipes + 8 i32])
-      out_w = Int(@[&pipes + 12 i32])
-      libc::pipe(&pipes + 16) != 0
+      out_r = Int(out_p.r)
+      out_w = Int(out_p.w)
+      err_p = PipeFds(0i32, 0i32)
+      libc::pipe(&err_p) != 0
          |
             libc::close(in_r)
             libc::close(in_w)
             libc::close(out_r)
             libc::close(out_w)
             --| <-->
-      err_r = Int(@[&pipes + 16 i32])
-      err_w = Int(@[&pipes + 20 i32])
-      libc::pipe(&pipes + 24) != 0
+      err_r = Int(err_p.r)
+      err_w = Int(err_p.w)
+      exec_p = PipeFds(0i32, 0i32)
+      libc::pipe(&exec_p) != 0
          |
             libc::close(in_r)
             libc::close(in_w)
@@ -333,8 +345,8 @@ append_bytes = b, src, n =>
             libc::close(err_r)
             libc::close(err_w)
             --| <-->
-      exec_r = Int(@[&pipes + 24 i32])
-      exec_w = Int(@[&pipes + 28 i32])
+      exec_r = Int(exec_p.r)
+      exec_w = Int(exec_p.w)
       libc::fcntl(exec_w, 2, 1)
       ar = mem::arena(512)
       built = build_argv_args(ar, prog, args)
@@ -364,8 +376,7 @@ append_bytes = b, src, n =>
                libc::close(out_w)
                libc::close(err_w)
                c_execvp(built.0, built.1)
-               err_b = {4}
-               @[&err_b] = 1i32
+               err_b = 1i32
                libc::write_ptr(exec_w, &err_b, 4)
                libc::close(exec_w)
                c_exit(127i32)
@@ -376,7 +387,7 @@ append_bytes = b, src, n =>
                libc::close(err_w)
                libc::close(exec_w)
                mem::destroy(ar)
-               chk = {4}
+               chk = 0i32
                n = libc::read(exec_r, &chk, 4)
                libc::close(exec_r)
                n > 0
@@ -408,26 +419,21 @@ append_bytes = b, src, n =>
       out_buf' = {256}
       err_buf' = {256}
       chunk = {4096}
-      pfds = {24}
       0.. @
          in_fd' < 0 && out_fd' < 0 && err_fd' < 0 | -->
          ev0 = in_fd' !< 0 | 4i16 | 0i16
          ev1 = out_fd' !< 0 | 1i16 | 0i16
          ev2 = err_fd' !< 0 | 1i16 | 0i16
-         @[&pfds] = i32(in_fd')
-         @[&pfds + 4] = ev0
-         @[&pfds + 6] = 0i16
-         @[&pfds + 8] = i32(out_fd')
-         @[&pfds + 12] = ev1
-         @[&pfds + 14] = 0i16
-         @[&pfds + 16] = i32(err_fd')
-         @[&pfds + 20] = ev2
-         @[&pfds + 22] = 0i16
+         pfds = PollFd3(
+            i32(in_fd'), ev0, 0i16,
+            i32(out_fd'), ev1, 0i16,
+            i32(err_fd'), ev2, 0i16
+         )
          pr = libc::poll(&pfds, 3, -1)
          pr < 0 | -->
-         rev0 = Int(@[&pfds + 6 i16])
-         rev1 = Int(@[&pfds + 14 i16])
-         rev2 = Int(@[&pfds + 22 i16])
+         rev0 = Int(pfds.rev0)
+         rev1 = Int(pfds.rev1)
+         rev2 = Int(pfds.rev2)
          in_fd' !< 0 && (rev0 .&. 28) != 0
             |
                rem = in_len - in_pos'

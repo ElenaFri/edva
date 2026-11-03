@@ -1097,17 +1097,12 @@ codegen_cond_value_valid = cg, v, vt =>
                               LLVMConstInt(LLVMTypeOf(v), 0, 0),
                               "cond.nonzero")
 
-// LLVMAddIncoming with a single (value, block) pair. The LLVM C API takes
-// pointer-to-array args, where Dva has no record-buffer-address primitive
-// for yet; store the two words through a Builder's buffer and pass the buffer
-// addresses (the C side reads one pointer-sized slot each).
+// LLVMAddIncoming with a single (value, block) pair.
 llvm_add_incoming1: types::Cg, Addr, Addr, Addr => ()
 llvm_add_incoming1 = cg, phi, val, bb =>
-   vb = {16}
-   bbuf = {16}
-   @[&vb] = val
-   @[&bbuf] = bb
-   LLVMAddIncoming(phi, &vb, &bbuf, 1)
+   va = (val, val)
+   ba = (bb, bb)
+   LLVMAddIncoming(phi, &va, &ba, 1)
 
 // Widen/narrow an integer value to a target integer type (same-type passes).
 coerce_int_ext: types::Cg, Addr, Addr, <> => Addr
@@ -2211,6 +2206,8 @@ infer_ret = e, params, ptypes =>
             [RuneCount] ast::ValueType(Int)
             | infer_ret(u.1, params, ptypes)
       [Block b] infer_ret_block(b, params, ptypes)
+      [Assign] ast::ValueType(Unit)
+      [Cycle] ast::ValueType(Unit)
       [Return r]
          r.has_val | infer_ret(r.val, params, ptypes) | ast::ValueType(Unit)
       [Call c]
@@ -3018,19 +3015,11 @@ infer_param_types = fd, hints =>
 // An LLVM function type from a return type + a param type list.
 fn_type_n: types::Cg, Addr, types::Addrs, Int => Addr
 fn_type_n = cg, ret, params, n =>
-   buf = {n * 8}
-   sb = &buf
-   n @ i =>
-      @[sb + i * 8] = params(i)!!
-   LLVMFunctionType(ret, sb, n, 0)
+   LLVMFunctionType(ret, &types::addrs_buf(params), n, 0)
 
 fn_type_n_vararg: types::Cg, Addr, types::Addrs, Int, <> => Addr
 fn_type_n_vararg = cg, ret, params, n, is_vararg =>
-   buf = {n * 8}
-   sb = &buf
-   n @ i =>
-      @[sb + i * 8] = params(i)!!
-   LLVMFunctionType(ret, sb, n, (is_vararg | 1 | 0))
+   LLVMFunctionType(ret, &types::addrs_buf(params), n, (is_vararg | 1 | 0))
 
 param_is_heap_ram: types::Cg, String => <>
 param_is_heap_ram = cg, dtype =>
@@ -3463,12 +3452,9 @@ codegen_emit_reload_so_body = cg, name, fn =>
    clean_path = expr::clean_untagged_addr(cg,
       expr::codegen_ensure_nul_terminated(cg, path_arg, "so_path"))
    rtld_now = LLVMConstInt(i32t, 2, 0)
-   dbuf = {16}
-   sdbuf = &dbuf
-   @[sdbuf] = clean_path
-   @[sdbuf + 8] = rtld_now
+   dargs = (clean_path, rtld_now)
    handle = LLVMBuildCall2(cg.builder, dlopen_fty, dlopen_fn,
-      sdbuf, 2, "so_handle")
+      &dargs, 2, "so_handle")
    is_null = LLVMBuildICmp(cg.builder, 32, handle,
       LLVMConstNull(i8p), "handle.is_null")
    null_bb = LLVMAppendBasicBlock(fn, "reload.fail")
@@ -3487,17 +3473,14 @@ codegen_emit_reload_so_body = cg, name, fn =>
          |
             gptr = get_or_create_dyn_fn_ptr(cg, fname, <-->)
             clean_sname = codegen_c_str(cg, fname)
-            sbuf = {16}
-            ssbuf = &sbuf
-            @[ssbuf] = handle
-            @[ssbuf + 8] = clean_sname
+            sargs = (handle, clean_sname)
             sym = LLVMBuildCall2(cg.builder, dlsym_fty, dlsym_fn,
-               ssbuf, 2, "sym")
+               &sargs, 2, "sym")
             bare_name = fname(pfx_len..)
             clean_bname = codegen_c_str(cg, bare_name)
-            @[ssbuf + 8] = clean_bname
+            sargs_bare = (handle, clean_bname)
             sym_bare = LLVMBuildCall2(cg.builder, dlsym_fty, dlsym_fn,
-               ssbuf, 2, "sym_bare")
+               &sargs_bare, 2, "sym_bare")
             sym_is_null = LLVMBuildICmp(cg.builder, 32, sym,
                LLVMConstNull(i8p), "sym.is_null")
             chosen_sym = LLVMBuildSelect(cg.builder, sym_is_null,
@@ -3530,11 +3513,7 @@ codegen_emit_reload_body = cg, name, fn =>
    cmd = edva_bin + " -shared \"" + mod_path + "\" -o \"" +
       so_path + "\" > /dev/null 2>&1"
    clean_cmd = codegen_c_str(cg, cmd)
-   cbuf = {8}
-   scbuf = &cbuf
-   @[scbuf] = clean_cmd
-   res = LLVMBuildCall2(cg.builder, system_fty, system_fn,
-      scbuf, 1, "sys.res")
+   res = types::call1(cg, system_fty, system_fn, clean_cmd, "sys.res")
    is_ok = LLVMBuildICmp(cg.builder, 32, res,
       LLVMConstInt(i32t, 0, 0), "cmd.ok")
    fail_bb = LLVMAppendBasicBlock(fn, "reload.cmd_fail")
@@ -3557,18 +3536,14 @@ codegen_emit_reload_body = cg, name, fn =>
       | rso_fn =>
          rso_fty = types::fn_type1(i1t, i8p)
          so_dva = codegen_string_literal(cg, so_path)
-         @[scbuf] = so_dva
-         rso_res = LLVMBuildCall2(cg.builder, rso_fty, rso_fn,
-            scbuf, 1, "rso.res")
+         rso_res = types::call1(cg, rso_fty, rso_fn, so_dva, "rso.res")
          LLVMBuildRet(cg.builder, rso_res)
       |
          rso_fn_opt2
             | rso_fn2 =>
                rso_fty = types::fn_type1(i1t, i8p)
                so_dva = codegen_string_literal(cg, so_path)
-               @[scbuf] = so_dva
-               rso_res = LLVMBuildCall2(cg.builder, rso_fty, rso_fn2,
-                  scbuf, 1, "rso.res")
+               rso_res = types::call1(cg, rso_fty, rso_fn2, so_dva, "rso.res")
                LLVMBuildRet(cg.builder, rso_res)
             | LLVMBuildRet(cg.builder, LLVMConstInt(i1t, 0, 0))
 
@@ -5614,16 +5589,16 @@ infer_call_expr_type = cg, c =>
                                  vt = vname != "" | types::var_type(cg, vname) |
                                     ast::ValueType(Unknown)
                                  vt
-                                    [Str]
+                                    [Str, Builder]
                                        is_range = ?c.args > 0 &&
                                           (c.args(0) [Range])
                                        is_range
                                           | (ast::ValueType(Str),
                                              ast::TypeInfo(Prim,
                                                 ast::ValueType(Str)))
-                                          | (ast::ValueType(Rune),
+                                          | (ast::ValueType(Int),
                                              ast::TypeInfo(Prim,
-                                                ast::ValueType(Rune)))
+                                                ast::ValueType(Int)))
                                     [Array]
                                        elem_vt' = main::array_elem_vt(cg, vname)
                                        (elem_vt',

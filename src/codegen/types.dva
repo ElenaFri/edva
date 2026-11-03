@@ -698,79 +698,65 @@ fn_type0 = ret =>
 // fn type ret(p0)
 fn_type1: Addr, Addr => Addr
 fn_type1 = ret, p0 =>
-   parr = {16}
-   sb = &parr
-   @[sb] = p0
-   LLVMFunctionType(ret, sb, 1, 0)
+   parr = (p0, p0)
+   LLVMFunctionType(ret, &parr, 1, 0)
 
 // fn type ret(p0, p1, p2)
 fn_type3: Addr, Addr, Addr, Addr => Addr
 fn_type3 = ret, p0, p1, p2 =>
-   parr = {24}
-   sb = &parr
-   @[sb] = p0
-   @[sb + 8] = p1
-   @[sb + 16] = p2
-   LLVMFunctionType(ret, sb, 3, 0)
+   parr = (p0, p1, p2)
+   LLVMFunctionType(ret, &parr, 3, 0)
 
 // GEP2 with a single index value.
 gep1: Cg, Addr, Addr, Addr, String => Addr
 gep1 = cg, elem_t, base, idx, name =>
-   idxarr = {16}
-   @[&idxarr] = idx
+   idxarr = (idx, idx)
    LLVMBuildGEP2(cg.builder, elem_t, base, &idxarr, 1, name)
 
 // GEP2 with two index values (an array element through a struct field).
 gep2: Cg, Addr, Addr, Addr, Addr, String => Addr
 gep2 = cg, elem_t, base, i0, i1, name =>
-   idxarr = {16}
-   sb = &idxarr
-   @[sb] = i0
-   @[sb + 8] = i1
-   LLVMBuildGEP2(cg.builder, elem_t, base, sb, 2, name)
+   idxarr = (i0, i1)
+   LLVMBuildGEP2(cg.builder, elem_t, base, &idxarr, 2, name)
 
 // BuildCall2 with zero arguments.
 call0: Cg, Addr, Addr, String => Addr
 call0 = cg, fty, fn, name =>
-   args = {8}
-   sb = &args
-   LLVMBuildCall2(cg.builder, fty, fn, sb, 0, name)
+   LLVMBuildCall2(cg.builder, fty, fn, sys::addr_null, 0, name)
 
 // BuildCall2 with one argument.
 call1: Cg, Addr, Addr, Addr, String => Addr
 call1 = cg, fty, fn, arg, name =>
-   args = {16}
-   @[&args] = arg
+   args = (arg, arg)
    LLVMBuildCall2(cg.builder, fty, fn, &args, 1, name)
 
 // BuildCall2 with three arguments.
 call3: Cg, Addr, Addr, Addr, Addr, Addr, String => Addr
 call3 = cg, fty, fn, a0, a1, a2, name =>
-   args = {24}
-   sb = &args
-   @[sb] = a0
-   @[sb + 8] = a1
-   @[sb + 16] = a2
-   LLVMBuildCall2(cg.builder, fty, fn, sb, 3, name)
+   args = (a0, a1, a2)
+   LLVMBuildCall2(cg.builder, fty, fn, &args, 3, name)
+
+// Marshal a dynamic Addrs array into a raw C pointer array buffer for the LLVM C API.
+addrs_buf: Addrs => Builder
+addrs_buf = xs =>
+   n = ?xs
+   cap = n > 0 | n * 8 | 8
+   buf = {cap}
+   sb = &buf
+   n @ i =>
+      @[sb + i * 8] = xs(i)!!
+   buf
 
 // An LLVM struct type from a list of field LLVM types (dynamic arity, via a
 // raw buffer — the C API's pointer-to-array arg).
 struct_type_n: Cg, Addrs, Int => Addr
 struct_type_n = cg, types, n =>
-   buf = {n * 8}
-   sb = &buf
-   n @ i =>
-      @[sb + i * 8] = types(i)!!
-   LLVMStructType(sb, n, 0)
+   LLVMStructType(&addrs_buf(types), n, 0)
 
 struct_type_packed_n: Cg, Addrs, Int, <> => Addr
 struct_type_packed_n = cg, types, n, is_packed =>
-   buf = {n * 8}
-   sb = &buf
-   n @ i =>
-      @[sb + i * 8] = types(i)!!
    p_flag = is_packed | 1 | 0
-   LLVMStructType(sb, n, p_flag)
+   LLVMStructType(&addrs_buf(types), n, p_flag)
 
 // An alloca hoisted into the current function's entry block (so it dominates
 // every use), leaving the builder position untouched.
@@ -1002,20 +988,14 @@ emit_arena_init = cg =>
    init_t = fn_type2(cg, LLVMVoidType!, atp, i64t)
    init_fn = LLVMGetNamedFunction(cg.module, "dva_arena_init")
    ga = LLVMGetNamedGlobal(cg.module, "global_arena")
-   iargs = {16}
-   sb = &iargs
-   @[sb] = ga
-   @[sb + 8] = LLVMConstInt(i64t, 67108864, 0)
-   LLVMBuildCall2(cg.builder, init_t, init_fn, sb, 2, "")
+   iargs = (ga, LLVMConstInt(i64t, 67108864, 0))
+   LLVMBuildCall2(cg.builder, init_t, init_fn, &iargs, 2, "")
 
 // fn type ret(p0, p1)
 fn_type2: Cg, Addr, Addr, Addr => Addr
 fn_type2 = cg, ret, p0, p1 =>
-   parr = {16}
-   sb = &parr
-   @[sb] = p0
-   @[sb + 8] = p1
-   LLVMFunctionType(ret, sb, 2, 0)
+   parr = (p0, p1)
+   LLVMFunctionType(ret, &parr, 2, 0)
 
 // --- target layout & size helpers -------------------------------------------
 
@@ -1046,10 +1026,8 @@ emit_wasm_trap = cg =>
 ensure_printf_fn: Cg => (Addr, Addr)
 ensure_printf_fn = cg =>
    i8p = LLVMPointerType(LLVMInt8Type!, 0)
-   pp = {8}
-   psb = &pp
-   @[psb] = i8p
-   pty = LLVMFunctionType(LLVMInt32Type!, psb, 1, 1)
+   parr = (i8p, i8p)
+   pty = LLVMFunctionType(LLVMInt32Type!, &parr, 1, 1)
    pfn = llvm_find_function(cg.module, "printf")
       | fn => fn
       | LLVMAddFunction(cg.module, "printf", pty)
