@@ -129,10 +129,11 @@ build/obj/edva.o: src/edva.dva
 build/obj:
 	$(Q)mkdir -p $@
 
-# Bootstrap from seed if ./edva binary is missing
+# Bootstrap from seed if ./edva binary is missing or older than seed/ir
 bootstrap:
-	$(Q)if [ ! -x ./edva ]; then \
-		echo "edva not found; bootstrapping from seed/ir/..."; \
+	$(Q)if [ ! -x ./edva ] || [ seed/ir/edva.ll -nt ./edva ]; then \
+		echo "Bootstrapping edva from seed/ir/..."; \
+		rm -rf build/obj; \
 		printf '#ifdef __APPLE__\nextern int *__error(void);\nint *__errno_location(void) { return __error(); }\n#else\nextern int *__errno_location(void);\nint *__error(void) { return __errno_location(); }\n#endif\n' > /tmp/edva_seed_shim_$$$$.c; \
 		$(CC) --target=$$($(CC) -dumpmachine) $(ALL_LDFLAGS) $$(find seed/ir -name "*.ll") /tmp/edva_seed_shim_$$$$.c $(LIBS) -o edva; \
 		rc=$$?; rm -f /tmp/edva_seed_shim_$$$$.c; exit $$rc; \
