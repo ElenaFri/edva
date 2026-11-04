@@ -1909,32 +1909,36 @@ compile_ast_to_binary = prog, exports, opts, out_ll, out_bin, dmods, dpaths, nli
    el_res
       | succ =>
          use_cache = !opts.no_cache && env_or("EDVA_NO_CACHE", "") != "1"
-         eff_cache_dir = opts.cache_dir != "" | opts.cache_dir | pkg::default_cache!
-         cache_flags = pkg::CacheCodegenFlags(opts.is_module, opts.is_shared,
-            opts.no_runtime, opts.no_main, opts.module_name)
-         ast_summary = ""
-         opt_str = opts.opt != "" | opts.opt | "-O2"
-         target_triple = opts.triple != "" | opts.triple | get_default_target_triple(0)
-         bkr = pkg::compute_ir_cache_key(opts.target, lfiles, nat_libs, nat_pkg,
-            target_triple, opt_str, cache_flags, ast_summary)
-         cached_hit = use_cache | pkg::cache_lookup(eff_cache_dir, bkr.key) | <-->
-         cached_hit
-            | cached_ll =>
-               copy_file(cached_ll, output_ll)
-                  |
-                     cg_ok' = 1
-                     is_cached' = <+>
-                     !quiet | log::info $ "cached LLVM IR: " + output_ll
+         !use_cache
+            | cg_ok' = codegen::codegen_typed_program_opts(succ.prog, prog,
+               output_ll, exports, opts.target, cg_opts)
+            |
+               eff_cache_dir = opts.cache_dir != "" | opts.cache_dir | pkg::default_cache!
+               cache_flags = pkg::CacheCodegenFlags(opts.is_module, opts.is_shared,
+                  opts.no_runtime, opts.no_main, opts.module_name)
+               ast_summary = ""
+               opt_str = opts.opt != "" | opts.opt | "-O2"
+               target_triple = opts.triple != "" | opts.triple | get_default_target_triple(0)
+               bkr = pkg::compute_ir_cache_key(opts.target, lfiles, nat_libs, nat_pkg,
+                  target_triple, opt_str, cache_flags, ast_summary)
+               cached_hit = pkg::cache_lookup(eff_cache_dir, bkr.key)
+               cached_hit
+                  | cached_ll =>
+                     copy_file(cached_ll, output_ll)
+                        |
+                           cg_ok' = 1
+                           is_cached' = <+>
+                           !quiet | log::info $ "cached LLVM IR: " + output_ll
+                        |
+                           cg_ok' = codegen::codegen_typed_program_opts(succ.prog, prog,
+                              output_ll, exports, opts.target, cg_opts)
+                           cg_ok' != 0
+                              | pkg::cache_store(eff_cache_dir, bkr.key, bkr.meta_text, output_ll)
                   |
                      cg_ok' = codegen::codegen_typed_program_opts(succ.prog, prog,
                         output_ll, exports, opts.target, cg_opts)
-                     cg_ok' != 0 && use_cache
+                     cg_ok' != 0
                         | pkg::cache_store(eff_cache_dir, bkr.key, bkr.meta_text, output_ll)
-            |
-               cg_ok' = codegen::codegen_typed_program_opts(succ.prog, prog,
-                  output_ll, exports, opts.target, cg_opts)
-               cg_ok' != 0 && use_cache
-                  | pkg::cache_store(eff_cache_dir, bkr.key, bkr.meta_text, output_ll)
       | errs =>
          print_program_errors(errs)
          cg_ok' = 0

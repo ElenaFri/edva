@@ -1,0 +1,34 @@
+#use io
+
+// Each unsigned operand must zero-extend, on either side.
+io::out $ (0 .|. 255u8)
+io::out $ (255u8 .|. 0)
+io::out $ (4294967295 .&. 255u8)
+io::out $ (255u8 .&. 4294967295)
+io::out $ (0 .^. 255u8)
+io::out $ (255u8 .^. 0)
+io::out $ (0 .|. 65535u16)
+io::out $ (65535u16 .|. 0)
+io::out $ (4294967295 .&. 65535u16)
+io::out $ (65535u16 .&. 4294967295)
+io::out $ (0 .^. 65535u16)
+io::out $ (65535u16 .^. 0)
+io::out $ (0 .|. 4294967295u32)
+io::out $ (4294967295u32 .|. 0)
+io::out $ (4294967295 .&. 4294967295u32)
+io::out $ (4294967295u32 .&. 4294967295)
+io::out $ (0 .^. 4294967295u32)
+io::out $ (4294967295u32 .^. 0)
+
+f: Int, u8 => Int
+f = x, y => x .|. y
+g: u8, Int => Int
+g = x, y => x .|. y
+io::out $ f(0, 255u8)
+io::out $ g(255u8, 0)
+io::out $ (0 .|. Int(255u8))
+io::out $ (0 .|. -1i8)
+io::out $ (-1i8 .|. 0)
+io::out $ (65535 .&. -1i8)
+inferred = x, y => x .^. y
+io::out $ inferred(0, 255u8)

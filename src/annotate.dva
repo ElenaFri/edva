@@ -2013,6 +2013,12 @@ annotate_expr = ctx, env, expr =>
                         | exact_idx' = unify::find_field_idx(r_chk, fname')
                is_type_tgt = c_tgt [Prim p_t] (p_t [Type]) | <->
                type_prop_ti' = <-->
+               is_type_tgt && fname' == "" && exact_idx' !< 0
+                  |
+                     rt_idx = resolve_type_expr_ut_ti(ctx, env, "", m.target)
+                     rt_idx.2
+                        |
+                           rt_idx.0 [Rec, Enum] unify::unify(ctx, fld_ut, unify::prim_str())
                is_type_tgt && (fname' == "name" || fname' == "zero")
                   |
                      fname' == "name"
@@ -2378,6 +2384,7 @@ annotate_unary_op: unify::Ctx, type_env::TypeEnv, ast::UnaryOp,
 annotate_unary_op = ctx, env, op, t, operand_expr =>
    op
       [Length]
+         check_length_operand(ctx, t)
          unify::prim_int()
       [RuneCount]
          ok = unify::unify(ctx, t, unify::prim_str())
@@ -2620,10 +2627,15 @@ unify_cmp_op = ctx, op, t1, t2 =>
                         diag::E3127_ram_ordering_suffix!)
                unify::prim_flag()
             |
+               is_type1 = c1_ord [Prim p_t1] (p_t1 [Type]) | <->
+               is_type2 = c2_ord [Prim p_t2] (p_t2 [Type]) | <->
+               is_type_cmp = is_eq_neq &&
+                  ((is_type1 && (is_type2 || is_str_ut(ctx, t2))) ||
+                   (is_type2 && (is_type1 || is_str_ut(ctx, t1))))
                is_str_tuple = is_eq_neq &&
                   ((is_str_ut(ctx, t1) && is_str_record(ctx, t2)) ||
                    (is_str_record(ctx, t1) && is_str_ut(ctx, t2)))
-               is_str_tuple
+               is_type_cmp || is_str_tuple
                   | unify::prim_flag()
                   |
                      has_fn = is_eq_neq &&
@@ -3089,6 +3101,17 @@ unify_logical = ctx, is_and, t1, t2 =>
                                  unify::unify(ctx, t2, unify::prim_flag())
                                  unify::prim_flag()
 
+// Leave unresolved operands for call-site inference; never choose an integer
+// type merely because an operand supports length or bitwise operations.
+check_length_operand: unify::Ctx, unify::UType => ()
+check_length_operand = ctx, t =>
+   c = unify::canon(ctx, t)
+   ok = c
+      [Prim p] p [Str, Builder, Rune, Type]
+      | c [Rec, Array, Slice, Map, Var]
+   !ok
+      | unify::add_error(ctx, 3084, "Length operator requires a countable operand")
+
 unify_bitwise: unify::Ctx, unify::UType, unify::UType => unify::UType
 unify_bitwise = ctx, t1, t2 =>
    r1 = is_numeric_rec(ctx, t1)
@@ -3120,20 +3143,26 @@ unify_bitwise = ctx, t1, t2 =>
                      unify_bitwise(ctx, t1, e2)
                      t2
                   |
-                     int1 = is_integerish_ut(ctx, t1) || is_flag_ut(ctx, t1)
-                     int2 = is_integerish_ut(ctx, t2) || is_flag_ut(ctx, t2)
+                     c1 = unify::canon(ctx, t1)
+                     c2 = unify::canon(ctx, t2)
+                     int1 = is_integerish_ut(ctx, c1)
+                     int2 = is_integerish_ut(ctx, c2)
                      int1 && int2
+                        | int_bin_res(c1, c2)
                         |
-                           c1 = unify::canon(ctx, t1)
-                           c2 = unify::canon(ctx, t2)
-                           (is_flag_ut(ctx, t1) && is_flag_ut(ctx, t2))
-                              | unify::prim_flag()
-                              | int_bin_res(c1, c2)
-                        |
-                           ok = unify::unify(ctx, t1, t2)
-                           !ok
-                              | unify::add_error(ctx, 3084, "Bitwise operand mismatch")
-                           unify::prim_int()
+                           var1 = c1 [Var]
+                           var2 = c2 [Var]
+                           ok1 = int1 || var1
+                           ok2 = int2 || var2
+                           ok1 && ok2
+                              |
+                                 unify::unify(ctx, t1, t2)
+                                 unify::canon(ctx, t1)
+                              |
+                                 unify::unify(ctx, t1, t2)
+                                 unify::add_error(ctx, 3084,
+                                    "Bitwise operand mismatch: integer operands required")
+                                 unify::prim_unknown()
 
 unify_shift: unify::Ctx, unify::UType, unify::UType => unify::UType
 unify_shift = ctx, t1, t2 =>
@@ -5756,9 +5785,11 @@ refresh_typed_expr = ctx, te =>
    new_lay = layout::compute_layout(ctx, c_ut)
    new_kind = te.kind
       [Bin b]
+         b.0 [BitAnd, BitOr, BitXor] unify_bitwise(ctx, b.1.ut, b.2.ut)
          tast::TypedExprKind(Bin, (b.0, refresh_typed_expr(ctx, b.1),
             refresh_typed_expr(ctx, b.2)))
       [Unary u]
+         u.0 [Length] check_length_operand(ctx, u.1.ut)
          tast::TypedExprKind(Unary, (u.0, refresh_typed_expr(ctx, u.1)))
       [Call c]
          ref_args = refresh_expr_list(ctx, c.2)

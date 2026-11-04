@@ -1377,6 +1377,42 @@ if [ "$("$PKG_DIR/app")" != "hello cache" ]; then
 fi
 echo "PASS"
 
+# Disabling the IR cache must skip key construction as well as lookup/store.
+echo -n "Testing --no-cache and EDVA_NO_CACHE avoid hashing... "
+HASH_SHIM_DIR="$TMPDIR/hash_shim"
+mkdir -p "$HASH_SHIM_DIR"
+cat <<'EOF' > "$HASH_SHIM_DIR/sha256sum"
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$EDVA_TEST_HASH_LOG"
+exec "$EDVA_TEST_REAL_SHA" "$@"
+EOF
+chmod +x "$HASH_SHIM_DIR/sha256sum"
+REAL_SHA_BIN=$(command -v sha256sum)
+HASH_LOG="$TMPDIR/cache_hash_calls"
+for mode in flag env enabled; do
+    cache_args=()
+    cache_env=0
+    [ "$mode" = flag ] && cache_args+=(--no-cache)
+    [ "$mode" = env ] && cache_env=1
+    rm -f "$HASH_LOG"
+    PATH="$HASH_SHIM_DIR:$PATH" EDVA_TEST_REAL_SHA="$REAL_SHA_BIN" \
+        EDVA_TEST_HASH_LOG="$HASH_LOG" EDVA_NO_CACHE="$cache_env" \
+        timeout 30 ./edva "$PKG_DIR/src/main.dva" -ir \
+        -o "$TMPDIR/hash_check.ll" --cache "$TMPDIR/hash_check_cache" \
+        "${cache_args[@]}" < /dev/null >"$TMPDIR/hash_check.out" 2>&1
+    if [ "$mode" = enabled ]; then
+        if [ ! -s "$HASH_LOG" ]; then
+            echo "FAILED: hashing probe did not observe enabled cache key construction"
+            exit 1
+        fi
+    elif [ -s "$HASH_LOG" ]; then
+        echo "FAILED: cache-disabled compilation still invokes sha256sum ($mode)"
+        cat "$HASH_LOG"
+        exit 1
+    fi
+done
+echo "PASS"
+
 # --- Test 33: Cache invalidation on source change ---
 echo -n "Testing cache invalidation on source change... "
 cat <<'EOF' > "$PKG_DIR/src/main.dva"

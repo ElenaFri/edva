@@ -2438,15 +2438,15 @@ codegen_emit_arith_operands = cg, op, lr, l_rt, l_fvts, rr, r_rt, r_fvts =>
          is_bit = op [BitAnd, BitOr, BitXor, Shl, Shr]
          is_bit
             |
-               ok_l = types::is_int_vt(lr.1) || types::is_flag_vt(lr.1)
-               ok_r = types::is_int_vt(rr.1) || types::is_flag_vt(rr.1)
+               ok_l = types::is_int_vt(lr.1)
+               ok_r = types::is_int_vt(rr.1)
                !ok_l || !ok_r
                   | codegen_emit_bitwise_error(cg)
                   |
-                     res_vt = lr.1 [Flag, Unknown, Unit] ast::ValueType(Int) | lr.1
+                     res_vt = lr.1
                      tgt_ty = types::llvm_type_of_vt(res_vt)
                      lv = stmt::coerce_int_ext(cg, lr.0, tgt_ty, types::is_unsigned_vt(lr.1))
-                     codegen_emit_bitwise_valid(cg, op, lv, rr.0, res_vt)
+                     codegen_emit_bitwise_valid(cg, op, lv, rr.0, rr.1, res_vt)
             |
                requires_int = op [Mul, Div, Mod]
                any_float = types::is_float_vt(lr.1) || types::is_float_vt(rr.1)
@@ -2627,25 +2627,26 @@ codegen_emit_bitwise: types::Cg, ast::BinaryOp,
 codegen_emit_bitwise = cg, op, t =>
    lr = codegen_eval(cg, t.1)
    rr = codegen_eval(cg, t.2)
-   ok_l = types::is_int_vt(lr.1) || types::is_flag_vt(lr.1)
-   ok_r = types::is_int_vt(rr.1) || types::is_flag_vt(rr.1)
+   ok_l = types::is_int_vt(lr.1)
+   ok_r = types::is_int_vt(rr.1)
    !ok_l || !ok_r
       | codegen_emit_bitwise_error(cg)
       |
-         res_vt = lr.1 [Flag, Unknown, Unit] ast::ValueType(Int) | lr.1
+         res_vt = lr.1
          tgt_ty = types::llvm_type_of_vt(res_vt)
          lv = stmt::coerce_int_ext(cg, lr.0, tgt_ty, types::is_unsigned_vt(lr.1))
-         codegen_emit_bitwise_valid(cg, op, lv, rr.0, res_vt)
+         codegen_emit_bitwise_valid(cg, op, lv, rr.0, rr.1, res_vt)
 
 codegen_emit_bitwise_error: types::Cg => (Addr, ast::ValueType)
 codegen_emit_bitwise_error = cg =>
    types::init_error(cg, "E3057", "Bitwise operator requires integer operands.", 0, 0)
    (LLVMConstInt(LLVMInt64Type!, 0, 0), ast::ValueType(Unknown))
 
-codegen_emit_bitwise_valid: types::Cg, ast::BinaryOp, Addr, Addr, ast::ValueType => (Addr, ast::ValueType)
-codegen_emit_bitwise_valid = cg, op, lv, rv, res_vt =>
+codegen_emit_bitwise_valid: types::Cg, ast::BinaryOp, Addr, Addr, ast::ValueType,
+   ast::ValueType => (Addr, ast::ValueType)
+codegen_emit_bitwise_valid = cg, op, lv, rv, rv_vt, res_vt =>
    l_ty = LLVMTypeOf(lv)
-   rv_cast = stmt::coerce_int(cg, rv, l_ty)
+   rv_cast = stmt::coerce_int_ext(cg, rv, l_ty, types::is_unsigned_vt(rv_vt))
    w = LLVMGetTypeKind(l_ty) == 8
       | LLVMGetIntTypeWidth(l_ty)
       | 64
@@ -2695,7 +2696,12 @@ codegen_eval_unary_len = cg, val, vt =>
          w1 = LLVMBuildSelect(cg.builder, c1,
             LLVMConstInt(LLVMInt64Type!, 1, 0), w2, "r.width")
          (w1, ast::ValueType(Int))
-      | (LLVMConstInt(LLVMInt64Type!, 0, 0), ast::ValueType(Unknown))
+      | codegen_length_error(cg)
+
+codegen_length_error: types::Cg => (Addr, ast::ValueType)
+codegen_length_error = cg =>
+   types::init_error(cg, "E3084", "Length operator requires a countable operand", 0, 0)
+   (LLVMConstInt(LLVMInt64Type!, 0, 0), ast::ValueType(Unknown))
 
 ti_rec_or_enum_len: ast::TypeInfo => Int
 ti_rec_or_enum_len = ti =>
@@ -5455,6 +5461,10 @@ codegen_typed_eval_bin_arith_evaled = cg, op, lv, rv, ut, ti =>
             [Seq] (rv.0, rv.1)
             [Lt, Gt, Eq, NotEq, NotLt, NotGt]
                match::codegen_emit_cmp_nonmixed(cg, op, lv, rv)
+            [BitAnd, BitOr, BitXor, Shl, Shr]
+               types::is_int_vt(lv.1) && types::is_int_vt(rv.1)
+                  | codegen_typed_eval_bin_arith_default(cg, op, lv, rv, ti)
+                  | codegen_emit_bitwise_error(cg)
             |
                is_flt = types::is_float_vt(lv.1) || types::is_float_vt(rv.1)
                is_flt
@@ -5504,10 +5514,9 @@ codegen_typed_eval_bin_arith_default = cg, op, lv, rv, ti =>
       |
          ret_vt = types::vt_from_ti(ti)
          tgt_vt = ret_vt [Unknown, Unit] lv.1 | ret_vt
-         tgt_vt' = tgt_vt [Unknown, Unit] ast::ValueType(Int) | tgt_vt
-         tgt_ty = types::llvm_type_of_vt(tgt_vt')
-         ext_l' = stmt::coerce_int_ext(cg, lv.0, tgt_ty, types::is_unsigned_vt(lv.1))
-         codegen_emit_bitwise_valid(cg, op, ext_l', rv.0, tgt_vt')
+         tgt_ty = types::llvm_type_of_vt(tgt_vt)
+         ext_l = stmt::coerce_int_ext(cg, lv.0, tgt_ty, types::is_unsigned_vt(lv.1))
+         codegen_emit_bitwise_valid(cg, op, ext_l, rv.0, rv.1, tgt_vt)
       |
          l_is_ptr = types::is_ptr_vt(lv.1) ||
             (types::llvm_val_opt(lv.0) | v => LLVMGetTypeKind(LLVMTypeOf(v)) == 12 | <->)
@@ -5538,9 +5547,10 @@ codegen_typed_eval_unary = cg, op, operand, ut, ti =>
       | (ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
    rtv_len.1
       |
-         (LLVMConstInt(LLVMInt64Type!,
-            ti_rec_or_enum_len(types::ctfe_canonical_ti(cg, rtv_len.0)), 0),
-            ast::ValueType(Int))
+         count = ti_rec_or_enum_len(types::ctfe_canonical_ti(cg, rtv_len.0))
+         count !< 0
+            | (LLVMConstInt(LLVMInt64Type!, count, 0), ast::ValueType(Int))
+            | codegen_length_error(cg)
       | codegen_typed_eval_unary_val(cg, op, operand, ut, ti)
 
 codegen_typed_eval_unary_val: types::Cg, ast::UnaryOp, tast::TypedExpr, unify::UType,
