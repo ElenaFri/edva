@@ -682,23 +682,23 @@ stringify_pretty_into = b, val, indent, depth =>
          [()]
             Value(Null)
          [<P|>]
-            (val | inner => to_value(inner) | Value(Null))
+            (val | inner => to_value(P, inner) | Value(Null))
          [E{}]
             elems = Values()
             val @ item =>
-               elems += to_value(item)
+               elems += to_value(E, item)
             n = ?elems
             Value(Array, elems(0..n))
          [E[]]
             elems = Values()
             val @ item =>
-               elems += to_value(item)
+               elems += to_value(E, item)
             n = ?elems
             Value(Array, elems(0..n))
          [K ^ V]
             entries = Pairs()
             val @ v, k =>
-               entries += (json_key_to_str(k), to_value(v))
+               entries += (json_key_to_str(K, k), to_value(V, v))
             m = ?entries
             Value(Object, entries(0..m))
          [(..)]
@@ -712,10 +712,10 @@ stringify_pretty_into = b, val, indent, depth =>
                      f.type
                         [<P|>]
                            vf = val.(f)
-                           ev = vf | inner => to_value(inner) | Value(Null)
+                           ev = vf | inner => to_value(P, inner) | Value(Null)
                            elems += ev
                         |
-                           elems += to_value(val.(f))
+                           elems += to_value(f.type, val.(f))
                   n = ?elems
                   Value(Array, elems(0..n))
                |
@@ -724,10 +724,10 @@ stringify_pretty_into = b, val, indent, depth =>
                      f.type
                         [<P|>]
                            vf = val.(f)
-                           ev = vf | inner => to_value(inner) | Value(Null)
+                           ev = vf | inner => to_value(P, inner) | Value(Null)
                            entries += (f.name, ev)
                         |
-                           entries += (f.name, to_value(val.(f)))
+                           entries += (f.name, to_value(f.type, val.(f)))
                   m = ?entries
                   Value(Object, entries(0..m))
          [<..>]
@@ -740,18 +740,18 @@ stringify_pretty_into = b, val, indent, depth =>
                            res' = Value(String, v.name)
                         |
                            entries = Pairs()
-                           entries += (v.name, to_value(pay))
+                           entries += (v.name, to_value(v.type, pay))
                            res' = Value(Object, entries(0..1))
             res'
          | Value(Null)
 
    encode: #! T: Type, T => String
    encode = val =>
-      stringify(to_value(val))
+      stringify(to_value(T, val))
 
    encode_pretty: #! T: Type, T, Int => String
    encode_pretty = val, indent =>
-      stringify_pretty(to_value(val), indent)
+      stringify_pretty(to_value(T, val), indent)
 
    from_value: #! T: Type, Value => < T | Error >
    from_value = val =>

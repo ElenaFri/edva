@@ -40,7 +40,7 @@ native executables.
 ```sh
 git clone https://github.com/edva-lang/edva.git
 cd edva
-./build.sh
+make
 ```
 
 ### Run an example

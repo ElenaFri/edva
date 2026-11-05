@@ -35,7 +35,7 @@ jobs:
           version: '0.115.1'
 
       - name: Build compiler and run test suite
-        run: ./build.sh
+        run: make test
 
       - name: Verify 2-stage fixed point
         run: make fixed-point

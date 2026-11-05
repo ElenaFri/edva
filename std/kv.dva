@@ -26,6 +26,23 @@
 
 #private
 
+#foreign "c"
+   dva_arena_set_current : (arena: Addr) => Addr
+
+new_keydir: () => KeyDir
+new_keydir = !=>
+   prev = dva_arena_set_current(Addr(0))
+   kd = KeyDir()
+   dva_arena_set_current(prev)
+   kd
+
+put_keydir: KeyDir, String, Int, Int => ()
+put_keydir = kdir, key, off, vlen =>
+   prev = dva_arena_set_current(Addr(0))
+   hkey = ++key
+   kdir ^ hkey = EntryLoc(off, vlen)
+   dva_arena_set_current(prev)
+
 kv_err: String, Int => Error
 kv_err = msg, off =>
    Error(400, "kv: " + msg, "std/kv.dva", 1, off + 1, (off, 0))
@@ -118,7 +135,7 @@ replay_log = db, content =>
                         key = content(off' + 13..off' + 13 + klen)
                         val_off = off' + 13 + klen
                         flags == FLAG_PUT
-                           | db.keydir ^ key = EntryLoc(val_off, vlen)
+                           | put_keydir(db.keydir, key, val_off, vlen)
                            |
                               flags == FLAG_DEL
                                  | _rem = db.keydir ^- key
@@ -152,8 +169,11 @@ open = path =>
    existing = read_all_file(path)
    fd = libc::open_mode(path, open_rdwr_creat_append!, 0o644)
    fd < 0 | --| <- kv_err("failed to open KV store file: " + path, 0) +>
+   prev = dva_arena_set_current(Addr(0))
+   hpath = ++path
    kdir = KeyDir()
-   db = Store(path, fd, 0, kdir)
+   db = Store(hpath, fd, 0, kdir)
+   dva_arena_set_current(prev)
    ?existing == 0
       |
          !write_all(fd, KV_MAGIC)
@@ -195,9 +215,11 @@ put = db, key, val =>
    !write_all(db.fd, rec)
       | <- kv_err("failed to append PUT record to disk", db.pos) +>
       |
-         val_off = db.pos + 13 + ?key
-         db.keydir ^ key = EntryLoc(val_off, ?val)
-         db.pos = db.pos + ?rec
+         cur_end = libc::lseek(db.fd, 0, 2)
+         base_pos = cur_end !< ?rec | (cur_end - ?rec) | db.pos
+         val_off = base_pos + 13 + ?key
+         put_keydir(db.keydir, key, val_off, ?val)
+         db.pos = base_pos + ?rec
          <+ <+> ->
 
 // Reads the raw `String` value for `key` if present (`<-->` if absent or on I/O error).
@@ -225,8 +247,10 @@ delete = db, key =>
    !write_all(db.fd, rec)
       | <- kv_err("failed to append DEL tombstone to disk", db.pos) +>
       |
+         cur_end = libc::lseek(db.fd, 0, 2)
+         base_pos = cur_end !< ?rec | (cur_end - ?rec) | db.pos
          _rem = db.keydir ^- key
-         db.pos = db.pos + ?rec
+         db.pos = base_pos + ?rec
          <+ <+> ->
 
 // Returns all live keys in `db` in sorted lexicographical order.
@@ -248,7 +272,7 @@ compact = db =>
       |
          libc::close(tmp_fd)
          <- kv_err("failed to write header to compaction temp file", 0) +>
-   new_kdir = KeyDir()
+   new_kdir = new_keydir!
    new_pos' = 5
    err_opt' = <-->
    all_keys = keys(db)
@@ -263,7 +287,7 @@ compact = db =>
                         | err_opt' = <+ kv_err("failed writing compacted record", new_pos') +>
                         |
                            val_off = new_pos' + 13 + ?k
-                           new_kdir ^ k = EntryLoc(val_off, ?val)
+                           put_keydir(new_kdir, k, val_off, ?val)
                            new_pos' = new_pos' + ?rec
                   | e => err_opt' = <+ e +>
             | e => _

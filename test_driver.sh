@@ -916,13 +916,10 @@ echo "PASS"
 # --- Test 23: zip-slip / path traversal archive rejection (E7019) ---
 echo -n "Testing edva pkg fetch zip-slip / traversal rejection (E7019)... "
 EVIL_TAR="$TMPDIR/evil.tar.gz"
-python3 -c "
-import tarfile, io
-with tarfile.open('$EVIL_TAR', 'w:gz') as tar:
-    ti = tarfile.TarInfo('../escape.txt')
-    ti.size = 4
-    tar.addfile(ti, io.BytesIO(b'evil'))
-"
+EVIL_STAGE="$TMPDIR/evil_stage/sub"
+mkdir -p "$EVIL_STAGE"
+printf 'evil' > "$TMPDIR/evil_stage/escape.txt"
+tar -P -czf "$EVIL_TAR" -C "$EVIL_STAGE" "../escape.txt"
 EVIL_HEX=$(sha256sum "$EVIL_TAR" | cut -c1-64)
 EVIL_APP="$TMPDIR/evil_app"
 mkdir -p "$EVIL_APP/src"
@@ -2179,45 +2176,27 @@ echo "PASS"
 
 # --- Test 50: edva lsp (JSON-RPC 2.0 initialize, diagnostics, hover, definition, formatting) ---
 echo -n "Testing edva lsp (JSON-RPC 2.0 protocol, cross-module typecheck, hover, formatting)... "
-python3 - "$TMPDIR" <<'PYEOF'
-import json, os, subprocess, sys
-
-tmpdir = sys.argv[1]
-def frame(obj):
-    s = json.dumps(obj)
-    return f"Content-Length: {len(s.encode('utf-8'))}\r\n\r\n{s}".encode('utf-8')
-
-uri = f"file://{tmpdir}/lsp_test.dva"
-src_valid = "#use str\n\nshout = s =>\n  str::upper(s)\n"
-src_err = "#use str\n\nbad: Int\nbad = str::upper(\"hi\")\n"
-
-payload = b"".join([
-    frame({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
-    frame({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
-        "textDocument": {"uri": uri, "languageId": "edva", "version": 1, "text": src_valid}
-    }}),
-    frame({"jsonrpc": "2.0", "id": 2, "method": "textDocument/hover", "params": {
-        "textDocument": {"uri": uri}, "position": {"line": 2, "character": 1}
-    }}),
-    frame({"jsonrpc": "2.0", "id": 3, "method": "textDocument/formatting", "params": {
-        "textDocument": {"uri": uri}, "options": {"tabSize": 3, "insertSpaces": True}
-    }}),
-    frame({"jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
-        "textDocument": {"uri": uri, "version": 2},
-        "contentChanges": [{"text": src_err}]
-    }}),
-    frame({"jsonrpc": "2.0", "id": 4, "method": "shutdown"}),
-    frame({"jsonrpc": "2.0", "method": "exit"}),
-])
-
-proc = subprocess.run(["./edva", "lsp"], input=payload, capture_output=True, timeout=15)
-assert proc.returncode == 0, f"edva lsp exited with {proc.returncode}: {proc.stderr.decode()}"
-out = proc.stdout.decode("utf-8")
-assert '"name":"edva-lsp"' in out, f"missing serverInfo in {out}"
-assert "shout: (String) => String" in out, f"missing inferred cross-module hover type in {out}"
-assert "   str::upper(s)" in out, f"missing 3-space formatted edit in {out}"
-assert '"code":"E3084"' in out, f"missing E3084 diagnostic in {out}"
-PYEOF
+lsp_frame() {
+    local body="$1"
+    printf 'Content-Length: %d\r\n\r\n%s' "${#body}" "$body"
+}
+LSP_URI="file://$TMPDIR/lsp_test.dva"
+LSP_OUT=$( {
+    lsp_frame '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+    lsp_frame "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"$LSP_URI\",\"languageId\":\"edva\",\"version\":1,\"text\":\"#use str\\n\\nshout = s =>\\n  str::upper(s)\\n\"}}}"
+    lsp_frame "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"textDocument/hover\",\"params\":{\"textDocument\":{\"uri\":\"$LSP_URI\"},\"position\":{\"line\":2,\"character\":1}}}"
+    lsp_frame "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/formatting\",\"params\":{\"textDocument\":{\"uri\":\"$LSP_URI\"},\"options\":{\"tabSize\":3,\"insertSpaces\":true}}}"
+    lsp_frame "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{\"textDocument\":{\"uri\":\"$LSP_URI\",\"version\":2},\"contentChanges\":[{\"text\":\"#use str\\n\\nbad: Int\\nbad = str::upper(\\\"hi\\\")\\n\"}]}}"
+    lsp_frame '{"jsonrpc":"2.0","id":4,"method":"shutdown"}'
+    lsp_frame '{"jsonrpc":"2.0","method":"exit"}'
+} | timeout 15 ./edva lsp )
+if ! grep -Fq '"name":"edva-lsp"' <<<"$LSP_OUT" || \
+   ! grep -Fq 'shout: (String) => String' <<<"$LSP_OUT" || \
+   ! grep -Fq '   str::upper(s)' <<<"$LSP_OUT" || \
+   ! grep -Fq '"code":"E3084"' <<<"$LSP_OUT"; then
+    echo "FAILED: unexpected edva lsp output: $LSP_OUT"
+    exit 1
+fi
 echo "PASS"
 
 echo "=== All driver tests PASSED ==="
