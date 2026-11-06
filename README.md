@@ -1,8 +1,7 @@
 # Edva
 
-[![CI](https://github.com/edva-lang/edva/actions/workflows/ci.yml/badge.svg)](https://github.com/edva-lang/edva/actions/workflows/ci.yml)
-[![Documentation](https://github.com/edva-lang/edva/actions/workflows/docs.yml/badge.svg)](https://edva-lang.github.io/edva/)
-[![Website](https://img.shields.io/badge/website-edva--lang.github.io-blue)](https://edva-lang.github.io/)
+[![CI](https://github.com/ElenaFri/edva/actions/workflows/ci.yml/badge.svg)](https://github.com/ElenaFri/edva/actions/workflows/ci.yml)
+[![Documentation](https://github.com/ElenaFri/edva/actions/workflows/docs.yml/badge.svg)](https://elenafri.github.io/edva/)
 [![License](https://img.shields.io/badge/License-BSD_2--Clause-orange.svg)](LICENSE)
 
 > *edva — an implementation of dva*  
@@ -38,7 +37,7 @@ native executables.
 ### Build the compiler
 
 ```sh
-git clone https://github.com/edva-lang/edva.git
+git clone https://github.com/ElenaFri/edva.git
 cd edva
 make
 ```
@@ -67,8 +66,7 @@ make
 
 ## Documentation
 
-- **Official Website:** [edva-lang.github.io](https://edva-lang.github.io/)
-- **Documentation Book:** [edva-lang.github.io/edva](https://edva-lang.github.io/edva/)
+- **Documentation Book:** [elenafri.github.io/edva](https://elenafri.github.io/edva/)
 - **Language Grammar Specification:** [`GRAMMAR.md`](GRAMMAR.md)
 - **Tree-sitter Syntax Highlighting:** [edva-lang/tree-sitter-edva](https://github.com/edva-lang/tree-sitter-edva)
 

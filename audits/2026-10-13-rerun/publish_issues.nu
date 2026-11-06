@@ -8,7 +8,7 @@ let existing = (http get --headers $headers ($base + '/milestones?state=all&limi
 let milestone = if ($existing | is-empty) {
   http post --headers $headers --content-type application/json ($base + '/milestones') {
     title: $title
-    description: 'Ten verified finding groups from the rebuilt b8e2267 audit: HTTP parsing/framing, console writes, reader status, JSON conversion/UTF-8, Quarto validation, and LLM-reference coverage. Report and reproductions: https://github.com/edva-lang/edva/tree/master/audits/2026-10-13-rerun'
+    description: 'Ten verified finding groups from the rebuilt b8e2267 audit: HTTP parsing/framing, console writes, reader status, JSON conversion/UTF-8, Quarto validation, and LLM-reference coverage. Report and reproductions: https://github.com/ElenaFri/edva/tree/master/audits/2026-10-13-rerun'
     state: 'open'
   }
 } else { $existing | first }

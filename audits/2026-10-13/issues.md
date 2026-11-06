@@ -1,6 +1,6 @@
 # Gitea tracking for the 2026-10-13 Edva audit
 
-Milestone: [Edva correctness and documentation audit follow-ups](https://gitea.gde.to/ike/dva/milestones/7) (18 open issues). Repository source and the report are published to [GitHub](https://github.com/edva-lang/edva).
+Milestone: [Edva correctness and documentation audit follow-ups](https://gitea.gde.to/ike/dva/milestones/7) (18 open issues). Repository source and the report are published to [GitHub](https://github.com/ElenaFri/edva).
 
 | Finding | Gitea issue | Topic |
 |---:|---|---|

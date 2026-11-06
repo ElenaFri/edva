@@ -1,5 +1,5 @@
 let folder = $env.FILE_PWD
-let repo = 'https://github.com/edva-lang/edva'
+let repo = 'https://github.com/ElenaFri/edva'
 let report = (open --raw ($folder | path join 'report.md'))
 let sections = ($report | parse -r '(?s)\*\*([0-9]+)\. (.*?)\*\*\n(.*?)(?=\n\*\*(?:[0-9]+\.|Previous audit:))')
 let specs = [
