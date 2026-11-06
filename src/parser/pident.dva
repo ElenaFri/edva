@@ -525,19 +525,7 @@ parse_indented_rhs = p =>
          p.curr.kind
             [Indent]
                parser_advance(p)
-               saved_fd = p.fn_depth
-               p.fn_depth = 0
-               saved_rhs = p.in_rhs
-               p.in_rhs = <->
-               saved_ml = p.module_level
-               p.module_level = <->
-               saved_cd = p.cycle_depth
-               p.cycle_depth = 0
-               res = block_stmts(p, ast::Exprs())
-               p.cycle_depth = saved_cd
-               p.module_level = saved_ml
-               p.in_rhs = saved_rhs
-               p.fn_depth = saved_fd
+               res = with_fn_depth(p, 0, x => with_in_rhs(p, <->, y => with_module_level(p, <->, z => with_cycle_depth(p, 0, w => block_stmts(p, ast::Exprs())))))
                p.curr.kind [Dedent] parser_advance(p); p.just_dedented = <+>
                res
                   | blk =>

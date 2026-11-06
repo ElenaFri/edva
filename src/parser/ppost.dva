@@ -145,13 +145,8 @@ parse_key_chain = p, lhs =>
 
 parse_key_atom: Parser => <ast::Expr|>
 parse_key_atom = p =>
-   saved_no_assign = p.no_assign
-   p.no_assign = <+>
-   res = parse_atom(p)
-      | a => parse_key_chain(p, a)
-      | <-->
-   p.no_assign = saved_no_assign
-   res
+   f = x => parse_atom(p) | a => parse_key_chain(p, a) | <-->
+   with_no_assign(p, <+>, f)
 
 pp_caret: Parser, ast::Expr => <ast::Expr|>
 pp_caret = p, lhs =>
@@ -307,22 +302,20 @@ member_chain_name = e =>
 
 parse_arg: Parser => <ast::Expr|>
 parse_arg = p =>
-   saved_cd = p.cycle_depth
-   p.cycle_depth = 0
-   is_id = p.curr.kind [Id]
-   nxt = parser_peek_next(p)
-   is_named = is_id && (nxt.text [":", "="])
-   res = is_named
-      |
-         name = p.curr.text
-         parser_advance(p)
-         parser_advance(p)
-         parse_choice(p)
-            | val => <+ ast::Expr(NamedArg, ast::NamedArgExpr(name, val)) +>
-            | <-->
-      | parse_choice(p)
-   p.cycle_depth = saved_cd
-   res
+   f = x =>
+      is_id = p.curr.kind [Id]
+      nxt = parser_peek_next(p)
+      is_named = is_id && (nxt.text [":", "="])
+      is_named
+         |
+            name = p.curr.text
+            parser_advance(p)
+            parser_advance(p)
+            parse_choice(p)
+               | val => <+ ast::Expr(NamedArg, ast::NamedArgExpr(name, val)) +>
+               | <-->
+         | parse_choice(p)
+   with_cycle_depth(p, 0, f)
 
 parse_comma_args: Parser => <ast::Exprs|>
 parse_comma_args = p =>

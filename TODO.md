@@ -78,7 +78,7 @@ Top priority. Without this, any syntax change is risky.
     hoisted next to their implementations). Makefile, fixed-point, and
     rebuild-seed updated for the new layout.
 
-- [ ] **1.2 — Eliminate manual state save/restore**
+- [x] **1.2 — Eliminate manual state save/restore**
   - Remove the `saved_cd = p.cycle_depth; ...; p.cycle_depth = saved_cd`
     pattern repeated dozens of times (`cycle_depth`, `branch_body_depth`,
     `is_stmt`).
@@ -86,6 +86,22 @@ Top priority. Without this, any syntax change is risky.
     `with_depth(p, n, body)` that restores automatically.
   - Eliminates an entire class of non-local bugs.
   - *Files*: `src/parser.dva`
+  - *Done*: scoped helpers in `parser/pstate.dva` (`with_fn_depth`,
+    `with_cycle_depth`, `with_in_rhs`, `with_module_level`, `with_no_assign`,
+    `with_is_stmt`, `with_visibility`, `bump_branch_body`, plus
+    `with_choice_depth_pb` in `pchoice`). ~20 call sites converted across
+    pexpr/plambda/pident/ppost/pchoice; the only remaining `saved_*` locals live
+    inside the helpers. Fixed a real leak: `seq_loop` never restored
+    `p.is_stmt` on the parse-failure path. Sites that set a field one-way
+    without restoring (`atom_double_colon`'s `is_stmt` probe) are a different
+    pattern and were left alone.
+  - *Found compiler bug*: a `#! T: Type` helper whose T instantiates to a
+    ramification type miscompiles when any statement sits between the body
+    call and the return — the monomorphized local is retyped as a bare Flag
+    (E3149 catches it; a coerced variant segfaults at runtime). The helpers
+    are therefore deliberately non-generic, pinned to the parser's dominant
+    result ram `<ast::Expr|>`. Fixing the monomorphizer would let them become
+    generic again.
 
 - [ ] **1.3 — Operator table in the lexer**
   - Emit typed operator tokens instead of a generic `Op` re-split by text in
@@ -154,7 +170,7 @@ Only undertake once the foundation (0 + 1) is in place.
 | Level | Tasks | Done |
 |---|---|---|
 | 0 — Foundation | 3 | 3 |
-| 1 — Complexity | 3 | 1 |
+| 1 — Complexity | 3 | 2 |
 | 2 — Design | 3 | 0 |
 | 3 — Quality | 3 | 0 |
 

@@ -65,10 +65,8 @@ seq_loop = p, lhs =>
    p.curr.kind
       [Semi]
          parser_advance(p)
-         p.is_stmt = <+>
-         parse_cycle(p)
+         with_is_stmt(p, <+>, x => parse_cycle(p))
             | r =>
-               p.is_stmt = <->
                n = ast::Expr(Bin, (ast::BinaryOp(Seq), lhs, r))
                seq_loop(p, n)
             | <-->
@@ -88,9 +86,7 @@ cycle_cont = p, lhs =>
       |
          is_rune = is_atat
          parser_advance(p)
-         p.cycle_depth = p.cycle_depth + 1
-         b_opt = parse_block(p)
-         p.cycle_depth = p.cycle_depth - 1
+         b_opt = with_cycle_depth(p, p.cycle_depth + 1, x => parse_block(p))
          b_opt
             | body =>
                cyc = ast::Expr(Cycle, ast::CycleExpr(lhs, body, is_rune))
@@ -352,11 +348,7 @@ parse_bp_rhs = p, i =>
    is_brk = p.curr.kind [LBracket] || tok_is_neg_lbracket(p)
    p.branch_body_depth == 0 && op_is_apply_feed(i.op) && is_brk
       |
-         saved_cd = p.cycle_depth
-         p.cycle_depth = 0
-         res = parse_choice(p)
-         p.cycle_depth = saved_cd
-         res
+         with_cycle_depth(p, 0, x => parse_choice(p))
       |
          parse_bp(p, i.rbp)
             | rre => apply_feed_rhs(p, rre, i.op)
@@ -929,38 +921,20 @@ atom_public = p =>
    is_same_line = !tok_is_nl(p.curr) && !tok_is_eof(p.curr)
    is_same_line
       |
-         old_vis = p.is_public
-         old_exp = p.is_export
-         old_alias = p.export_alias
-         p.is_public = <+>
-         p.is_export = <->
-         p.export_alias = ""
-         res = parse_expr(p)
-         res | s =>
-            p.module_level | mark_decl_item(p, s)
-         p.is_public = old_vis
-         p.is_export = old_exp
-         p.export_alias = old_alias
+         f = x =>
+            r = parse_expr(p)
+            r | s =>
+               p.module_level | mark_decl_item(p, s)
+            r
+         res = with_visibility(p, <+>, <->, "", f)
          res
       |
          has_ind
             |
                parser_skip_newlines(p)
                parser_advance(p)
-               saved_fd = p.fn_depth
-               p.fn_depth = 0
-               old_vis = p.is_public
-               old_exp = p.is_export
-               old_alias = p.export_alias
-               p.is_public = <+>
-               p.is_export = <->
-               p.export_alias = ""
-               res = block_stmts(p, ast::Exprs())
-               p.fn_depth = saved_fd
+               res = with_fn_depth(p, 0, x => with_visibility(p, <+>, <->, "", y => block_stmts(p, ast::Exprs())))
                p.curr.kind [Dedent] parser_advance(p); p.just_dedented = <+>
-               p.is_public = old_vis
-               p.is_export = old_exp
-               p.export_alias = old_alias
                res
             |
                p.is_public = <+>
@@ -976,38 +950,20 @@ atom_private = p =>
    is_same_line = !tok_is_nl(p.curr) && !tok_is_eof(p.curr)
    is_same_line
       |
-         old_vis = p.is_public
-         old_exp = p.is_export
-         old_alias = p.export_alias
-         p.is_public = <->
-         p.is_export = <->
-         p.export_alias = ""
-         res = parse_expr(p)
-         res | s =>
-            p.module_level | mark_decl_item(p, s)
-         p.is_public = old_vis
-         p.is_export = old_exp
-         p.export_alias = old_alias
+         f = x =>
+            r = parse_expr(p)
+            r | s =>
+               p.module_level | mark_decl_item(p, s)
+            r
+         res = with_visibility(p, <->, <->, "", f)
          res
       |
          has_ind
             |
                parser_skip_newlines(p)
                parser_advance(p)
-               saved_fd = p.fn_depth
-               p.fn_depth = 0
-               old_vis = p.is_public
-               old_exp = p.is_export
-               old_alias = p.export_alias
-               p.is_public = <->
-               p.is_export = <->
-               p.export_alias = ""
-               res = block_stmts(p, ast::Exprs())
-               p.fn_depth = saved_fd
+               res = with_fn_depth(p, 0, x => with_visibility(p, <->, <->, "", y => block_stmts(p, ast::Exprs())))
                p.curr.kind [Dedent] parser_advance(p); p.just_dedented = <+>
-               p.is_public = old_vis
-               p.is_export = old_exp
-               p.export_alias = old_alias
                res
             |
                p.is_public = <->
@@ -1027,38 +983,21 @@ atom_export = p =>
    is_same_line = !tok_is_nl(p.curr) && !tok_is_eof(p.curr)
    is_same_line
       |
-         old_vis = p.is_public
-         old_exp = p.is_export
-         old_alias = p.export_alias
-         p.is_public = <+>
-         p.is_export = <+>
-         p.export_alias = alias
-         res = parse_expr(p)
-         res | s =>
-            p.module_level | mark_decl_item(p, s)
-         p.is_public = old_vis
-         p.is_export = old_exp
-         p.export_alias = old_alias
+         f = x =>
+            r = parse_expr(p)
+            r | s =>
+               p.module_level | mark_decl_item(p, s)
+            r
+         res = with_visibility(p, <+>, <+>, alias, f)
          res
       |
          has_ind'
             |
                parser_skip_newlines(p)
                parser_advance(p)
-               saved_fd = p.fn_depth
-               p.fn_depth = 0
-               old_vis = p.is_public
-               old_exp = p.is_export
-               old_alias = p.export_alias
-               p.is_public = <+>
-               p.is_export = <+>
-               p.export_alias = alias
-               res = block_stmts(p, ast::Exprs())
-               p.fn_depth = saved_fd
+               fb = y => block_stmts(p, ast::Exprs())
+               res = with_fn_depth(p, 0, x => with_visibility(p, <+>, <+>, alias, fb))
                p.curr.kind [Dedent] parser_advance(p); p.just_dedented = <+>
-               p.is_public = old_vis
-               p.is_export = old_exp
-               p.export_alias = old_alias
                res
             |
                p.is_public = <+>
@@ -1605,30 +1544,26 @@ parse_accessor_section = p =>
 
 atom_paren: Parser => <ast::Expr|>
 atom_paren = p =>
-   saved_no_assign = p.no_assign
-   p.no_assign = <->
-   saved_cd = p.cycle_depth
-   p.cycle_depth = 0
-   parser_advance(p)
-   res = p.curr.kind
-      [RParen]
-         // "()" is the unit/void TYPE, not a value: it is only valid in a type
-         // declaration. A function declared "=> ()" coerces any value to unit
-         // (.Void); the unit itself is never directly constructible.
-         parser_error(p, diag::DiagCode(E2104), "unit '()' is only valid in a type " +
-            "declaration, not as a value")
-         <-->
-      |
-         paren_is_accessor(p)
-            | parse_accessor_section(p)
-            | paren_has_map(p)
-               | parse_paren_map_literal(p)
-               | paren_has_comma(p)
-                  | parse_paren_record(p)
-                  | parse_paren_group(p)
-   p.cycle_depth = saved_cd
-   p.no_assign = saved_no_assign
-   res
+   f = x =>
+      parser_advance(p)
+      res = p.curr.kind
+         [RParen]
+            // "()" is the unit/void TYPE, not a value: it is only valid in a type
+            // declaration. A function declared "=> ()" coerces any value to unit
+            // (.Void); the unit itself is never directly constructible.
+            parser_error(p, diag::DiagCode(E2104), "unit '()' is only valid in a type " +
+               "declaration, not as a value")
+            <-->
+         |
+            paren_is_accessor(p)
+               | parse_accessor_section(p)
+               | paren_has_map(p)
+                  | parse_paren_map_literal(p)
+                  | paren_has_comma(p)
+                     | parse_paren_record(p)
+                     | parse_paren_group(p)
+      res
+   with_no_assign(p, <->, y => with_cycle_depth(p, 0, f))
 
 paren_has_map_step: lexer::Lx, lexer::Tok, Int => <>
 paren_has_map_step = c, t, depth =>

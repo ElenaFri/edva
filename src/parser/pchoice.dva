@@ -886,6 +886,17 @@ choice_cont: Parser, ast::Expr => <ast::Expr|>
 choice_cont = p, lhs =>
    choice_cont_init(p, lhs, -1)
 
+// Scoped choice_depth for the ParsedBranch-ram continuation loop (the pstate
+// scoped helpers are pinned to <ast::Expr|> bodies; this one lives here next
+// to its result type).
+with_choice_depth_pb: Parser, Int, (Int => <ParsedBranch{}|>) => <ParsedBranch{}|>
+with_choice_depth_pb = p, depth, body =>
+   saved = p.choice_depth
+   p.choice_depth = depth
+   r = body(0)
+   p.choice_depth = saved
+   r
+
 headless_choice_cont: Parser, ast::Expr => <ast::Expr|>
 headless_choice_cont = p, lhs =>
    choice_cont_init(p, lhs, p.indent_level)
@@ -898,10 +909,8 @@ choice_cont_init = p, lhs, init_bi =>
             | neg_e => choice_cont_init(p, neg_e, init_bi)
             | <-->
       |
-         p.choice_depth = p.choice_depth + 1
          entry_indent = p.indent_level
-         r = choice_cont_loop(p, empty_pbrs(), entry_indent, init_bi)
-         p.choice_depth = p.choice_depth - 1
+         r = with_choice_depth_pb(p, p.choice_depth + 1, x => choice_cont_loop(p, empty_pbrs(), entry_indent, init_bi))
          choice_unwind(p, entry_indent)
          r
             | pbrs => finish_parsed_choice(p, lhs, pbrs)
@@ -1548,9 +1557,8 @@ choice_body = p =>
    tok_is_nl(p.curr)
       | choice_body_indented(p)
       |
-         p.branch_body_depth = p.branch_body_depth + 1
-         r = choice_body_inner(p)
-         p.branch_body_depth = p.branch_body_depth - 1
+         f = x => choice_body_inner(p)
+         r = bump_branch_body(p, f)
          maybe_inline_block_cont(p, r)
 
 // A bare choice branch may start its body on the next indented line. Consume
@@ -1562,17 +1570,12 @@ choice_body_indented = p =>
    p.curr.kind
       [Indent]
          parser_advance(p)
-         saved_fd = p.fn_depth
-         p.fn_depth = 0
-         body = block_stmts(p, ast::Exprs())
-         p.fn_depth = saved_fd
+         body = with_fn_depth(p, 0, x => block_stmts(p, ast::Exprs()))
          p.curr.kind [Dedent] parser_advance(p); p.just_dedented = <+>
          body
       |
-         p.branch_body_depth = p.branch_body_depth + 1
-         r = choice_body_inner(p)
-         p.branch_body_depth = p.branch_body_depth - 1
-         r
+         f = x => choice_body_inner(p)
+         bump_branch_body(p, f)
 
 choice_body_inner: Parser => <ast::Expr|>
 choice_body_inner = p =>
@@ -1626,9 +1629,9 @@ choice_same_line_step = p, brs =>
                      <-->
                   |
                      fnb = is_fn_start(p)
-                     fnb | p.fn_depth = p.fn_depth + 1
-                     body = fnb | parse_fn(p) | choice_body_inner(p)
-                     fnb | p.fn_depth = p.fn_depth - 1
+                     body = fnb
+                        | with_fn_depth(p, p.fn_depth + 1, x => parse_fn(p))
+                        | choice_body_inner(p)
                      body
                         | bd =>
                            check_redundant_flag_pb(p, brs, bd)
@@ -1717,13 +1720,12 @@ choice_pipe_body = p, saw_sep =>
          fnb = is_fn_start(p)
          fnb
             |
-               p.fn_depth = p.fn_depth + 1
-               rf = parse_fn(p)
-               p.fn_depth = p.fn_depth - 1
+               rf = with_fn_depth(p, p.fn_depth + 1, x => parse_fn(p))
                rf
             |
-               p.branch_body_depth = p.branch_body_depth + 1
-               rs = saw_sep | choice_same_line_seq(p) | choice_body_inner(p)
-               p.branch_body_depth = p.branch_body_depth - 1
+               fb = x =>
+                  r2 = saw_sep | choice_same_line_seq(p) | choice_body_inner(p)
+                  r2
+               rs = bump_branch_body(p, fb)
                maybe_inline_block_cont(p, rs)
 

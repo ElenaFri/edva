@@ -232,6 +232,89 @@ parser_error = p, code, msg =>
          log::error $ fn + str::from_int(p.curr.line) + ":" + str::from_int(p.curr.col) +
             ": E" + str::from_int(diag::code_int(code)) + ": " + msg
 
+// --- scoped state helpers ---------------------------------------------------
+//
+// Set a parser field for the duration of a body lambda and restore the previous
+// value on every path. The body takes one ignored Int parameter (zero-param
+// lambdas do not exist); call sites pass `x => ...`. These helpers exist so no
+// call site can forget a restore or leak state on an early-return path.
+//
+// NOTE: these are deliberately NON-generic. A `#! T: Type` version of this
+// helper miscompiles when T instantiates to a ramification type and any
+// statement sits between the body call and the return (the monomorphized
+// local is retyped as a bare Flag, caught by E3149) — so the body result is
+// pinned to the parser's dominant result ram, <ast::Expr|>.
+
+with_fn_depth: Parser, Int, (Int => <ast::Expr|>) => <ast::Expr|>
+with_fn_depth = p, depth, body =>
+   saved = p.fn_depth
+   p.fn_depth = depth
+   r = body(0)
+   p.fn_depth = saved
+   r
+
+with_cycle_depth: Parser, Int, (Int => <ast::Expr|>) => <ast::Expr|>
+with_cycle_depth = p, depth, body =>
+   saved = p.cycle_depth
+   p.cycle_depth = depth
+   r = body(0)
+   p.cycle_depth = saved
+   r
+
+with_in_rhs: Parser, <>, (Int => <ast::Expr|>) => <ast::Expr|>
+with_in_rhs = p, v, body =>
+   saved = p.in_rhs
+   p.in_rhs = v
+   r = body(0)
+   p.in_rhs = saved
+   r
+
+with_module_level: Parser, <>, (Int => <ast::Expr|>) => <ast::Expr|>
+with_module_level = p, v, body =>
+   saved = p.module_level
+   p.module_level = v
+   r = body(0)
+   p.module_level = saved
+   r
+
+with_no_assign: Parser, <>, (Int => <ast::Expr|>) => <ast::Expr|>
+with_no_assign = p, v, body =>
+   saved = p.no_assign
+   p.no_assign = v
+   r = body(0)
+   p.no_assign = saved
+   r
+
+with_is_stmt: Parser, <>, (Int => <ast::Expr|>) => <ast::Expr|>
+with_is_stmt = p, v, body =>
+   saved = p.is_stmt
+   p.is_stmt = v
+   r = body(0)
+   p.is_stmt = saved
+   r
+
+with_visibility: Parser, <>, <>, String, (Int => <ast::Expr|>) => <ast::Expr|>
+with_visibility = p, is_pub, is_exp, alias, body =>
+   saved_pub = p.is_public
+   saved_exp = p.is_export
+   saved_alias = p.export_alias
+   p.is_public = is_pub
+   p.is_export = is_exp
+   p.export_alias = alias
+   r = body(0)
+   p.is_public = saved_pub
+   p.is_export = saved_exp
+   p.export_alias = saved_alias
+   r
+
+bump_branch_body: Parser, (Int => <ast::Expr|>) => <ast::Expr|>
+bump_branch_body = p, body =>
+   saved = p.branch_body_depth
+   p.branch_body_depth = p.branch_body_depth + 1
+   r = body(0)
+   p.branch_body_depth = saved
+   r
+
 // --- precedence (binary operators) ----------------------------------------
 
 // The operator table lives in selfhost/operators.dva (operators::bin_info,
