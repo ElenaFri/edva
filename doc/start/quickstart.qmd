@@ -3,7 +3,7 @@ meta:
   audience: "new Edva users and contributors"
   status: "current reference"
   audited: "8b8cb19"
-  evidence: "`Makefile`, `build.sh`, `src/edva.dva`, `tests/pass/004_choice_inline.dva`, `tests/pass/012_cycle_break.dva`, `tests/pass/104_builder_literal.dva`, `tests/pass/121_fn_signatures.dva`"
+  evidence: "`Makefile`, `run_tests.sh`, `src/edva.dva`, `tests/pass/004_choice_inline.dva`, `tests/pass/012_cycle_break.dva`, `tests/pass/104_builder_literal.dva`, `tests/pass/121_fn_signatures.dva`"
 ---
 
 # Quickstart, Build & Tour
@@ -15,7 +15,7 @@ Edva targets Linux hosts and cross-compiles to AArch64 and WebAssembly (`wasm32`
 | Task | Command | Behavior |
 |---|---|---|
 | Build compiler | `make edva` | Incrementally builds `./edva` (bootstraps from `seed/ir/` via `clang` if `./edva` is absent) |
-| Full build + test suite | `./build.sh` | Verifies generated tables, builds `./edva`, and runs the complete test suite |
+| Full build + test suite | `make test` | Verifies generated tables, builds `./edva`, and runs the complete test suite |
 | 2-stage self-host verify | `make fixed-point` | Compiles Stage 1 and Stage 2 IR, asserts byte-identical fixed point, and promotes `edva_stage1` to `./edva` |
 | Compile and run | `./edva main.dva -r` | Compiles `main.dva` to a temporary binary, executes it immediately, and removes the binary |
 | Compile executable | `./edva main.dva -o app` | Compiles and links `main.dva` into `./app` |

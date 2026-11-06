@@ -3,7 +3,7 @@ meta:
   audience: "compiler contributors"
   status: "current reference"
   audited: "8b8cb19"
-  evidence: "`Makefile`, `build.sh`, `test_driver.sh`, `operators.yaml`, `tools/opgen/main.nu`, `tools/check_docs.nu`, `src/edva.dva`"
+  evidence: "`Makefile`, `run_tests.sh`, `test_driver.sh`, `operators.yaml`, `tools/opgen/main.nu`, `tools/check_docs.nu`, `src/edva.dva`"
 ---
 
 # Compiler Architecture, Bootstrap & Testing
@@ -40,7 +40,7 @@ When `./edva` is not yet built on a clean checkout, `make` links the checked-in 
 | `make edva` | Existing `./edva` (or `seed/ir/` bootstrap) $\to$ `./edva` | Incremental module compilation using `.build/` cache |
 | `make fixed-point` | `./edva` $\to$ `edva_stage1` ($\text{IR}_1$) $\to$ `edva_stage2` ($\text{IR}_2$) | Asserts $\text{IR}_1 \equiv \text{IR}_2$ byte-for-byte across all compiler modules before promoting `edva_stage1` to `./edva` |
 | `make update-seed` | Copies verified Stage 2 `.ll` files into `seed/ir/` | Run only when intentionally updating the bootstrap seed after an ABI/feature transition |
-| `./build.sh` | `opgen --check` $\to$ `make edva` $\to$ `./test_driver.sh` | Full end-to-end build and test gate |
+| `make test` | `make edva` $\to$ `./run_tests.sh` | Full end-to-end build and test gate (generated-table `--check`, driver tests, and compiler suite) |
 
 ## Test suites and verification harnesses
 

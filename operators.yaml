@@ -1,8 +1,8 @@
 # Dva operator table — single source of truth
 #
 # This file is the ONE place the operator precedence and semantics are
-# declared. It feeds, via `nu tools/opgen/main.nu` (run by build.sh; checked by
-# run_tests.sh --check):
+# declared. It feeds, via `nu tools/opgen/main.nu` (run by make; checked by
+# run_tests.sh):
 #   - the compiler       -> src/operators.dva (the operators module:
 #                           BinOpInfo + bin_info, used by src/parser.dva)
 #   - the docs           -> the §1.6 operators/precedence table in GRAMMAR.md
