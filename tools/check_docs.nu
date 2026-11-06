@@ -82,6 +82,7 @@ def check_doc_examples [root_dir: string, compile: bool] {
     let can_compile = $compile
     let qmd_files = (glob ($root_dir | path join "doc/**/*.qmd") | sort)
     let doc_files = ($qmd_files | append [
+        ($root_dir | path join "GRAMMAR.md"),
         ($root_dir | path join "doc/llms-full.txt"),
         ($root_dir | path join "doc/llms.txt"),
     ] | where { |f| $f | path exists })

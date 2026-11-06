@@ -22,9 +22,10 @@ Diagnostics use an `Exyyy` identifier. The first digit identifies the stage:
 | `E6` | REPL |
 | `E7` | package management and dependency resolution |
 
-A positioned diagnostic includes `[line:column]`. Test expectations match the
-message body rather than the full code, so diagnostic numbering can evolve
-without weakening the behavioral assertion.
+A positioned diagnostic includes `[line:column]`. Test expectations
+(`tests/fail/*.expected_err`) pin both the `Exyyy` code and a message
+fragment, so a code split or renumbering must update the affected
+expectation files alongside the compiler.
 
 ## Common fixes
 

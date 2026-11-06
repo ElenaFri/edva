@@ -1,1 +1,1 @@
-E3173: Closing '--|' at the end of a function is prohibited; '--|' is only for early return.
+E3192: Closing '--|' at the end of a function is prohibited; '--|' is only for early return.

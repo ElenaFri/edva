@@ -186,8 +186,7 @@ binop_name = op =>
 
 codegen_emit_cmp_enum_order_error: types::Cg, ast::BinaryOp => (Addr, ast::ValueType)
 codegen_emit_cmp_enum_order_error = cg, op =>
-   types::init_error(cg, "E3127", "Operator '" + binop_name(op) +
-      diag::E3127_enum_ordering_suffix!, 0, 0)
+   types::init_error(cg, "E3127", diag::enum_ordering(binop_name(op)), 0, 0)
    (LLVMConstNull(LLVMInt1Type!), ast::ValueType(Flag))
 
 find_enum_slots_search: types::Cg, Int, Int => ast::EnumSlots
@@ -1596,8 +1595,7 @@ codegen_emit_cmp_flag_ram_error = cg, op =>
          types::init_error(cg, "E3027",
             "Operator 'NotEqual' cannot be applied to ramifications", 0, 0)
       |
-         types::init_error(cg, "E3127", "Operator '" + binop_name(op) +
-            diag::E3127_ram_ordering_suffix!, 0, 0)
+         types::init_error(cg, "E3127", diag::ram_ordering(binop_name(op)), 0, 0)
    (LLVMConstNull(LLVMInt1Type!), ast::ValueType(Flag))
 
 // FCmp predicates: OGT=2 OLT=4 OEQ=1 UNE=14 OLE=5 OGE=3.

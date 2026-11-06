@@ -1288,8 +1288,7 @@ codegen_check_binding = cg, t =>
 
 codegen_reserved_type_binding_error: types::Cg, String => ()
 codegen_reserved_type_binding_error = cg, name =>
-   types::init_error(cg, "E3050", "Cannot define '" + name +
-      diag::E3050_reserved_type_name_suffix!, 0, 0)
+   types::init_error(cg, "E3050", diag::reserved_type_name(name), 0, 0)
 
 codegen_check_binding_valid: types::Cg,
    (String, <>, <>, <>, <>, ast::Expr, ast::Expr, String, ast::TypeInfo) => ()
@@ -1366,7 +1365,7 @@ codegen_emit_plain_assign = cg, t =>
             | codegen_emit_forward(cg, t)
             |
                rhs_is_inexhaustive_choice(t.5)
-                  | types::init_error(cg, "E3032", "Cannot assign inexhaustive choice " +
+                  | types::init_error(cg, "E3189", "Cannot assign inexhaustive choice " +
                      "expression to variable '" + t.0 + "'. Inexhaustive choice " +
                      "expressions are unassignable.", 0, 0)
                   | codegen_emit_plain_assign_val(cg, t)
@@ -1585,10 +1584,9 @@ codegen_check_rebind_type = cg, name, rhs_vt, is_gmut, rhs_expr =>
                      !expr::ram_shape_compatible(cg, target_ti, rhs_ram_ti)
                         |
                            types::init_error(cg, "E3089",
-                              diag::E3089_ram_shape_prefix! +
-                              expr::ram_shape_str(cg, rhs_ram_ti) + " to '" + name +
-                              "' (declared as " + expr::ram_shape_str(cg, target_ti) +
-                              ").", 0, 0)
+                              diag::ram_shape_assign_mismatch(
+                                 expr::ram_shape_str(cg, rhs_ram_ti), name,
+                                 expr::ram_shape_str(cg, target_ti)), 0, 0)
          prev_vt = is_gmut
             | find_global_var_type(cg, name, ?cg.vars - 1)
             | types::var_type(cg, name)
@@ -1785,7 +1783,7 @@ member_assign_record = cg, root_name, m, t =>
          is_un = ev.1 [Unit]
          is_un
             |
-               types::init_error(cg, "E3032", "Cannot assign Void expression to member '" +
+               types::init_error(cg, "E3188", "Cannot assign Void expression to member '" +
                   eff_fname + "'.", 0, 0)
             |
                types::is_view_expr(cg, t.5)
@@ -1903,7 +1901,7 @@ codegen_emit_record_assign = cg, t, call =>
    is_un = rhs_ev.1 [Unit]
    is_un
       |
-         types::init_error(cg, "E3032", diag::assign_void_element(call.fn_name), 0, 0)
+         types::init_error(cg, "E3188", diag::assign_void_element(call.fn_name), 0, 0)
       |
          main::codegen_emit_index_bounds_check(cg, idx_ev.0, idx_ev.1, ?fvs)
          idx_i64 = main::codegen_widen_idx_to_i64(cg, idx_ev.0, idx_ev.1, "idx")
@@ -1938,7 +1936,7 @@ codegen_emit_slice_assign = cg, t, call =>
    is_un = rhs_ev.1 [Unit]
    is_un
       |
-         types::init_error(cg, "E3032", diag::assign_void_element(call.fn_name), 0, 0)
+         types::init_error(cg, "E3188", diag::assign_void_element(call.fn_name), 0, 0)
       |
          sv = types::ptr_var_value_plain(cg, call.fn_name, "rec.ptr")
          data = main::slice_data(cg, sv, "slice.data")
@@ -1963,7 +1961,7 @@ codegen_emit_array_assign = cg, t, call =>
    is_un = rhs_ev.1 [Unit]
    is_un
       |
-         types::init_error(cg, "E3032", diag::assign_void_element(call.fn_name), 0, 0)
+         types::init_error(cg, "E3188", diag::assign_void_element(call.fn_name), 0, 0)
       |
          aval = types::ptr_var_value_plain(cg, call.fn_name, "rec.ptr")
          elem_vt = main::array_elem_vt(cg, call.fn_name)
@@ -1984,8 +1982,7 @@ codegen_emit_call_assign = cg, t, call =>
    is_str = main::is_str_var(cg, call.fn_name) || (vt [Builder])
    is_str
       |
-         types::init_error(cg, "E3067", diag::E3067_string_write_prefix! +
-            call.fn_name + diag::E3067_string_write_suffix!, 0, 0)
+         types::init_error(cg, "E3067", diag::string_write(call.fn_name), 0, 0)
       |
          is_hetero = stmt::is_heterogeneous_record_var(cg, call.fn_name)
          is_hetero
@@ -1998,8 +1995,7 @@ codegen_emit_call_assign = cg, t, call =>
                is_dotted = types::find_dot(call.fn_name, 0) > 0
                not_init = !is_dotted && !types::var_has_storage(cg, call.fn_name)
                is_sl && (not_init || main::var_partial(cg, call.fn_name))
-                  | types::init_error(cg, "E3049", diag::E3049_slice_write_prefix! + call.fn_name +
-                     diag::E3049_slice_write_suffix!, 0, 0)
+                  | types::init_error(cg, "E3049", diag::slice_write(call.fn_name), 0, 0)
                   |
                      is_rec && (not_init || main::var_partial(cg, call.fn_name))
                         | types::init_error(cg, "E3131", diag::whole_value_init(call.fn_name), 0, 0)
@@ -2155,11 +2151,10 @@ codegen_finish = cg, out_path =>
                err_msg_opt
                   | err_msg =>
                      err_str = c_str(err_msg)
-                     log::error $ diag::E5012_write_ir_prefix! + out_path +
-                        "': " + err_str
+                     log::error $ diag::write_ir_failed_reason(out_path, err_str)
                      LLVMDisposeMessage(err_msg)
                   |
-                     log::error $ diag::E5012_write_ir_prefix! + out_path + "'"
+                     log::error $ diag::write_ir_failed(out_path)
                cg.error = <+>
             |
                r = rename(tmp_out, out_path)

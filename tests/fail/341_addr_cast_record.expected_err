@@ -1,1 +1,1 @@
-tests/fail/341_addr_cast_record.dva:2:14: E3084: Cannot cast '(a: Int, b: Int)' to 'Addr'
+tests/fail/341_addr_cast_record.dva:2:14: E3180: Cannot cast '(a: Int, b: Int)' to 'Addr'

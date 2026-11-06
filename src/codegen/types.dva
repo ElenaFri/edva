@@ -1801,9 +1801,7 @@ codegen_load_after_forward = cg, slot_opt, lt, name, vt =>
 
 codegen_uninitialized_load_error: Cg, String => <(Addr, ast::ValueType)|>
 codegen_uninitialized_load_error = cg, name =>
-   init_error(cg, "E3045", diag::uninitialized_variable_prefix! + name +
-      "' — a forward annotation ('name: Type') allocates no storage; assign " +
-      "a value before reading.", 0, 0)
+   init_error(cg, "E3045", diag::uninitialized_load(name), 0, 0)
    <-->
 
 codegen_missing_load: Cg, String => <(Addr, ast::ValueType)|>
@@ -4315,15 +4313,13 @@ codegen_check_ambiguous_enum_label = cg, label =>
       |
          owners = enum_label_owner_count(cg, label, 0)
          owners > 1
-            | init_error(cg, "E3105", "Enum label '" + label +
-               diag::E3105_enum_label_ambiguous_suffix! + label + "'.", 0, 0)
+            | init_error(cg, "E3105", diag::enum_label_ambiguous(label), 0, 0)
 
 codegen_eval_enum_label_val: Cg, String, Int => <(Addr, ast::ValueType)|>
 codegen_eval_enum_label_val = cg, label, owners =>
    owners > 1
       |
-         init_error(cg, "E3105", "Enum label '" + label +
-            diag::E3105_enum_label_ambiguous_suffix! + label + "'.", 0, 0)
+         init_error(cg, "E3105", diag::enum_label_ambiguous(label), 0, 0)
          <-->
       |
          es = match::enum_slots_for_label(cg, label)

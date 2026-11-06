@@ -432,8 +432,7 @@ fn_value_meta = cg, name =>
 
 codegen_untyped_fn_value_error: types::Cg, String => < (Addr, ast::ValueType) | >
 codegen_untyped_fn_value_error = cg, name =>
-   types::init_error(cg, "E3128", "Function '" + name + diag::E3128_function_value_signature_suffix! + name +
-      ": T1, T2 => R'.", 0, 0)
+   types::init_error(cg, "E3128", diag::function_value_signature(name), 0, 0)
    <-->
 
 codegen_generic_fn_value_error: types::Cg, String => < (Addr, ast::ValueType) | >
@@ -1296,7 +1295,7 @@ codegen_eval = cg, expr =>
          (LLVMConstInt(LLVMInt64Type!, 0, 0), ast::ValueType(Unit))
       [UserDiag ud] match::codegen_eval_user_diag(cg, ud)
       [Range r]
-         types::init_error(cg, "E3008",
+         types::init_error(cg, "E3196",
             "Range expression cannot be used as an independent value.", 0, 0)
          (LLVMConstInt(LLVMInt64Type!, 0, 0), ast::ValueType(Unknown))
       | (LLVMConstInt(LLVMInt64Type!, 0, 0), ast::ValueType(Unknown))
@@ -2924,14 +2923,14 @@ codegen_eval_unary_propagate: types::Cg, Addr, ast::ValueType,
 codegen_eval_unary_propagate = cg, val, vt, target =>
    !cg.in_fn
       |
-         types::init_error(cg, "E3173", diag::E3173_propagate_outside_fn!, 0, 0)
+         types::init_error(cg, "E3193", diag::E3193_propagate_outside_fn!, 0, 0)
          (LLVMConstInt(LLVMInt64Type!, 0, 0), ast::ValueType(Unknown))
       |
          ret_ti_res = stmt::resolve_ti(cg, types::g.expected_fn_ti)
          ret_is_ram = ret_ti_res [Ram]
          !ret_is_ram
             |
-               types::init_error(cg, "E3173", "Propagate operator '--!' is only " +
+               types::init_error(cg, "E3194", "Propagate operator '--!' is only " +
                   "valid inside a function returning a ramification, got " +
                   ram_shape_str(cg, ret_ti_res) + ".", 0, 0)
                (LLVMConstInt(LLVMInt64Type!, 0, 0), ast::ValueType(Unknown))
@@ -3058,7 +3057,7 @@ codegen_not_invalid: types::Cg, ast::ValueType => (Addr, ast::ValueType)
 codegen_not_invalid = cg, vt =>
    types::is_int_vt(vt)
       |
-         types::init_error(cg, "E3008", diag::E3008_not_integer!, 0, 0)
+         types::init_error(cg, "E3187", diag::E3187_not_integer!, 0, 0)
          (LLVMConstInt(LLVMInt64Type!, 0, 0), ast::ValueType(Unknown))
       |
          types::init_error(cg, "E3008", diag::E3008_not_invalid_type!, 0, 0)
@@ -4474,8 +4473,7 @@ codegen_eval_named_call = cg, t =>
                      [Str s] bkey += sanitize_mono_str(s, 0, {16})
                      [Float f] bkey += str::from_float(f)
                      |
-                        types::init_error(cg, "E3130", "Compile-time parameter '" +
-                           ct + diag::compile_time_parameter_suffix!,
+                        types::init_error(cg, "E3130", diag::compile_time_parameter(ct),
                            t.line, t.col)
                |
                   exp_idx = types::member_index(exp_names, ct)
@@ -6154,8 +6152,7 @@ codegen_typed_eval_fn_call = cg, fname, args, ti =>
                      [Str s] bkey += sanitize_mono_str(s, 0, {16})
                      [Float f] bkey += str::from_float(f)
                      |
-                        types::init_error(cg, "E3130", "Compile-time parameter '" +
-                           ct + diag::compile_time_parameter_suffix!, 0, 0)
+                        types::init_error(cg, "E3130", diag::compile_time_parameter(ct), 0, 0)
                |
                   exp_idx = types::member_index(exp_names, ct)
                   inf = exp_idx !< 0

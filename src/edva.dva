@@ -831,10 +831,7 @@ collect_module_exports = exprs, bound_name, canonical_id, is_import, table, sour
                                     existing != a.0
                                        |
                                           src = sources ^ bare | _ | ""
-                                          log::error $ "E3033: Name clash: symbol '" +
-                                             bare + "' imported from '" + bound_name +
-                                             diag::imported_symbol_conflict_suffix! +
-                                             src + "'"
+                                          log::error $ diag::name_clash_imported(bare, bound_name, src)
                                           ok' = <->
                                  |
                                     table ^ bare = a.0
@@ -879,10 +876,7 @@ collect_module_exports = exprs, bound_name, canonical_id, is_import, table, sour
                               existing != f.dva_name
                                  |
                                     src = sources ^ bare | _ | ""
-                                    log::error $ diag::E3033_foreign_function_clash_prefix! +
-                                       bare + "' imported from '" + bound_name +
-                                       diag::imported_symbol_conflict_suffix! +
-                                       src + "'"
+                                    log::error $ diag::name_clash_foreign_imported(bare, bound_name, src)
                                     ok' = <->
                            |
                               table ^ bare = f.dva_name
@@ -902,9 +896,7 @@ check_file_clash = stmts, table, sources =>
                   table ^? bare
                      |
                         src = sources ^ bare | _ | ""
-                        log::error $ "E3033: Name clash: symbol '" + bare +
-                           diag::declared_symbol_conflict_suffix! +
-                           src + "'"
+                        log::error $ diag::name_clash_declared(bare, src)
                         ok' = <->
          [TypeDecl td]
             bare = decl_clean_name(td.name)
@@ -920,9 +912,7 @@ check_file_clash = stmts, table, sources =>
             table ^? bare
                |
                   src = sources ^ bare | _ | ""
-                  log::error $ diag::E3033_foreign_function_clash_prefix! + bare +
-                     diag::declared_symbol_conflict_suffix! +
-                     src + "'"
+                  log::error $ diag::name_clash_foreign_declared(bare, src)
                   ok' = <->
    ok'
 
@@ -1332,7 +1322,7 @@ load_resolved = resolved, imp_path, ldr =>
          stk_idx !< 0
             |
                chain = format_cycle_chain(ldr.loading_stack, stk_idx, f.canonical_id)
-               log::error $ diag::E5038_package_import_cycle_prefix! + chain
+               log::error $ diag::package_import_cycle(chain)
                <->
             |
                loaded_has(ldr.loaded, f.canonical_id)
@@ -1351,7 +1341,7 @@ load_resolved = resolved, imp_path, ldr =>
          stk_idx !< 0
             |
                chain = format_cycle_chain(ldr.loading_stack, stk_idx, d.canonical_id)
-               log::error $ diag::E5038_package_import_cycle_prefix! + chain
+               log::error $ diag::package_import_cycle(chain)
                <->
             |
                loaded_has(ldr.loaded, d.canonical_id)
@@ -1981,9 +1971,7 @@ compile_ast_to_binary = prog, exports, opts, out_ll, out_bin, dmods, dpaths, nli
                      cres = run_cmd(clang_args)
                      cres != 0
                         |
-                           log::error $ "E" + str::from_int(clang_err) +
-                              diag::clang_compilation_failed_suffix! +
-                              str::from_int(cres)
+                           log::error $ diag::clang_compilation_failed(clang_err, cres)
                            <- cres ->
                         |
                            ld_args = ast::Names()
@@ -2073,9 +2061,7 @@ compile_ast_to_binary = prog, exports, opts, out_ll, out_bin, dmods, dpaths, nli
                                  run_cmd(rm_args)
                            cres != 0
                               |
-                                 log::error $ "E" + str::from_int(clang_err) +
-                                    diag::clang_compilation_failed_suffix! +
-                                    str::from_int(cres)
+                                 log::error $ diag::clang_compilation_failed(clang_err, cres)
                                  <- cres ->
                               |
                                  !quiet

@@ -39,7 +39,7 @@ io::out $ probe!   // 15
 
 | Operation | Syntax | Operand / Result Types | Rules & Diagnostics |
 |---|---|---|---|
-| **Null / integer cast** | `Addr(0)`, `Addr(0x1000)`, `Int(p)` | `Int` (`i8`..`u64`) $\leftrightarrow$ `Addr` | Bidirectional between integerish scalars and `Addr`. Casting records/arrays/functions via `Addr(rec)` emits `E3084` (use `&rec`) |
+| **Null / integer cast** | `Addr(0)`, `Addr(0x1000)`, `Int(p)` | `Int` (`i8`..`u64`) $\leftrightarrow$ `Addr` | Bidirectional between integerish scalars and `Addr`. Casting records/arrays/functions via `Addr(rec)` emits `E3180` (use `&rec`) |
 | **String / Builder data ptr** | `&s`, `&b` | `String` / `Builder` $\to$ `Addr` | No space after `&`. `&s` points to NUL-terminated UTF-8 bytes; `&b` points to writable buffer |
 | **Composite address** | `&rec` | `Record` / tuple $\to$ `Addr` | Pointer to record storage |
 | **Scalar out-parameter** | `libc::fn(fd, &len')` | Scalar variable $\to$ `Addr` | Permitted **strictly in downward call-argument position**; storing `p = &len'` emits `E3078` |

@@ -1404,7 +1404,7 @@ codegen_dynamic_record_index_error = cg =>
 
 codegen_cycle_record_iter_error: types::Cg => (Addr, ast::ValueType)
 codegen_cycle_record_iter_error = cg =>
-   types::init_error(cg, "E3051", diag::E3051_cycle_iter_hetero!, 0, 0)
+   types::init_error(cg, "E3195", diag::E3195_cycle_iter_hetero!, 0, 0)
    (LLVMConstInt(LLVMInt64Type!, 0, 0), ast::ValueType(Unknown))
 
 cycle_range_start: types::Cg, ast::RangeExpr => Addr
@@ -1975,9 +1975,7 @@ codegen_cycle_jump_outside = cg, j =>
 codegen_cycle_jump_too_deep: types::Cg, ast::CycleJumpExpr, Int => (Addr, ast::ValueType)
 codegen_cycle_jump_too_deep = cg, j, depth =>
    op = j.is_break | "-->" | "--^"
-   types::init_error(cg, "E3007", "'" + op + diag::E3007_cycle_jump_level_prefix! +
-      str::from_int(j.level) + ", but only " + str::from_int(depth) +
-      diag::E3007_cycle_jump_level_suffix!, 0, 0)
+   types::init_error(cg, "E3007", diag::cycle_jump_level(op, j.level, depth), 0, 0)
    (LLVMConstInt(LLVMInt64Type!, 0, 0), ast::ValueType(Unknown))
 
 codegen_eval_cycle_jump_valid: types::Cg, ast::CycleJumpExpr, Int => (Addr, ast::ValueType)
@@ -6894,9 +6892,7 @@ codegen_typed_eval_cycle_jump = cg, is_break, level =>
          level > nb
             |
                op = is_break | "-->" | "--^"
-               msg = "'" + op + diag::E3007_cycle_jump_level_prefix! +
-                  str::from_int(level) + ", but only " + str::from_int(nb) +
-                  diag::E3007_cycle_jump_level_suffix!
+               msg = diag::cycle_jump_level(op, level, nb)
                types::init_error(cg, "E3007", msg, 0, 0)
                (LLVMConstInt(LLVMInt64Type!, 0, 0), ast::ValueType(Unknown))
             |

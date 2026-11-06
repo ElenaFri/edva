@@ -56,7 +56,7 @@ io::out $ get_label(Item(1, "sensor"))     // sensor
 |---|---|---|
 | **Lexical capture** | `make_adder = base => (n => base + n)` | Captures outer bindings into an arena-allocated environment struct (`env_ptr`) |
 | **Tail return** | Final expression in body | Evaluates as the function's return value |
-| **Valued early return** | `--| expr` | Immediately exits enclosing function with `expr` (`E3084` on return type mismatch) |
+| **Valued early return** | `--\| expr` | Immediately exits enclosing function with `expr` (`E3181` on return type mismatch) |
 | **Void early return** | Bare `--|` | Immediately exits a `() => ()` void function |
 | **Ram return sugars** | `c |->`, `c |+>`, `c |-->`, `c |++>` | When `c` is `<+>`, early-returns `<->`, `<+>`, `<-->`, or `<++>` |
 

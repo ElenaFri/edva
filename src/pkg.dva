@@ -1081,7 +1081,7 @@
                   |
                      r.opts.locked
                         |
-                           fail(7007, diag::locked_manifest_stale_prefix! + alias + " changed)")
+                           fail(7007, diag::locked_manifest_stale(alias))
                            <-->
                         |
                            fetch_mirror(r, url)
@@ -1137,16 +1137,14 @@
          |
             !check_tree_security(r, v_dir)
                |
-                  fail(7019, "dependency '" + alias +
-                     diag::repository_illegal_path_suffix!)
+                  fail(7019, diag::repository_illegal_path(alias))
                   <-->
                |
                   compute_tree_hash(r, v_dir)
                      | tree_hash =>
                         expected_hash != "" && tree_hash != expected_hash
                            |
-                              fail(7005, diag::vendor_tree_mismatch_prefix! + alias +
-                                 "' (expected " + expected_hash + ", got " + tree_hash + ")")
+                              fail(7005, diag::vendor_tree_mismatch(alias, expected_hash, tree_hash))
                               <-->
                            | <+ (v_dir, (expected_hash != "" | expected_hash | tree_hash)) +>
                      | <-->
@@ -1174,8 +1172,7 @@
                               !check_tree_security(r, tmp)
                                  |
                                     sh("rm -rf " + sq(tmp))
-                                    fail(7019, "dependency '" + alias +
-                                       diag::repository_illegal_path_suffix!)
+                                    fail(7019, diag::repository_illegal_path(alias))
                                     <-->
                                  |
                                     compute_tree_hash(r, tmp)
@@ -1233,8 +1230,7 @@
          |
             !check_tree_security(r, v_dir)
                |
-                  fail(7019, "dependency '" + alias +
-                     diag::archive_illegal_path_suffix!)
+                  fail(7019, diag::archive_illegal_path(alias))
                   <-->
                |
                   compute_tree_hash(r, v_dir)
@@ -1242,8 +1238,7 @@
                         expected_hash = r.hashes ^ hash | _ | ""
                         expected_hash != "" && tree_hash != expected_hash
                            |
-                              fail(7005, diag::vendor_tree_mismatch_prefix! + alias +
-                                 "' (expected " + expected_hash + ", got " + tree_hash + ")")
+                              fail(7005, diag::vendor_tree_mismatch(alias, expected_hash, tree_hash))
                               <-->
                            | <+ v_dir +>
                      | <+ v_dir +>
@@ -1290,8 +1285,7 @@
                   has_traversal
                      |
                         libc::unlink(file)
-                        fail(7019, "dependency '" + alias +
-                           diag::archive_illegal_path_suffix!)
+                        fail(7019, diag::archive_illegal_path(alias))
                         <-->
                      |
                         tmp = tmp_path(r)
@@ -1424,8 +1418,7 @@
             |
                !check_tree_security(r, abs)
                   |
-                     fail(7019, "dependency '" + alias +
-                        diag::repository_illegal_path_suffix!)
+                     fail(7019, diag::repository_illegal_path(alias))
                      <-->
                   |
                      load_manifest(abs)
@@ -1439,8 +1432,7 @@
                               | tree_hash =>
                                  expected_tree' != "" && tree_hash != expected_tree'
                                     |
-                                       fail(7005, diag::vendor_tree_mismatch_prefix! + alias +
-                                          "' (expected " + expected_tree' + ", got " + tree_hash + ")")
+                                       fail(7005, diag::vendor_tree_mismatch(alias, expected_tree', tree_hash))
                                        <-->
                                     |
                                        pkg = empty_lock_pkg!
@@ -2395,8 +2387,7 @@
       changed = old_text != text
       r.opts.locked && changed
          |
-            fail(7007, diag::locked_manifest_stale_prefix! + lock_change(prior, lock) +
-               " changed)")
+            fail(7007, diag::locked_manifest_stale(lock_change(prior, lock)))
             1
          |
             lock_ok = !changed || write_text(lock_file, text)

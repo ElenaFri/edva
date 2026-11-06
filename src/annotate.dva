@@ -125,7 +125,7 @@ resolve_module_access = ctx, env, qn, line, col =>
             udef.ut, udef.ti, ulay, line, col)
 
    emsg = "Undefined identifier: " + qn
-   unify::add_error(ctx, 3004, emsg)
+   unify::add_error(ctx, diag::DiagCode(E3004), emsg)
    e_ut = unify::fresh_var(ctx)
    e_ti = ast::TypeInfo(Prim, ast::ValueType(Unknown))
    e_lay = tast::layout_scalar(8, 8)
@@ -211,7 +211,7 @@ cast_name_to_uprim =
 
 check_addr_target: unify::Ctx, String, <>, unify::UType => ()
 check_addr_target = ctx, fn_name, is_tgt_ptr, src_ut =>
-   unify::add_error(ctx, 3084,
+   unify::add_error(ctx, diag::DiagCode(E3180),
       "Cannot cast '" + unify::show_utype(ctx, src_ut) +
       "' to '" + fn_name + "'")
 
@@ -229,7 +229,7 @@ validate_primitive_cast = ctx, fn_name, tgt_uprim, src_ut =>
          is_tgt_flag
             | --|
             |
-               unify::add_error(ctx, 3084,
+               unify::add_error(ctx, diag::DiagCode(E3180),
                   "Cannot cast '" + unify::show_utype(ctx, src_ut) +
                   "' to '" + fn_name + "'")
       [Rec] check_addr_target(ctx, fn_name, is_tgt_ptr, src_ut)
@@ -262,7 +262,7 @@ validate_primitive_cast = ctx, fn_name, tgt_uprim, src_ut =>
                                     |
                                        is_src_ptr
                                           |
-                                             unify::add_error(ctx, 3065,
+                                             unify::add_error(ctx, diag::DiagCode(E3065),
                                                 diag::E3065_rawptr_to_string!)
                                        is_src_str
                                     | <->
@@ -270,11 +270,11 @@ validate_primitive_cast = ctx, fn_name, tgt_uprim, src_ut =>
             |
                !(is_tgt_str && is_src_ptr)
                   |
-                     unify::add_error(ctx, 3084,
+                     unify::add_error(ctx, diag::DiagCode(E3180),
                         "Cannot cast '" + unify::show_utype(ctx, src_ut) +
                         "' to '" + fn_name + "'")
       |
-         unify::add_error(ctx, 3084,
+         unify::add_error(ctx, diag::DiagCode(E3180),
             "Cannot cast '" + unify::show_utype(ctx, src_ut) +
             "' to '" + fn_name + "'")
 
@@ -913,14 +913,14 @@ check_swizzle_pattern = ctx, mode, flds, fname =>
                         |
                            mode == "all" && has_xyzw' && has_rgba'
                               |
-                                 unify::add_error(ctx, 3043,
+                                 unify::add_error(ctx, diag::DiagCode(E3043),
                                     "Cannot mix 'xyzw' and 'rgba' swizzle components in '" +
                                     fname + "'")
                                  2
                               |
                                  oob'
                                     |
-                                       unify::add_error(ctx, 3043,
+                                       unify::add_error(ctx, diag::DiagCode(E3043),
                                           "Swizzle component '" + bad_ch' +
                                           "' out of bounds for " +
                                           str::from_int(nf) + "-element vector")
@@ -1087,7 +1087,7 @@ annotate_cycle = ctx, env, c, esc_expr_opt =>
          is_s = is_str_ut(ctx, iter_te.ut)
          !is_s
             |
-               unify::add_error(ctx, 3084,
+               unify::add_error(ctx, diag::DiagCode(E3084),
                   "Codepoint cycle (@@) requires String iterable")
    iter_elem_info = c.is_rune
       | (<+>, unify::prim_rune())
@@ -1105,7 +1105,7 @@ annotate_cycle = ctx, env, c, esc_expr_opt =>
             [Rec r]
                !is_ufields_homogeneous(ctx, r)
                   |
-                     unify::add_error(ctx, 3051, diag::E3051_cycle_iter_hetero!)
+                     unify::add_error(ctx, diag::DiagCode(E3195), diag::E3195_cycle_iter_hetero!)
                r_elem = ?r > 0
                   | (r(0) | _ | unify::UField("", unify::UType(None))).ut
                   | unify::fresh_var(ctx)
@@ -1122,7 +1122,7 @@ annotate_cycle = ctx, env, c, esc_expr_opt =>
       | ""
    (?p0_saved > 10 && p0_saved(0..10) == "_splat_el_" && !(c_iter [Array, Slice, Rec]))
       |
-         unify::add_error(ctx, 3084,
+         unify::add_error(ctx, diag::DiagCode(E3084),
             "Splat operator '..' in array constructor requires an array, slice, or homogeneous record")
    p1_saved = c.body_fn
       [Fn fe1] (fe1.params(1) | _ | "")
@@ -1139,7 +1139,7 @@ annotate_cycle = ctx, env, c, esc_expr_opt =>
          p1 = p1_saved
          np = ?fe.params
          np > 2
-            | unify::add_error(ctx, 3138,
+            | unify::add_error(ctx, diag::DiagCode(E3138),
                "Cycle body takes at most two parameters")
          has_elem
             |
@@ -1198,7 +1198,7 @@ annotate_cycle = ctx, env, c, esc_expr_opt =>
                | b => b.ut
                |
                   pi < 2
-                     | unify::add_error(ctx, 3139,
+                     | unify::add_error(ctx, diag::DiagCode(E3139),
                         "Cycle body parameter '" + pname +
                         "' has no inferred type")
                   unify::fresh_var(ctx)
@@ -1406,8 +1406,7 @@ annotate_expr = ctx, env, expr =>
                !env.in_lvalue && type_env::init_is_tracked(env, name) &&
                   (env.in_member_target | !type_env::init_is_ok(env, name) | !type_env::init_is_fully_init(env, name, b.ut))
                   |
-                     unify::add_error(ctx, 3130,
-                        diag::uninitialized_variable_prefix! + name + "'.")
+                     unify::add_error(ctx, diag::DiagCode(E3130), diag::uninitialized_variable(name))
                ti0 = unify::type_info_from_utype(
                   ctx, b.ut)
                keep_b_ti = b.ti [TypeVar tv] tv != "" |
@@ -1495,15 +1494,13 @@ annotate_expr = ctx, env, expr =>
                                                       |
                                                          is_intrinsic_name(name)
                                                             |
-                                                               unify::add_error(ctx,
-                                                                  3100,
+                                                               unify::add_error(ctx, diag::DiagCode(E3100),
                                                                   "Intrinsic '" +
                                                                   name + "' must " +
                                                                   "be called with " +
                                                                   "arguments.")
                                                             |
-                                                               unify::add_error(ctx,
-                                                                  3004,
+                                                               unify::add_error(ctx, diag::DiagCode(E3004),
                                                                   "Undefined: " +
                                                                   name + " in " +
                                                                   env.current_module)
@@ -1541,12 +1538,12 @@ annotate_expr = ctx, env, expr =>
                lhs_is_ram = c_lhs [Ram]
                !lhs_is_ram
                   |
-                     unify::add_error(ctx, 3091,
+                     unify::add_error(ctx, diag::DiagCode(E3091),
                         "LHS of '$>>' must be a RamPP or RamPN ramification")
                no_pos_pay = c_lhs [Ram r] !r.0.has_payload | <->
                no_pos_pay
                   |
-                     unify::add_error(ctx, 3091,
+                     unify::add_error(ctx, diag::DiagCode(E3091),
                         "LHS of '$>>' must have a positive payload")
                has_neg_pay = c_lhs [Ram r] r.1.has_payload | <->
                neg_tag = has_neg_pay | ast::Tag(Negative) | ast::Tag(Noth)
@@ -1567,7 +1564,7 @@ annotate_expr = ctx, env, expr =>
                is_ram_res = c_res [Ram]
                !is_ram_res
                   |
-                     unify::add_error(ctx, 3091,
+                     unify::add_error(ctx, diag::DiagCode(E3091),
                         "Continuation of '$>>' must return a ramification")
                ch_te
             [Feed, Apply]
@@ -1630,8 +1627,7 @@ annotate_expr = ctx, env, expr =>
          name = a.0
          is_reserved_type_name(name)
             |
-               unify::add_error(ctx, 3050, "Cannot define '" + name +
-                  diag::E3050_reserved_type_name_suffix!)
+               unify::add_error(ctx, diag::DiagCode(E3050), diag::reserved_type_name(name))
          is_mut = a.1 || name_is_primed(name)
          is_compound = a.2
          is_global = a.3 || type_env::is_marked_global(env, name)
@@ -1643,7 +1639,7 @@ annotate_expr = ctx, env, expr =>
             |
                (is_global || (!env.in_fn && !is_fwd) || is_compound)
                   |
-                     unify::add_error(ctx, 3150, diag::E3150_view_escape_frame!)
+                     unify::add_error(ctx, diag::DiagCode(E3150), diag::E3150_view_escape_frame!)
                   |
                      add_view_name(name)
          init_expr = a.6
@@ -1744,7 +1740,7 @@ annotate_expr = ctx, env, expr =>
                                              annotate_expr(ctx, env, fe.body)
                                        cur_expected_ut ::= saved_assign_exp
                                        is_view_expr(fe.body)
-                                          | unify::add_error(ctx, 3150,
+                                          | unify::add_error(ctx, diag::DiagCode(E3150),
                                              diag::E3150_view_escape_frame!)
                                        view_vars ::= saved_views
                                        type_env::init_restore(env, saved_init)
@@ -1755,8 +1751,8 @@ annotate_expr = ctx, env, expr =>
                                           unify::unify(ctx, f.ret, body_te.ut)
                                        !ok_ret
                                           |
-                                             unify::add_error(ctx, 3084,
-                                                diag::return_type_mismatch_prefix! + name)
+                                             unify::add_error(ctx, diag::DiagCode(E3181),
+                                                diag::return_type_mismatch(name))
                                        ret_res_ut = expr_is_jump(body_te) | f.ret | body_te.ut
                                        fn_ut = unify::mk_fn(param_uts,
                                           ret_res_ut)
@@ -1798,14 +1794,14 @@ annotate_expr = ctx, env, expr =>
                                                    ok_rhs' = <+>
                                              !ok_rhs'
                                                 |
-                                                   unify::add_error(ctx, 3084,
-                                                      diag::E3084_builder_append_type!)
+                                                   unify::add_error(ctx, diag::DiagCode(E3184),
+                                                      diag::E3184_builder_append_type!)
                                           |
                                              ok = unify::unify(ctx, tb.ut,
                                                 rhs'.ut)
                                              !ok
                                                 |
-                                                   unify::add_error(ctx, 3084,
+                                                   unify::add_error(ctx, diag::DiagCode(E3084),
                                                       "Type mismatch in " +
                                                       "compound assignment " +
                                                       "to: " + name)
@@ -1813,14 +1809,14 @@ annotate_expr = ctx, env, expr =>
                                        ok = unify::unify(ctx, arr.elem, rhs'.ut)
                                        !ok
                                           |
-                                             unify::add_error(ctx, 3084,
+                                             unify::add_error(ctx, diag::DiagCode(E3084),
                                                 "Type mismatch in array " +
                                                 "append to: " + name)
                                     |
                                        is_var = c_tb [Var]
                                        !is_var
                                           |
-                                             unify::add_error(ctx, 3084,
+                                             unify::add_error(ctx, diag::DiagCode(E3084),
                                                 "Type does not support " +
                                                 "compound assignment")
                               |
@@ -1835,7 +1831,7 @@ annotate_expr = ctx, env, expr =>
                                  is_rhs_unit = c_rhs_u [Prim p_u] (p_u [Unit]) | <->
                                  is_rhs_unit
                                     |
-                                       unify::add_error(ctx, 3032,
+                                       unify::add_error(ctx, diag::DiagCode(E3032),
                                           diag::assign_void_variable(name))
                                  !is_both && !is_bld' && !a.4 && !is_global
                                     |
@@ -1844,34 +1840,34 @@ annotate_expr = ctx, env, expr =>
                                              is_tb_fn)
                                        rebind
                                           |
-                                             unify::add_error(ctx, 3033,
+                                             unify::add_error(ctx, diag::DiagCode(E3033),
                                                 diag::reassign_immutable(name))
                                           |
                                              ok = unify::unify(ctx, tb.ut,
                                                 rhs'.ut)
                                              !ok
                                                 |
-                                                   unify::add_error(ctx, 3084,
-                                                      diag::assignment_type_mismatch_prefix! + name)
+                                                   unify::add_error(ctx, diag::DiagCode(E3084),
+                                                      diag::assignment_type_mismatch(name))
                                  is_global && !is_both && !is_bld' && !a.4
                                     |
                                        ok_g = unify::unify(ctx, tb.ut, rhs'.ut)
                                        !ok_g
                                           |
-                                             unify::add_error(ctx, 3084,
-                                                diag::assignment_type_mismatch_prefix! + name)
+                                             unify::add_error(ctx, diag::DiagCode(E3084),
+                                                diag::assignment_type_mismatch(name))
                         |
                            is_must_exist = is_global || a.4
                            is_must_exist
                               |
-                                 unify::add_error(ctx, 3004,
+                                 unify::add_error(ctx, diag::DiagCode(E3004),
                                     "Undefined variable: " + name)
                            rhs' = annotate_expr(ctx, env, val_expr)
                            c_rhs_u2 = unify::canon(ctx, rhs'.ut)
                            is_rhs_unit2 = c_rhs_u2 [Prim p_u2] (p_u2 [Unit]) | <->
                            is_rhs_unit2
                               |
-                                 unify::add_error(ctx, 3032,
+                                 unify::add_error(ctx, diag::DiagCode(E3032),
                                     diag::assign_void_variable(name))
                            is_global
                               |
@@ -1944,7 +1940,7 @@ annotate_expr = ctx, env, expr =>
             typed_pairs += tast::TypedMapPair(kte, vte)
          !unify::is_map_key_utype(ctx, k_ut)
             |
-               unify::add_error(ctx, 2090,
+               unify::add_error(ctx, diag::DiagCode(E2090),
                   "Map key type must be String, Int, or Addr")
          map_ut = unify::mk_map(k_ut, v_ut)
          ti = unify::type_info_from_utype(ctx, map_ut)
@@ -2001,7 +1997,7 @@ annotate_expr = ctx, env, expr =>
                                  eb += ("Field '", fname', "' of '", root,
                                     "' read before init.")
                                  unify::add_error(
-                                    ctx, 3130, +eb)
+                                    ctx, diag::DiagCode(E3130), +eb)
                fld_ut = unify::fresh_var(ctx)
                c_tgt = unify::canon(ctx, target_te.ut)
                exact_idx' = -1
@@ -2054,7 +2050,7 @@ annotate_expr = ctx, env, expr =>
                idx' = swz_status' == 1 | -2 | exact_idx'
                fname' == "" && idx' < 0
                   |
-                     unify::add_error(ctx, 3170,
+                     unify::add_error(ctx, diag::DiagCode(E3170),
                         diag::member_index_constant!)
                fld_ti_opt = <>(type_prop_ti')
                   | type_prop_ti'
@@ -2187,7 +2183,7 @@ annotate_expr = ctx, env, expr =>
                   |
                      !unify::is_map_key_utype(ctx, key_te.ut)
                         |
-                           unify::add_error(ctx, 2090,
+                           unify::add_error(ctx, diag::DiagCode(E2090),
                               "Map key type must be String, Int, or Addr")
                      var_map = unify::mk_map(key_te.ut, unify::fresh_var(ctx))
                      unify::unify(ctx, target_te.ut, var_map)
@@ -2212,7 +2208,7 @@ annotate_expr = ctx, env, expr =>
                   |
                      !unify::is_map_key_utype(ctx, key_te.ut)
                         |
-                           unify::add_error(ctx, 2090,
+                           unify::add_error(ctx, diag::DiagCode(E2090),
                               "Map key type must be String, Int, or Addr")
                      var_map2 = unify::mk_map(key_te.ut, elem_ut')
                      unify::unify(ctx, target_te.ut, var_map2)
@@ -2303,7 +2299,7 @@ annotate_expr = ctx, env, expr =>
          r.line > 0 | unify::set_pos(ctx, r.line, r.col)
          !env.in_fn
             |
-               unify::add_error(ctx, 3173, diag::E3173_return_outside_fn!)
+               unify::add_error(ctx, diag::DiagCode(E3173), diag::E3173_return_outside_fn!)
                val_opt = r.has_val | <+ annotate_expr(ctx, env, r.val) +> | <-->
                tast::mk_typed_return(val_opt, unify::prim_unit(),
                   ast::TypeInfo(Prim, ast::ValueType(Unit)), tast::layout_void(), r.line, r.col)
@@ -2316,7 +2312,7 @@ annotate_expr = ctx, env, expr =>
                         |
                            r.has_val
                               |
-                                 unify::add_error(ctx, 3173,
+                                 unify::add_error(ctx, diag::DiagCode(E3190),
                                     "Cannot return a value from a void function.")
                                  val_te = annotate_expr(ctx, env, r.val)
                                  tast::mk_typed_return(<+ val_te +>, unify::prim_unit(),
@@ -2327,7 +2323,7 @@ annotate_expr = ctx, env, expr =>
                         |
                            !r.has_val
                               |
-                                 unify::add_error(ctx, 3173,
+                                 unify::add_error(ctx, diag::DiagCode(E3191),
                                     "Missing return value in function returning a value.")
                                  tast::mk_typed_return(<-->, unify::prim_unit(),
                                     ast::TypeInfo(Prim, ast::ValueType(Unit)), tast::layout_void(), r.line, r.col)
@@ -2336,7 +2332,7 @@ annotate_expr = ctx, env, expr =>
                                  ok = unify::unify(ctx, ret_ut, val_te.ut)
                                  !ok
                                     |
-                                       unify::add_error(ctx, 3084,
+                                       unify::add_error(ctx, diag::DiagCode(E3181),
                                           "Return expression type mismatch")
                                  tast::mk_typed_return(<+ val_te +>, unify::prim_unit(),
                                     ast::TypeInfo(Prim, ast::ValueType(Unit)), tast::layout_void(), r.line, r.col)
@@ -2390,7 +2386,7 @@ annotate_unary_op = ctx, env, op, t, operand_expr =>
          ok = unify::unify(ctx, t, unify::prim_str())
          !ok
             |
-               unify::add_error(ctx, 3084,
+               unify::add_error(ctx, diag::DiagCode(E3084),
                   "Codepoint count (??) requires String operand")
          unify::prim_int()
       [AddrOf]
@@ -2404,14 +2400,14 @@ annotate_unary_op = ctx, env, op, t, operand_expr =>
                         [Var]
                            !cur_is_call_arg
                               |
-                                 unify::add_error(ctx, 3078,
+                                 unify::add_error(ctx, diag::DiagCode(E3078),
                                     "Unary '&' on scalar variable is only valid in function call argument position.")
                         |
-                           unify::add_error(ctx, 3078,
+                           unify::add_error(ctx, diag::DiagCode(E3078),
                               "Unary '&' on scalar requires a variable target.")
                      unify::prim_rawptr()
                   |
-                     unify::add_error(ctx, 3078,
+                     unify::add_error(ctx, diag::DiagCode(E3078),
                         "Address operator '&' cannot be applied to '" + unify::show_utype(ctx, t) + "\.")
                      unify::prim_rawptr()
             [Rec] unify::prim_rawptr()
@@ -2420,21 +2416,21 @@ annotate_unary_op = ctx, env, op, t, operand_expr =>
             [Fn] unify::prim_rawptr()
             [Var] unify::prim_rawptr()
             |
-               unify::add_error(ctx, 3078,
+               unify::add_error(ctx, diag::DiagCode(E3078),
                   "Address operator '&' cannot be applied to '" + unify::show_utype(ctx, t) + "\.")
                unify::prim_rawptr()
       [Freeze]
          ok = unify::unify(ctx, t, unify::prim_builder())
          !ok
             |
-               unify::add_error(ctx, 3084,
+               unify::add_error(ctx, diag::DiagCode(E3084),
                   "Unary '+' freeze requires Builder operand")
          unify::prim_str()
       [BitNot]
          ok = unify::unify(ctx, t, unify::prim_int())
          !ok
             |
-               unify::add_error(ctx, 3084,
+               unify::add_error(ctx, diag::DiagCode(E3084),
                   "Bitwise NOT requires integer operand")
          unify::prim_int()
       [Neg]
@@ -2443,7 +2439,7 @@ annotate_unary_op = ctx, env, op, t, operand_expr =>
             is_rune_ut(ctx, c) || is_numeric_rec(ctx, c) || (c [Var]))
             | c
             |
-               unify::add_error(ctx, 3084,
+               unify::add_error(ctx, diag::DiagCode(E3084),
                   "Unary '-' requires numeric operand, got '" +
                      unify::show_utype(ctx, t) + "'")
                unify::prim_unknown()
@@ -2454,15 +2450,15 @@ annotate_unary_op = ctx, env, op, t, operand_expr =>
                p
                   [Flag] unify::prim_flag()
                   [Int, I8, I16, I32, I64, U8, U16, U32, U64]
-                     unify::add_error(ctx, 3008, diag::E3008_not_integer!)
+                     unify::add_error(ctx, diag::DiagCode(E3187), diag::E3187_not_integer!)
                      unify::prim_flag()
                   |
-                     unify::add_error(ctx, 3008, diag::E3008_not_invalid_type!)
+                     unify::add_error(ctx, diag::DiagCode(E3008), diag::E3008_not_invalid_type!)
                      unify::prim_flag()
             [Var]
                unify::fresh_var(ctx)
             |
-               unify::add_error(ctx, 3008, diag::E3008_not_invalid_type!)
+               unify::add_error(ctx, diag::DiagCode(E3008), diag::E3008_not_invalid_type!)
                unify::prim_flag()
       [Unwrap]
          c = unify::canon(ctx, t)
@@ -2471,17 +2467,17 @@ annotate_unary_op = ctx, env, op, t, operand_expr =>
                r.pos.has_payload
                   | r.pos.ut
                   |
-                     unify::add_error(ctx, 3091,
+                     unify::add_error(ctx, diag::DiagCode(E3091),
                         "Operand of '!!' must have a positive payload")
                      unify::prim_unknown()
             |
-               unify::add_error(ctx, 3091,
+               unify::add_error(ctx, diag::DiagCode(E3091),
                   "Operand of '!!' must be a RamPP or RamPN ramification")
                unify::prim_unknown()
       [Propagate]
          !env.in_fn
             |
-               unify::add_error(ctx, 3173, diag::E3173_propagate_outside_fn!)
+               unify::add_error(ctx, diag::DiagCode(E3193), diag::E3193_propagate_outside_fn!)
                unify::prim_unknown()
             |
                env.cur_fn_ret
@@ -2500,18 +2496,18 @@ annotate_unary_op = ctx, env, op, t, operand_expr =>
                                           r_ret.neg.ut, r.neg.ut))
                                  !compat_neg
                                     |
-                                       unify::add_error(ctx, 3173,
+                                       unify::add_error(ctx, diag::DiagCode(E3194),
                                           "Cannot propagate " +
                                           "ramification: incompatible " +
                                           "ramification shape.")
                                        unify::prim_unknown()
                                     | (r.pos.has_payload | r.pos.ut | unify::prim_unit!)
                               |
-                                 unify::add_error(ctx, 3091,
+                                 unify::add_error(ctx, diag::DiagCode(E3091),
                                     diag::E3091_propagate_ram_operand!)
                                  unify::prim_unknown()
                         |
-                           unify::add_error(ctx, 3173,
+                           unify::add_error(ctx, diag::DiagCode(E3194),
                               "Propagate operator '--!' is only valid " +
                               "inside a function returning a " +
                               "ramification.")
@@ -2522,7 +2518,7 @@ annotate_unary_op = ctx, env, op, t, operand_expr =>
                         [Ram r]
                            r.pos.has_payload | r.pos.ut | unify::prim_unit!
                         |
-                           unify::add_error(ctx, 3091,
+                           unify::add_error(ctx, diag::DiagCode(E3091),
                               diag::E3091_propagate_ram_operand!)
                            unify::prim_unknown()
       | unify::prim_unknown()
@@ -2610,21 +2606,18 @@ unify_cmp_op = ctx, op, t1, t2 =>
    is_ram_cmp = is_ram1 || is_ram2 || (is_flg1 && is_flg2)
    is_enum_ord
       |
-         unify::add_error(ctx, 3127, "Operator '" + cmp_binop_name(op) +
-            diag::E3127_enum_ordering_suffix!)
+         unify::add_error(ctx, diag::DiagCode(E3127), diag::enum_ordering(cmp_binop_name(op)))
          unify::prim_flag()
       |
          is_ram_cmp
             |
                is_eq_neq
                   |
-                     unify::add_error(ctx, 3027, "Operator '" +
+                     unify::add_error(ctx, diag::DiagCode(E3027), "Operator '" +
                         cmp_binop_name(op) +
                         "' cannot be applied to ramifications")
                   |
-                     unify::add_error(ctx, 3127, "Operator '" +
-                        cmp_binop_name(op) +
-                        diag::E3127_ram_ordering_suffix!)
+                     unify::add_error(ctx, diag::DiagCode(E3127), diag::ram_ordering(cmp_binop_name(op)))
                unify::prim_flag()
             |
                is_type1 = c1_ord [Prim p_t1] (p_t1 [Type]) | <->
@@ -2642,7 +2635,7 @@ unify_cmp_op = ctx, op, t1, t2 =>
                         (ut_has_fn(ctx, t1, ast::Names()) || ut_has_fn(ctx, t2, ast::Names()))
                      has_fn
                         |
-                           unify::add_error(ctx, 3084,
+                           unify::add_error(ctx, diag::DiagCode(E3084),
                               "Type containing function does not support equality")
                            unify::prim_flag()
                         | unify_cmp(ctx, t1, t2)
@@ -2689,7 +2682,7 @@ unify_add = ctx, t1, t2 =>
          cnt2 = rec_count(ctx, t2)
          cnt1 != cnt2
             |
-               unify::add_error(ctx, 3084, diag::E3084_record_size_mismatch!)
+               unify::add_error(ctx, diag::DiagCode(E3182), diag::E3182_record_size_mismatch!)
                t1
             |
                e1 = rec_elem(ctx, t1)
@@ -2749,8 +2742,8 @@ unify_add = ctx, t1, t2 =>
                                                                      ok = unify::unify(ctx, t1, t2)
                                                                      !ok
                                                                         |
-                                                                           unify::add_error(ctx, 3084,
-                                                                              diag::E3084_arithmetic_type_mismatch!)
+                                                                           unify::add_error(ctx, diag::DiagCode(E3183),
+                                                                              diag::E3183_arithmetic_type_mismatch!)
                                                                            t1
                                                                         | unify::canon(ctx, t1)
 
@@ -2764,7 +2757,7 @@ unify_sub = ctx, t1, t2 =>
          cnt2 = rec_count(ctx, t2)
          cnt1 != cnt2
             |
-               unify::add_error(ctx, 3084, diag::E3084_record_size_mismatch!)
+               unify::add_error(ctx, diag::DiagCode(E3182), diag::E3182_record_size_mismatch!)
                t1
             |
                e1 = rec_elem(ctx, t1)
@@ -2811,8 +2804,8 @@ unify_sub = ctx, t1, t2 =>
                                                    ok = unify::unify(ctx, t1, t2)
                                                    !ok
                                                       |
-                                                         unify::add_error(ctx, 3084,
-                                                            diag::E3084_arithmetic_type_mismatch!)
+                                                         unify::add_error(ctx, diag::DiagCode(E3183),
+                                                            diag::E3183_arithmetic_type_mismatch!)
                                                          t1
                                                       | unify::canon(ctx, t1)
 
@@ -2826,7 +2819,7 @@ unify_arith = ctx, t1, t2 =>
          cnt2 = rec_count(ctx, t2)
          cnt1 != cnt2
             |
-               unify::add_error(ctx, 3084, diag::E3084_record_size_mismatch!)
+               unify::add_error(ctx, diag::DiagCode(E3182), diag::E3182_record_size_mismatch!)
                t1
             |
                e1 = rec_elem(ctx, t1)
@@ -2865,8 +2858,8 @@ unify_arith = ctx, t1, t2 =>
                                        ok = unify::unify(ctx, t1, t2)
                                        !ok
                                           |
-                                             unify::add_error(ctx, 3084,
-                                                diag::E3084_arithmetic_type_mismatch!)
+                                             unify::add_error(ctx, diag::DiagCode(E3183),
+                                                diag::E3183_arithmetic_type_mismatch!)
                                              t1
                                           | unify::canon(ctx, t1)
 
@@ -2880,7 +2873,7 @@ unify_cmp = ctx, t1, t2 =>
          cnt2 = rec_count(ctx, t2)
          cnt1 != cnt2
             |
-               unify::add_error(ctx, 3084,
+               unify::add_error(ctx, diag::DiagCode(E3084),
                   "Record size mismatch in comparison")
                unify::prim_flag()
             |
@@ -2908,7 +2901,7 @@ unify_cmp = ctx, t1, t2 =>
                      is_int_fl = (is_integerish_ut(ctx, t1) && fl2) || (fl1 && is_integerish_ut(ctx, t2))
                      is_int_fl
                         |
-                           unify::add_error(ctx, 3084,
+                           unify::add_error(ctx, diag::DiagCode(E3084),
                               "Type mismatch: cannot compare " +
                               unify::show_utype(ctx, t1) + " with " +
                               unify::show_utype(ctx, t2))
@@ -2930,7 +2923,7 @@ unify_cmp = ctx, t1, t2 =>
                                              ok = unify::unify(ctx, t1, t2)
                                              !ok
                                                 |
-                                                   unify::add_error(ctx, 3084,
+                                                   unify::add_error(ctx, diag::DiagCode(E3084),
                                                       "Comparison type mismatch")
                                              unify::prim_flag()
 
@@ -2970,22 +2963,22 @@ unify_feed = ctx, arg_ut, fn_ut => unify_apply(ctx, fn_ut, arg_ut)
 
 err_ram_circuit: unify::Ctx => ()
 err_ram_circuit = ctx =>
-   unify::add_error(ctx, 3089,
+   unify::add_error(ctx, diag::DiagCode(E3089),
       "Ramification layouts cannot represent short-circuit winners")
 
 err_ram_slot: unify::Ctx, String => ()
 err_ram_slot = ctx, slot =>
-   unify::add_error(ctx, 3089,
+   unify::add_error(ctx, diag::DiagCode(E3089),
       "Incompatible ram payloads in " + slot + " slot")
 
 err_flag_heap: unify::Ctx => ()
 err_flag_heap = ctx =>
-   unify::add_error(ctx, 3089,
+   unify::add_error(ctx, diag::DiagCode(E3089),
       "A bare Flag and a heap ram cannot be combined with && or ||")
 
 err_ram_nonram: unify::Ctx => ()
 err_ram_nonram = ctx =>
-   unify::add_error(ctx, 3089,
+   unify::add_error(ctx, diag::DiagCode(E3089),
       "Cannot combine ramification and non-ramification in op")
 
 diff_payload: <>, <> => <>
@@ -3055,7 +3048,7 @@ unify_logical = ctx, is_and, t1, t2 =>
          cnt2 = rec_count(ctx, t2)
          cnt1 != cnt2
             |
-               unify::add_error(ctx, 3084,
+               unify::add_error(ctx, diag::DiagCode(E3084),
                   "Record size mismatch in logical op")
                unify::prim_flag()
             |
@@ -3110,7 +3103,7 @@ check_length_operand = ctx, t =>
       [Prim p] p [Str, Builder, Rune, Type]
       | c [Rec, Array, Slice, Map, Var]
    !ok
-      | unify::add_error(ctx, 3084, "Length operator requires a countable operand")
+      | unify::add_error(ctx, diag::DiagCode(E3084), "Length operator requires a countable operand")
 
 unify_bitwise: unify::Ctx, unify::UType, unify::UType => unify::UType
 unify_bitwise = ctx, t1, t2 =>
@@ -3122,7 +3115,7 @@ unify_bitwise = ctx, t1, t2 =>
          cnt2 = rec_count(ctx, t2)
          cnt1 != cnt2
             |
-               unify::add_error(ctx, 3084,
+               unify::add_error(ctx, diag::DiagCode(E3084),
                   "Record size mismatch in bitwise op")
                t1
             |
@@ -3160,7 +3153,7 @@ unify_bitwise = ctx, t1, t2 =>
                                  unify::canon(ctx, t1)
                               |
                                  unify::unify(ctx, t1, t2)
-                                 unify::add_error(ctx, 3084,
+                                 unify::add_error(ctx, diag::DiagCode(E3084),
                                     "Bitwise operand mismatch: integer operands required")
                                  unify::prim_unknown()
 
@@ -3174,7 +3167,7 @@ unify_shift = ctx, t1, t2 =>
          cnt2 = rec_count(ctx, t2)
          cnt1 != cnt2
             |
-               unify::add_error(ctx, 3084,
+               unify::add_error(ctx, diag::DiagCode(E3084),
                   "Record size mismatch in shift op")
                t1
             |
@@ -3210,7 +3203,7 @@ unify_shift = ctx, t1, t2 =>
                int1 && int2
                   | unify::canon(ctx, t1)
                   |
-                     unify::add_error(ctx, 3057, "Shift operator requires integer operands.")
+                     unify::add_error(ctx, diag::DiagCode(E3057), "Shift operator requires integer operands.")
                      t1
 
 annotate_block: unify::Ctx, type_env::TypeEnv, ast::Exprs, <> => tast::TypedExpr
@@ -3321,12 +3314,12 @@ check_bitcast_types = ctx, tgt_ut, src_ut =>
    b_src = bitcast_type_bits(ctx, src_ut)
    b_tgt == 0 || b_src == 0
       |
-         unify::add_error(ctx, 3084,
+         unify::add_error(ctx, diag::DiagCode(E3084),
             "Invalid operand type for intrinsic '%bitcast'")
       |
          (b_tgt > 0 && b_src > 0 && b_tgt != b_src)
             |
-               unify::add_error(ctx, 3084,
+               unify::add_error(ctx, diag::DiagCode(E3084),
                   "Bitcast size mismatch in '%bitcast': cannot bitcast " +
                   str::from_int(b_src) + "-bit value to " +
                   str::from_int(b_tgt) + "-bit type.")
@@ -3356,7 +3349,7 @@ check_intrin_arg: unify::Ctx, String, <> => ()
 check_intrin_arg = ctx, name, ok =>
    !ok
       |
-         unify::add_error(ctx, 3084,
+         unify::add_error(ctx, diag::DiagCode(E3084),
             "Invalid operand type for intrinsic '" + name + "'")
 
 compute_intrinsic_ret_ut: unify::Ctx, String, tast::TypedExprs,
@@ -3463,7 +3456,7 @@ annotate_intrinsic_call = ctx, env, ce =>
    nargs = ?typed_args
    !is_known_intrinsic(name)
       |
-         unify::add_error(ctx, 3100,
+         unify::add_error(ctx, diag::DiagCode(E3100),
             "Unknown compiler intrinsic '" + name + "'.")
          ti_err = ast::TypeInfo(Prim, ast::ValueType(Unknown))
          tast::mk_typed_call(name, <-->, typed_args, unify::prim_unit(),
@@ -3475,7 +3468,7 @@ annotate_intrinsic_call = ctx, env, ce =>
             | nargs == exp_n
          !nargs_ok
             |
-               unify::add_error(ctx, 3100,
+               unify::add_error(ctx, diag::DiagCode(E3100),
                   "Intrinsic '" + name + "' called with " +
                   str::from_int(nargs) + " arguments.")
                ti_err = ast::TypeInfo(Prim, ast::ValueType(Unknown))
@@ -3504,7 +3497,7 @@ annotate_intrinsic_call = ctx, env, ce =>
                      is_ok = is_str_ut(ctx, arg0.ut) || is_rune_ut(ctx, arg0.ut) ||
                         is_integerish_ut(ctx, arg0.ut) || is_float_ut(ctx, arg0.ut)
                      !is_ok |
-                        unify::add_error(ctx, 3105,
+                        unify::add_error(ctx, diag::DiagCode(E3105),
                            "String interpolation does not support non-scalar type.")
                name == "%bitcast"
                   |
@@ -3548,7 +3541,7 @@ annotate_call = ctx, env, ce =>
                               | (called_fns += tgt)
          ce.fn_name == "Builder"
             |
-               unify::add_error(ctx, 3084,
+               unify::add_error(ctx, diag::DiagCode(E3084),
                   "Type 'Builder' cannot be used as a function or constructor. " +
                   "Use '{cap}' to create a Builder.")
                typed_args = annotate_call_args(ctx, env, ce.args)
@@ -3560,7 +3553,7 @@ annotate_call = ctx, env, ce =>
             |
                ce.fn_name == "Type" || ce.fn_name == "void"
                   |
-                     unify::add_error(ctx, 3084,
+                     unify::add_error(ctx, diag::DiagCode(E3084),
                         "Type '" + ce.fn_name +
                         "' cannot be used as a function or constructor.")
                      typed_args = annotate_call_args(ctx, env, ce.args)
@@ -3576,7 +3569,7 @@ annotate_call = ctx, env, ce =>
                            nargs_err = ?typed_args
                            nargs_err > 6
                               |
-                                 unify::add_error(ctx, 3084,
+                                 unify::add_error(ctx, diag::DiagCode(E3084),
                                     "Constructor 'Error' takes at most 6 arguments, got " +
                                     str::from_int(nargs_err))
                            nargs_err > 0
@@ -3602,7 +3595,7 @@ annotate_call = ctx, env, ce =>
                                  nargs_cast = ?typed_args
                                  nargs_cast != 1
                                     |
-                                       unify::add_error(ctx, 3084,
+                                       unify::add_error(ctx, diag::DiagCode(E3084),
                                           "Type cast '" + ce.fn_name +
                                           "' requires 1 argument, got " +
                                           str::from_int(nargs_cast))
@@ -3627,7 +3620,7 @@ annotate_call = ctx, env, ce =>
                                        nargs_addr = ?typed_args
                                        nargs_addr != 1
                                           |
-                                             unify::add_error(ctx, 3084,
+                                             unify::add_error(ctx, diag::DiagCode(E3084),
                                                 "Function 'addr' requires 1 argument, got " +
                                                 str::from_int(nargs_addr))
                                        nargs_addr == 1
@@ -3745,7 +3738,7 @@ annotate_record_ctor_fields = ctx, env, ce, udef, flds, fields, nf, is_bitfield,
       (!fld0_is_rec || (nf > 1 && !rest_have_defaults'))
    is_tuple_lit && ce.line > 0
       |
-         unify::add_error(ctx, 3023,
+         unify::add_error(ctx, diag::DiagCode(E3023),
             "Redundant double parentheses in record constructor '" + ce.fn_name +
             "': write '" + ce.fn_name + "(...)', not '" + ce.fn_name + "((...))'")
    is_tuple_lit
@@ -3768,14 +3761,14 @@ annotate_record_ctor_fields = ctx, env, ce, udef, flds, fields, nf, is_bitfield,
                f.name == na.name | (found_fld' = <+>; -->)
             !found_fld'
                |
-                  unify::add_error(ctx, 3117,
+                  unify::add_error(ctx, diag::DiagCode(E3117),
                      "Record '" + ce.fn_name + "' has no field '" + na.name + "'")
             is_dup = <->
             seen_names @ s_nm =>
                s_nm == na.name | (is_dup = <+>; -->)
             is_dup
                |
-                  unify::add_error(ctx, 3117,
+                  unify::add_error(ctx, diag::DiagCode(E3117),
                      "Duplicate argument '" + na.name + "' in constructor for '" + ce.fn_name + "'")
                |
                   seen_names += na.name
@@ -3786,7 +3779,7 @@ annotate_record_ctor_fields = ctx, env, ce, udef, flds, fields, nf, is_bitfield,
    is_tuple_arg = ?effective_args == 1 && (nf > 1 || (eff_a0_is_rec && !fld0_is_rec))
    !is_tuple_arg && !has_splat' && pos_count' > nf
       |
-         unify::add_error(ctx, 3023,
+         unify::add_error(ctx, diag::DiagCode(E3023),
             "Too many arguments to '" + ce.fn_name + "': expected at most " + str::from_int(nf) + ", got " + str::from_int(pos_count'))
    !is_tuple_arg
       |
@@ -3802,7 +3795,7 @@ annotate_record_ctor_fields = ctx, env, ce, udef, flds, fields, nf, is_bitfield,
                               seen_names @ s_nm =>
                                  s_nm == f_at.name
                                     |
-                                       unify::add_error(ctx, 3117,
+                                       unify::add_error(ctx, diag::DiagCode(E3117),
                                           "Duplicate argument '" + f_at.name + "' in constructor for '" + ce.fn_name + "'")
                                        -->
                               seen_names += f_at.name
@@ -3905,7 +3898,7 @@ annotate_record_ctor_fields = ctx, env, ce, udef, flds, fields, nf, is_bitfield,
                      | ast::Expr(Int, 0)
                   val_expr_opt = <+ def_bf +>
                |
-                  unify::add_error(ctx, 3130,
+                  unify::add_error(ctx, diag::DiagCode(E3130),
                      diag::record_default_missing(fld.name, ce.fn_name))
       val_expr = val_expr_opt | _ | ast::Expr(Int, 0)
       idx = fld.name != "" | unify::find_field_idx(flds, fld.name) | j
@@ -4082,7 +4075,7 @@ annotate_call_normal = ctx, env, ce =>
                typed_args = tast::TypedExprs()
                n_args == 0
                   |
-                     unify::add_error(ctx, 3096,
+                     unify::add_error(ctx, diag::DiagCode(E3096),
                         diag::enum_no_variant(ce.fn_name, ""))
                   |
                      arg0_e = ce.args(0) | _ | ast::Expr(Var, "")
@@ -4103,10 +4096,10 @@ annotate_call_normal = ctx, env, ce =>
                                  ok_cast = unify::unify(ctx, udef.ut, a0.ut)
                                  !ok_cast
                                     |
-                                       unify::add_error(ctx, 3096,
+                                       unify::add_error(ctx, diag::DiagCode(E3096),
                                           diag::enum_no_variant(ce.fn_name, lbl_str))
                               |
-                                 unify::add_error(ctx, 3096,
+                                 unify::add_error(ctx, diag::DiagCode(E3096),
                                     diag::enum_no_variant(ce.fn_name, lbl_str))
                         |
                            v_info = uenum.variants(idx') | _ |
@@ -4125,16 +4118,16 @@ annotate_call_normal = ctx, env, ce =>
                                     typed_args += a_te
                            !v_info.has_payload && n_args > 1
                               |
-                                 unify::add_error(ctx, 3098,
+                                 unify::add_error(ctx, diag::DiagCode(E3098),
                                     diag::enum_unit_payload(ce.fn_name, lbl_str))
                            v_info.has_payload && n_args == 1
                               |
-                                 unify::add_error(ctx, 3097,
+                                 unify::add_error(ctx, diag::DiagCode(E3097),
                                     "Enum '" + ce.fn_name + "' variant '" +
                                     lbl_str + "' requires a payload argument.")
                            v_info.has_payload && n_args > 2
                               |
-                                 unify::add_error(ctx, 3098,
+                                 unify::add_error(ctx, diag::DiagCode(E3098),
                                     "Enum '" + ce.fn_name + "' variant '" +
                                     lbl_str + "' takes 1 payload argument, got " +
                                     str::from_int(n_args - 1) + ".")
@@ -4146,7 +4139,7 @@ annotate_call_normal = ctx, env, ce =>
                                     |
                                        exp_name = unify::show_utype(ctx, v_info.payload_type)
                                        got_name = unify::show_utype(ctx, arg1.ut)
-                                       unify::add_error(ctx, 3099,
+                                       unify::add_error(ctx, diag::DiagCode(E3099),
                                           diag::enum_payload_type(ce.fn_name,
                                              lbl_str, exp_name, got_name))
                tast::mk_typed_call(ce.fn_name, <-->, typed_args, udef.ut, ti,
@@ -4229,7 +4222,7 @@ annotate_call_normal = ctx, env, ce =>
                                     |
                                        !is_ufields_homogeneous(ctx, rec)
                                           |
-                                             unify::add_error(ctx, 3051,
+                                             unify::add_error(ctx, diag::DiagCode(E3051),
                                                 diag::E3051_dynamic_index_hetero!)
                                        f0 = rec(0)!!
                                        is_rng = ce.args(0) | a => is_range_expr(a) | <->
@@ -4255,7 +4248,7 @@ annotate_call_normal = ctx, env, ce =>
                            fn_ut' = instantiate_generic_ti_call(ctx, env,
                               type_env::decl_module(ce.fn_name, 0), gen_ti, ce.args)
                         |
-                           unify::add_error(ctx, 3004,
+                           unify::add_error(ctx, diag::DiagCode(E3004),
                               "Undefined function: " + ce.fn_name)
                            fn_ut' = unify::fresh_var(ctx)
             |
@@ -4295,7 +4288,7 @@ annotate_call_normal = ctx, env, ce =>
                               |
                                  !is_ufields_homogeneous(ctx, rec2)
                                     |
-                                       unify::add_error(ctx, 3051,
+                                       unify::add_error(ctx, diag::DiagCode(E3051),
                                           diag::E3051_dynamic_index_hetero!)
                                  f02 = rec2(0)!!
                                  is_rng2 = ce.args(0) | a => is_range_expr(a) | <->
@@ -4341,7 +4334,7 @@ annotate_call_normal = ctx, env, ce =>
                         full = type_env::init_is_fully_init(env, v, c)
                         !full
                            |
-                              unify::add_error(ctx, 3132,
+                              unify::add_error(ctx, diag::DiagCode(E3132),
                                  diag::partial_composite_argument(v))
             typed_args += ta
             arg_uts += ta.ut
@@ -4389,7 +4382,7 @@ annotate_call_normal = ctx, env, ce =>
                      expected_fn = unify::mk_fn(arg_uts, ret_ut)
                      ok = unify::unify(ctx, fn_ut', expected_fn)
                      !ok
-                        | unify::add_error(ctx, 3084,
+                        | unify::add_error(ctx, diag::DiagCode(E3084),
                            "Function call signature mismatch")
                ti = unify::type_info_from_utype(ctx, ret_ut)
                lay = layout::compute_layout(ctx, ret_ut)
@@ -4462,7 +4455,7 @@ check_no_closing_return: unify::Ctx, ast::Expr => ()
 check_no_closing_return = ctx, body =>
    body_closing_return(body) | r =>
       r.line > 0 | unify::set_pos(ctx, r.line, r.col)
-      unify::add_error(ctx, 3173,
+      unify::add_error(ctx, diag::DiagCode(E3192),
          "Closing '--|' at the end of a function is prohibited; '--|' is only for early return.")
 
 expr_is_jump: tast::TypedExpr => <>
@@ -4514,8 +4507,8 @@ choice_check_ram_pn = ctx, tb_list =>
                   ok = unify::unify(ctx, cand_pos, pay_ut)
                   !ok
                      |
-                        unify::add_error(ctx, 3084,
-                           diag::E3084_choice_branch_mismatch!)
+                        unify::add_error(ctx, diag::DiagCode(E3185),
+                           diag::E3185_choice_branch_mismatch!)
                         all_pn' = <->
                         -->
                |
@@ -4553,8 +4546,8 @@ choice_check_ram_np = ctx, tb_list =>
                   ok = unify::unify(ctx, cand_neg, pay_ut)
                   !ok
                      |
-                        unify::add_error(ctx, 3084,
-                           diag::E3084_choice_branch_mismatch!)
+                        unify::add_error(ctx, diag::DiagCode(E3185),
+                           diag::E3185_choice_branch_mismatch!)
                         all_np' = <->
                         -->
                |
@@ -4665,14 +4658,14 @@ annotate_choice = ctx, env, ch, is_disc =>
    cur_expected_ut ::= <-->
    is_disc && choice_has_constant_branch(ch)
       |
-         unify::add_error(ctx, 3175, diag::E3175_choice_const_discarded!)
+         unify::add_error(ctx, diag::DiagCode(E3175), diag::E3175_choice_const_discarded!)
    ch.cond
       [Var v]
          bnd_opt = type_env::lookup_binding(env, "_")
          has_bnd = <>(bnd_opt)
          v == "_" && !has_bnd
             |
-               unify::add_error(ctx, 3003, diag::E3003_choice_underscore_undefined!)
+               unify::add_error(ctx, diag::DiagCode(E3003), diag::E3003_choice_underscore_undefined!)
    cond_te = annotate_expr(ctx, env, ch.cond)
    c_cond0 = unify::canon(ctx, cond_te.ut)
    is_synth_extract = ?ch.branches == 1 && ch.is_exhaustive
@@ -4756,7 +4749,7 @@ annotate_choice = ctx, env, ch, is_disc =>
                                     -->
                            !found_v'
                               |
-                                 unify::add_error(ctx, 3096,
+                                 unify::add_error(ctx, diag::DiagCode(E3096),
                                     diag::enum_no_variant(enum_disp, vname))
                         is_unit_slot'
                            |
@@ -4765,13 +4758,13 @@ annotate_choice = ctx, env, ch, is_disc =>
                                  bv_chk != "" && bv_chk != "_"
                                     |
                                        v0_lbl = bare_enum_label(br.variant_names(0) | _ | "")
-                                       unify::add_error(ctx, 3098,
+                                       unify::add_error(ctx, diag::DiagCode(E3098),
                                           diag::enum_unit_payload(enum_disp, v0_lbl))
                                        -->
                |
                   i == 0 && (br.kind [Bare])
                      |
-                        unify::add_error(ctx, 3084,
+                        unify::add_error(ctx, diag::DiagCode(E3084),
                            "Bare '|' condition requires Flag or ramification, got " +
                            enum_disp)
                   is_unit_slot' = <+>
@@ -4784,7 +4777,7 @@ annotate_choice = ctx, env, ch, is_disc =>
                         is_flg = c_cond [Prim p] (p [Flag, Unknown]) | (c_cond [Var])
                         !is_flg
                            |
-                              unify::add_error(ctx, 3084,
+                              unify::add_error(ctx, diag::DiagCode(E3084),
                                  "Bare '|' condition requires Flag or ramification, got " +
                                  unify::show_utype(ctx, c_cond))
                   payload_ut' = cond_te.ut
@@ -4801,7 +4794,7 @@ annotate_choice = ctx, env, ch, is_disc =>
                            bv_chk != "" && bv_chk != "_" | (has_named_bind' = <+>)
                         has_named_bind'
                            |
-                              unify::add_error(ctx, 3084,
+                              unify::add_error(ctx, diag::DiagCode(E3084),
                                  "Variant pattern guard cannot be applied to non-enum type " +
                                  unify::show_utype(ctx, c_cond))
                            | (br_kind' = ast::GuardKind(Case))
@@ -4931,8 +4924,8 @@ annotate_choice = ctx, env, ch, is_disc =>
                   ok = unify::unify(ctx, res_ut, body_te.ut)
                   !ok
                      |
-                        unify::add_error(ctx, 3084,
-                           diag::E3084_choice_branch_mismatch!)
+                        unify::add_error(ctx, diag::DiagCode(E3185),
+                           diag::E3185_choice_branch_mismatch!)
       tbr = tast::TypedBranch(br_kind', typed_cvs, pred_opt,
          br.variant_names, cur_bind_vars, body_te)
       tb_list += tbr
@@ -5007,9 +5000,9 @@ annotate_choice = ctx, env, ch, is_disc =>
                                           ok_u = unify::unify(ctx, res_ut, tb_item.body.ut)
                                           !ok_u
                                              |
-                                                unify::add_error(ctx, 3084,
-                                                   diag::E3084_choice_branch_mismatch!)
-                                 unify::add_error(ctx, 3102,
+                                                unify::add_error(ctx, diag::DiagCode(E3185),
+                                                   diag::E3185_choice_branch_mismatch!)
+                                 unify::add_error(ctx, diag::DiagCode(E3102),
                                     "Choice over an enum does not cover variants: " +
                                     missing_enum_labels' +
                                     " — add a branch for each or a trailing '|' fallback.")
@@ -5055,7 +5048,7 @@ annotate_record = ctx, env, re =>
                      splat_root != "" && type_env::init_is_tracked(env, splat_root) &&
                         !type_env::init_is_ok(env, splat_root + "." + sf.name)
                         |
-                           unify::add_error(ctx, 3130,
+                           unify::add_error(ctx, diag::DiagCode(E3130),
                               "Field '" + sf.name + "' of '" + splat_root + "' read before init.")
                      sf_ti = unify::type_info_from_utype(ctx, sf.ut)
                      sf_lay = layout::compute_layout(ctx, sf.ut)
@@ -5077,7 +5070,7 @@ annotate_record = ctx, env, re =>
                      f_align = flay.align < 1 | 1 | flay.align
                      cur_off' = layout::align_up(cur_off', f_align) + flay.size
                |
-                  unify::add_error(ctx, 3084,
+                  unify::add_error(ctx, diag::DiagCode(E3084),
                      "Splat operator '..' requires a record operand")
          |
             f_te = annotate_expr(ctx, env, f.val)
@@ -5086,7 +5079,7 @@ annotate_record = ctx, env, re =>
             is_unit_lit = f.val [Record r_u] (?r_u.fields == 0) | <->
             is_unit_fld && !is_unit_lit
                |
-                  unify::add_error(ctx, 3084,
+                  unify::add_error(ctx, diag::DiagCode(E3084),
                      "Record field cannot have Unit type (non-exhaustive conditional elements require a growable array constructor)")
             tf = tast::TypedField(f.name, f_te, cur_off', f_te.ut)
             tf_list' += tf
@@ -5146,22 +5139,21 @@ annotate_member_write = ctx, env, mm, val_expr, is_compound =>
                            ok_rhs' = <+>
                      !ok_rhs'
                         |
-                           unify::add_error(ctx, 3084,
-                              diag::E3084_builder_append_type!)
+                           unify::add_error(ctx, diag::DiagCode(E3184),
+                              diag::E3184_builder_append_type!)
                   |
                      fld_flag_int = is_flag_ut(ctx, fld_ut) &&
                         is_integerish_ut(ctx, rhs.ut)
                      ok = fld_flag_int || unify::unify(ctx, fld_ut, rhs.ut)
                      !ok
                         |
-                           fld_msg = diag::field_assignment_type_mismatch_prefix! +
-                              mm.field_name
-                           unify::add_error(ctx, 3084, fld_msg)
+                           fld_msg = diag::field_assignment_type_mismatch(mm.field_name)
+                           unify::add_error(ctx, diag::DiagCode(E3084), fld_msg)
             [Array arr]
                ok = unify::unify(ctx, arr.elem, rhs.ut)
                !ok
                   |
-                     unify::add_error(ctx, 3084,
+                     unify::add_error(ctx, diag::DiagCode(E3084),
                         "Type mismatch in array append to field: " +
                         mm.field_name)
             |
@@ -5170,18 +5162,16 @@ annotate_member_write = ctx, env, mm, val_expr, is_compound =>
                ok = fld_flag_int || unify::unify(ctx, fld_ut, rhs.ut)
                !ok
                   |
-                     fld_msg = diag::field_assignment_type_mismatch_prefix! +
-                        mm.field_name
-                     unify::add_error(ctx, 3084, fld_msg)
+                     fld_msg = diag::field_assignment_type_mismatch(mm.field_name)
+                     unify::add_error(ctx, diag::DiagCode(E3084), fld_msg)
       |
          fld_flag_int = is_flag_ut(ctx, fld_ut) &&
             is_integerish_ut(ctx, rhs.ut)
          ok = fld_flag_int || unify::unify(ctx, fld_ut, rhs.ut)
          !ok
             |
-               fld_msg = diag::field_assignment_type_mismatch_prefix! +
-                  mm.field_name
-               unify::add_error(ctx, 3084, fld_msg)
+               fld_msg = diag::field_assignment_type_mismatch(mm.field_name)
+               unify::add_error(ctx, diag::DiagCode(E3084), fld_msg)
    c_tgt = unify::canon(ctx, target_te.ut)
    idx' = -1
    c_tgt
@@ -5209,43 +5199,40 @@ annotate_index_write = ctx, env, cc, val_expr =>
    c_tgt
       [Prim p]
          p [Str, Builder]
-            unify::add_error(ctx, 3067,
-               diag::E3067_string_write_prefix! + cc.fn_name +
-               diag::E3067_string_write_suffix!)
+            unify::add_error(ctx, diag::DiagCode(E3067), diag::string_write(cc.fn_name))
       [Array arr]
          cc.fn_name != "" && type_env::init_is_tracked(env, cc.fn_name) &&
             !type_env::init_is_whole(env, cc.fn_name)
             |
-               unify::add_error(ctx, 3131,
+               unify::add_error(ctx, diag::DiagCode(E3131),
                   diag::whole_value_init(cc.fn_name))
          unify::unify(ctx, idx_te.ut, unify::prim_int())
          ok_elem = unify::unify(ctx, arr.elem, rhs.ut)
          !ok_elem
             |
-               unify::add_error(ctx, 3084,
+               unify::add_error(ctx, diag::DiagCode(E3084),
                   "Type mismatch in array index assignment")
          ret_ut' = unify::ram_np(unify::prim_error())
       [Slice elem]
          cc.fn_name != "" && type_env::init_is_tracked(env, cc.fn_name) &&
             !type_env::init_is_whole(env, cc.fn_name)
             |
-               unify::add_error(ctx, 3049,
-                  diag::E3049_slice_write_prefix! + cc.fn_name + diag::E3049_slice_write_suffix!)
+               unify::add_error(ctx, diag::DiagCode(E3049), diag::slice_write(cc.fn_name))
          unify::unify(ctx, idx_te.ut, unify::prim_int())
          ok_elem = unify::unify(ctx, elem, rhs.ut)
          !ok_elem
             |
-               unify::add_error(ctx, 3084,
+               unify::add_error(ctx, diag::DiagCode(E3084),
                   "Type mismatch in slice index assignment")
       [Rec r]
          cc.fn_name != "" && type_env::init_is_tracked(env, cc.fn_name) &&
             !type_env::init_is_whole(env, cc.fn_name)
             |
-               unify::add_error(ctx, 3131,
+               unify::add_error(ctx, diag::DiagCode(E3131),
                   diag::whole_value_init(cc.fn_name))
          !is_ufields_homogeneous(ctx, r)
             |
-               unify::add_error(ctx, 3051, diag::E3051_dynamic_index_hetero!)
+               unify::add_error(ctx, diag::DiagCode(E3051), diag::E3051_dynamic_index_hetero!)
          unify::unify(ctx, idx_te.ut, unify::prim_int())
          n_flds = ?r
          n_flds > 0
@@ -5273,7 +5260,7 @@ annotate_key_write = ctx, env, ka, val_expr =>
       |
          !unify::is_map_key_utype(ctx, key_te.ut)
             |
-               unify::add_error(ctx, 2090,
+               unify::add_error(ctx, diag::DiagCode(E2090),
                   "Map key type must be String, Int, or Addr")
          var_map = unify::mk_map(key_te.ut, rhs.ut)
          unify::unify(ctx, target_te.ut, var_map)
@@ -5288,7 +5275,7 @@ annotate_raw_write: unify::Ctx, type_env::TypeEnv,
 annotate_raw_write = ctx, env, rm, val_expr =>
    rm.load_type ![Unknown]
       |
-         unify::add_error(ctx, 2093, diag::E2093_assign_typed_load!)
+         unify::add_error(ctx, diag::DiagCode(E2093), diag::E2093_assign_typed_load!)
    addr_te = annotate_expr(ctx, env, rm.addr)
    !is_int_or_ptr_ut(ctx, addr_te.ut)
       | unify::unify(ctx, addr_te.ut, unify::prim_rawptr())
@@ -5302,7 +5289,7 @@ annotate_raw_write = ctx, env, rm, val_expr =>
                ok_w = <+>
    !ok_w
       |
-         unify::add_error(ctx, 3142, diag::E3142_raw_write_type!)
+         unify::add_error(ctx, diag::DiagCode(E3142), diag::E3142_raw_write_type!)
    ut = unify::prim_unit()
    ti = ast::TypeInfo(Prim, ast::ValueType(Unit))
    lay = tast::layout_void()
@@ -5421,7 +5408,7 @@ annotate_scc = ctx, env, exprs, name, is_recursive =>
                                           fe.body)
                                        cur_expected_ut ::= saved_decl_exp
                                        is_view_expr(fe.body)
-                                          | unify::add_error(ctx, 3150,
+                                          | unify::add_error(ctx, diag::DiagCode(E3150),
                                              diag::E3150_view_escape_frame!)
                                        view_vars ::= saved_views
                                        can_cache
@@ -5435,15 +5422,15 @@ annotate_scc = ctx, env, exprs, name, is_recursive =>
                                           unify::unify(ctx, f.ret, body_te.ut)
                                        !ok_ret
                                           |
-                                             unify::add_error(ctx, 3084,
-                                                diag::return_type_mismatch_prefix! + name)
+                                             unify::add_error(ctx, diag::DiagCode(E3181),
+                                                diag::return_type_mismatch(name))
                                        type_env::init_mark_whole(env, name)
                                        is_recursive && !has_name_in(declared_fns, name)
                                           |
                                              c_ret_chk = unify::canon(ctx, f.ret)
                                              !unify::is_ground(ctx, c_ret_chk)
                                                 |
-                                                   unify::add_error(ctx, 3103,
+                                                   unify::add_error(ctx, diag::DiagCode(E3103),
                                                       "Return type of function '" +
                                                       name + "' could not be statically determined")
 
@@ -5507,7 +5494,7 @@ check_ground = ctx, env, exprs, name =>
                                                 -->
                                        !all_p_ok'
                                           |
-                                             unify::add_error(ctx, 3128,
+                                             unify::add_error(ctx, diag::DiagCode(E3128),
                                                 "Unannotated function " +
                                                 "parameter type cannot be " +
                                                 "statically inferred for '" +
@@ -5518,16 +5505,13 @@ check_ground = ctx, env, exprs, name =>
                                                 ctx, f.ret)
                                              !ret_ok
                                                 |
-                                                   unify::add_error(ctx,
-                                                      3103,
-                                                      diag::return_type_inference_prefix! +
-                                                      name +
-                                                      "'")
+                                                   unify::add_error(ctx, diag::DiagCode(E3103),
+                                                      diag::return_type_inference(name))
                               |
                                  c_fn_ok = unify::is_ground(ctx, c)
                                  !c_fn_ok
                                     |
-                                       unify::add_error(ctx, 3103,
+                                       unify::add_error(ctx, diag::DiagCode(E3103),
                                           diag::E3103_cannot_infer_type!)
                         |
                            c
@@ -5535,14 +5519,13 @@ check_ground = ctx, env, exprs, name =>
                                  ret_ok = unify::is_ground(ctx, f_val.ret)
                                  !ret_ok
                                     |
-                                       unify::add_error(ctx, 3103,
-                                          diag::return_type_inference_prefix! + name +
-                                          "'")
+                                       unify::add_error(ctx, diag::DiagCode(E3103),
+                                          diag::return_type_inference(name))
                               |
                                  c_val_ok = unify::is_ground(ctx, c)
                                  !c_val_ok
                                     |
-                                       unify::add_error(ctx, 3103,
+                                       unify::add_error(ctx, diag::DiagCode(E3103),
                                           diag::E3103_cannot_infer_type!)
 
 register_foreign_decl: type_env::TypeEnv, ast::ForeignFnDecl => ()
@@ -5980,7 +5963,7 @@ elaborate_program_with_ctx = exprs =>
                       <>(type_env::lookup_binding(env, a.0)))
                   has_prior
                      |
-                        unify::add_error(ctx, 3033,
+                        unify::add_error(ctx, diag::DiagCode(E3033),
                            diag::reassign_immutable(a.0))
                   is_generic_sig(a)
                      |
@@ -6012,7 +5995,7 @@ elaborate_program_with_ctx = exprs =>
                               a.0 != "" && has_name_in(user_fns, a.0)
                                  |
                                     msg_rf = diag::reassign_immutable(a.0)
-                                    unify::add_error(ctx, 3033, msg_rf)
+                                    unify::add_error(ctx, diag::DiagCode(E3033), msg_rf)
                                  |
                                     a.0 != "" | (user_fns += a.0)
                                     already_gen = type_env::lookup_generic(env, a.0)
@@ -6039,7 +6022,7 @@ elaborate_program_with_ctx = exprs =>
                               is_coll
                                  |
                                     msg_rc = diag::reassign_immutable(a.0)
-                                    unify::add_error(ctx, 3033, msg_rc)
+                                    unify::add_error(ctx, diag::DiagCode(E3033), msg_rc)
                               is_lit = a.5
                                  [Int, Float, Str, Rune] <+>
                                  [TypeCast tc] (tc.expr [Int, Float, Str, Rune])
@@ -6117,7 +6100,7 @@ elaborate_program_with_ctx = exprs =>
             ground_ok = unify::is_ground(ctx, te.ut)
             !ground_ok
                |
-                  unify::add_error(ctx, 3103, diag::E3103_cannot_infer_type!)
+                  unify::add_error(ctx, diag::DiagCode(E3103), diag::E3103_cannot_infer_type!)
             typed_stmts += tast::TypedStmt(Expr, te)
 
    // 4.5. Solve deferred constraints (e.g. calls/indexing on type variables)
@@ -6145,8 +6128,7 @@ elaborate_program_with_ctx = exprs =>
       vfn = value_used_fns(vi) | _ | ""
       vfn != "" && !has_name_in(declared_fns, vfn) && !has_name_in(called_fns, vfn)
          |
-            unify::add_error(ctx, 3128,
-               "Function '" + vfn + diag::E3128_function_value_signature_suffix! + vfn + ": T1, T2 => R'.")
+            unify::add_error(ctx, diag::DiagCode(E3128), diag::function_value_signature(vfn))
 
    final_stmts = refresh_program_stmts(ctx, typed_stmts)
 

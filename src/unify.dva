@@ -244,18 +244,18 @@ fresh_var = ctx =>
    ctx.bindings = bs
    UType(Var, id)
 
-add_error: Ctx, Int, String => ()
+add_error: Ctx, diag::DiagCode, String => ()
 add_error = ctx, code, msg =>
    errs = ctx.errors
-   errs += TypeError(code, msg, ctx.cur_file, ctx.cur_line, ctx.cur_col)
+   errs += TypeError(diag::code_int(code), msg, ctx.cur_file, ctx.cur_line, ctx.cur_col)
    ctx.errors = errs
 
-add_error_at: Ctx, Int, String, Int, Int => ()
+add_error_at: Ctx, diag::DiagCode, String, Int, Int => ()
 add_error_at = ctx, code, msg, line, col =>
    errs = ctx.errors
    l = line > 0 | line | ctx.cur_line
    c = col > 0 | col | ctx.cur_col
-   errs += TypeError(code, msg, ctx.cur_file, l, c)
+   errs += TypeError(diag::code_int(code), msg, ctx.cur_file, l, c)
    ctx.errors = errs
 
 has_errors: Ctx => <>
@@ -394,7 +394,7 @@ bind_var = ctx, v, t =>
    |
       occurs(ctx, v, c)
          |
-            add_error(ctx, 3103, "Occurs check failed: cyclic type ?T" +
+            add_error(ctx, diag::DiagCode(E3103), "Occurs check failed: cyclic type ?T" +
                str::from_int(v) + " in " + show_utype(ctx, c))
             <->
          | do_bind(ctx, v, c)
@@ -532,7 +532,7 @@ unify_fn: Ctx, UFn, UFn => <>
 unify_fn = ctx, f1, f2 =>
    ?f1.params != ?f2.params
       |
-         add_error(ctx, 3084, "Function arity mismatch: expected " +
+         add_error(ctx, diag::DiagCode(E3176), "Function arity mismatch: expected " +
             str::from_int(?f1.params) + " params, got " +
             str::from_int(?f2.params))
          <->
@@ -570,8 +570,8 @@ unify_rec_open = ctx, r1, r2, v1, v2 =>
                bind_var(ctx, v1, UType(Rec, r2))
                <+>
             |
-               add_error(ctx, 3084,
-                  diag::E3084_open_record_fields!)
+               add_error(ctx, diag::DiagCode(E3186),
+                  diag::E3186_open_record_fields!)
                <->
       |
          open2 = v2 !< 0 && is_open_var(ctx, v2)
@@ -583,8 +583,8 @@ unify_rec_open = ctx, r1, r2, v1, v2 =>
                      bind_var(ctx, v2, UType(Rec, r1))
                      <+>
                   |
-                     add_error(ctx, 3084,
-                        diag::E3084_open_record_fields!)
+                     add_error(ctx, diag::DiagCode(E3186),
+                        diag::E3186_open_record_fields!)
                      <->
             | unify_rec(ctx, r1, r2)
 
@@ -592,7 +592,7 @@ unify_rec: Ctx, UFields, UFields => <>
 unify_rec = ctx, r1, r2 =>
    ?r1 != ?r2
       |
-         add_error(ctx, 3084, "Record field count mismatch: " +
+         add_error(ctx, diag::DiagCode(E3177), "Record field count mismatch: " +
             str::from_int(?r1) + " vs " + str::from_int(?r2))
          <->
       |
@@ -614,10 +614,8 @@ unify_ram = ctx, r1, r2 =>
    s2 = ram_shape(r2)
    s1 != s2
       |
-         add_error(ctx, 3089,
-            diag::E3089_ram_shape_prefix! +
-            show_ram_shape(s1) + " to " +
-            show_ram_shape(s2))
+         add_error(ctx, diag::DiagCode(E3089),
+            diag::ram_shape_mismatch(show_ram_shape(s1), show_ram_shape(s2)))
          <->
       |
          pos_ok = r1.pos.has_payload
@@ -646,13 +644,13 @@ unify_enum = ctx, e1, e2 =>
          e1.name == e2.name
             | <+>
             |
-               add_error(ctx, 3084, "Enum name mismatch: " + e1.name +
+               add_error(ctx, diag::DiagCode(E3178), "Enum name mismatch: " + e1.name +
                   " vs " + e2.name)
                <->
       |
          ?e1.variants != ?e2.variants
             |
-               add_error(ctx, 3084, "Enum variant count mismatch")
+               add_error(ctx, diag::DiagCode(E3178), "Enum variant count mismatch")
                <->
             |
                all_ok' = <+>
@@ -662,7 +660,7 @@ unify_enum = ctx, e1, e2 =>
                      !v1.has_payload && v2.has_payload
                   v1.label != v2.label || diff_payload
                      |
-                        add_error(ctx, 3084, "Enum variant mismatch: " +
+                        add_error(ctx, diag::DiagCode(E3178), "Enum variant mismatch: " +
                            v1.label + " vs " + v2.label)
                         all_ok' = <->
                         -->
@@ -675,7 +673,7 @@ unify_enum = ctx, e1, e2 =>
 
 report_mismatch: Ctx, UType, UType => ()
 report_mismatch = ctx, t1, t2 =>
-   add_error(ctx, 3084, "Type mismatch: cannot unify " +
+   add_error(ctx, diag::DiagCode(E3084), "Type mismatch: cannot unify " +
       show_utype(ctx, t1) + " with " + show_utype(ctx, t2))
 
 // --- Constraint Solving ----------------------------------------------------
@@ -775,7 +773,7 @@ solve_field = ctx, rec_type, name, fld_type =>
                      bind_var(ctx, root_v, UType(Rec, r))
                      <+>
                   |
-                     add_error(ctx, 3130, "Record has no field named '" + name +
+                     add_error(ctx, diag::DiagCode(E3130), "Record has no field named '" + name +
                         "': " + show_utype(ctx, c))
                      <->
       [Prim p]
@@ -789,15 +787,15 @@ solve_field = ctx, rec_type, name, fld_type =>
                      f = eflds(idx) | _ | UField("", UType(None))
                      unify(ctx, f.ut, fld_type)
                   |
-                     add_error(ctx, 3130, "Record has no field named '" + name +
+                     add_error(ctx, diag::DiagCode(E3130), "Record has no field named '" + name +
                         "': " + show_utype(ctx, c))
                      <->
             |
-               add_error(ctx, 3084, "Field access '" + name +
+               add_error(ctx, diag::DiagCode(E3179), "Field access '" + name +
                   "' on non-record type: " + show_utype(ctx, c))
                <->
       |
-         add_error(ctx, 3084, "Field access '" + name +
+         add_error(ctx, diag::DiagCode(E3179), "Field access '" + name +
             "' on non-record type: " + show_utype(ctx, c))
          <->
 
@@ -884,7 +882,7 @@ ensure_ground = ctx, t, name =>
    is_ground(ctx, t)
       | <+>
       |
-         add_error(ctx, 3103, "Cannot infer type statically for '" + name +
+         add_error(ctx, diag::DiagCode(E3103), "Cannot infer type statically for '" + name +
             "' (unresolved type variable: " + show_utype(ctx, t) + ")")
          <->
 

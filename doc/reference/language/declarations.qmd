@@ -42,7 +42,7 @@ Function types and parameter names are separated onto consecutive declarations:
 
 | Form | Syntax | Semantics | Diagnostic |
 |---|---|---|---|
-| **Multi-parameter signature** | `f: T1, T2 => R` | Declares positional parameter types and return type `R` | `E3084`: body type mismatch |
+| **Multi-parameter signature** | `f: T1, T2 => R` | Declares positional parameter types and return type `R` | `E3181`: body type mismatch |
 | **Nullary signature** | `f: () => R` | Declares a 0-argument function returning `R` | — |
 | **Void return signature** | `f: T1 => ()` | Declares a side-effecting function returning `Unit` (`void`) | `E2104`: `()` used as value expr |
 | **Compile-time parameter** | `f: #! T: Type, T => R`<br>`f: #! N: Int => R` | Declares compile-time `Type` or constant parameter specialized per call site | `E3129`: `Type` lowered at runtime |

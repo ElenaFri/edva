@@ -1,9 +1,13 @@
 # Dva Language Specification
 
-Formal specification of the Dva programming language: lexical structure,
-grammar, and semantics. This document is generated from and kept consistent
-with the compiler source; where prose and code disagree, the
-code wins.
+Normative specification of the Dva programming language: lexical structure,
+grammar, and semantics. This document is the source of truth for the
+language; the compiler implements it. Dva examples in this document are
+compiled (or rejected, as annotated) by the documentation conformance gate
+(`nu tools/check_docs.nu --compile-examples`), so the specification and the
+compiler cannot silently drift apart. A divergence between the two is a
+bug: against the compiler when the documented behavior is intended,
+against this document otherwise.
 
 ---
 
@@ -317,13 +321,13 @@ Declares a named record, enum, ramification, growable array, or generator instan
 
 **Packed records and bitfields.** A record declaration or colon type declaration
 can be marked `#packed`:
-```dva
+```dva complete
 Header: #packed (a: u8, b: u16, c: u8)
 ```
 Packed records have byte alignment with zero interior or tail padding
 (`#size Header` is 4 bytes). Integer bitfield definitions specify a backing
 integer type (`u8`, `u16`, `u32`, `u64`) with per-field bit widths:
-```dva
+```dva complete
 TcpFlags: #packed u16 (
    fin: 1, syn: 1, rst: 1, psh: 1,
    ack: 1, urg: 1, ece: 1, cwr: 1,
@@ -333,7 +337,7 @@ TcpFlags: #packed u16 (
 The sum of all field bit widths must equal the backing integer width (`E3153`).
 Field access reads/writes via shift and mask on the backing integer.
 
-```
+```dva complete
 #type Record
    foo: Int
    person:
@@ -362,14 +366,15 @@ whose elements are `Value`; `Value{100}` names an initial capacity of 100 (0
 materialized empty with `xs = Values`. It is a Builder-shaped
 `{ len, data, cap }` struct over a run-time-sized element buffer:
 
-```
+```dva complete
+#use io
 #type Ints Int{}
 xs: Ints
 xs += 42                      // append (first append creates the struct+buffer)
-print_int $ ?xs                 // length (0 before any append)
-print_int $ (xs(1) | _ | _)     // read: <elem | Error>; unwrap-or-panic on OOB
+io::out $ ?xs                 // length (0 before any append)
+io::out $ (xs(1) | _ | _)     // read: <elem | Error>; unwrap-or-panic on OOB
 xs(1) = 7 !| _                // write: < | Error>; write-or-panic on OOB
-view = xs(0 .. ?xs)           // a T[] slice view over the buffer
+view = xs(0..?xs)             // a T[] slice view over the buffer
 grow: Ints => Int             // params pass the caller's { len, data, cap }
 ```
 
@@ -399,7 +404,7 @@ Each slot either carries a payload of the declared type or is a bare unit
 branch. Construction coerces an existing ramification literal through the type
 name, verifying the tag and payload against the declared slots:
 
-```
+```dva complete
 #type CompilerDiagnostic < String | (Int, String) >
 d = CompilerDiagnostic(<+ "Success" ->)   // first slot, payload String in RamPP
 e = <- (404, "Type error") +> $> CompilerDiagnostic  // second slot, payload (Int, String) in RamPP
@@ -584,14 +589,17 @@ static type** (no syntax/kind special-casing — §3.3.1, B8/E15):
 (§2.7.2). Builder creation is **not** a `!` meaning — it is the brace literal
 `{expr}` (§3.7). Examples:
 
-```
+```dva partial reason="fragment: b, is_digit, and c are defined by the surrounding prose"
 b = {4096}         // Builder with capacity ~4096; len 0
 b += 'h'           // push a byte in place
 b += 'i'
 s = +b             // freeze: s is "hi", b is dead thereafter
 ?"hello"           // => 5 (byte length)
 !is_digit(c)       // negate the ramification (truth flag)
-!4096              // E3008 — '!' on an integer is not allowed
+```
+
+```dva expected-error=E3187
+!4096              // '!' on an integer is not allowed
 ```
 
 `.!.` is a separate operator and remains **bitwise NOT** (integerish operands
@@ -617,11 +625,11 @@ them with a comparison, which yields a ramification). `+b` is Builder freeze.
 - `&scalar` — the address of a scalar local variable (`Int`, `Float`, `i8`..`u64`, `Rune`, `Flag`)
   in downward **call-argument position** (Strategy 1: FFI out-parameters). Storing or returning
   a scalar stack address is rejected (`E3078`). `Addr(...)` casts are restricted strictly to
-  integerish types and pointers; casting composites or buffers to `Addr(...)` is `E3084`.
+  integerish types and pointers; casting composites or buffers to `Addr(...)` is `E3180`.
 
 This is the whole FFI-read pattern, with no `malloc`/`free`:
 
-```
+```dva partial reason="fragment: fd comes from the surrounding FFI context"
 req = {4096}                              // Builder: len 0, cap 4096
 n = libc::recv(fd, &req, 4096, 0)         // bytes land in the buffer
 ?req = n                                  // record how many arrived
@@ -824,10 +832,10 @@ be an inline function (`arr @ i => ...`), a function value (`arr @ show`), or an
 indented block (the implicit form, running with `_` bound to the current value
 and `_i` to its 0-based index):
 
-```
+```dva partial reason="fragment: arr is defined by the surrounding prose"
 arr @
-    print_int $ _i   // 0, 1, 2
-    print_int $ _    // the element
+    io::out $ _i   // 0, 1, 2
+    io::out $ _    // the element
 ```
 
 When `Iterable` is a `Flag` (`<>`) or `Ram` condition expression, the condition
@@ -835,7 +843,7 @@ is re-evaluated at the start of each iteration and the body runs as long as the
 condition evaluates to positive (`<+>` or `<+ ... +>`), acting as a `while`
 loop:
 
-```
+```dva partial reason="fragment: nbits, wbuf, and out are defined by the surrounding prose"
 (nbits !< 8) @
     out += (wbuf .&. 0xFF)
     wbuf = wbuf .>. 8
@@ -846,9 +854,10 @@ A String iterable binds one parameter to the **byte value** (an `Int`) and a
 two-parameter body to **(byte, index)** — the index is always the **last**
 parameter:
 
-```
-"hi!" @ b => print_int $ b   // 104, 105, 33
-"abc" @ b, i => print_int $ i // 0, 1, 2
+```dva run
+#use io
+"hi!" @ b => io::out $ b   // 104, 105, 33
+"abc" @ b, i => io::out $ i // 0, 1, 2
 ```
 
 The index binding persists after the cycle ends: a `-->` break leaves it at
@@ -860,9 +869,9 @@ A growable array iterable (`T{}`) iterates its live elements in index order
 (`0..?xs`). The body's first parameter binds the unwrapped element (`T`), and an
 optional second parameter binds the 0-based integer index (`Int`):
 
-```
-xs @ elem => print_int $ elem
-xs @ elem, i => print_int $ i
+```dva partial reason="fragment: xs is defined by the surrounding prose"
+xs @ elem => io::out $ elem
+xs @ elem, i => io::out $ i
 ```
 
 In the implicit block form (`xs @ ...`), `_` binds the unwrapped element and
@@ -954,7 +963,7 @@ only in compile-time positions, never as a runtime value.
 **Compile-time type parameters.** A function signature declares an erased type
 parameter with `#! Name: Type`:
 
-```
+```dva complete
 identity: #! T: Type, T => T        // signature: T is compile-time, x: T, returns T
 identity = x => x                   // body binds only the runtime param
 
@@ -965,7 +974,7 @@ apply = f, x => f $ x
 The single-type-parameter case may instead be written **inline**, in the
 lambda's parameter list, with the type parameter inferred:
 
-```
+```dva complete
 id   = #! T, x => x                 // T is the type of x
 add  = #! T, a, b => a + b          // both params typed T; "+" dispatches per T
 ```
@@ -984,7 +993,7 @@ scrutinee is a `Type` (`T [...]`) or whose condition is a type comparison
 branch — untaken branches are never codegen'd, so they may use operations
 only valid for the matched shape:
 
-```
+```dva complete
 length_or_id = #! T, x =>
    T == String | ?x | x           // ?x only valid when T is String
 ```
@@ -1031,7 +1040,7 @@ Iterating a `Type` directly with `@` unrolls the loop body at compile time over 
 return is a type is a *type generator* — a compile-time function yielding a
 type:
 
-```
+```dva complete
 Opt: #! T: Type => < T | >          // the type IS the result; no "=" body
 #type IntOpt Opt(Int)               // IntOpt is the ram < Int | >
 #type StrOpt Opt(String)
@@ -1049,7 +1058,7 @@ higher-order ones) whose bodies stay in the subset — is interpreted by a
 tree-walking CTFE evaluator with a JIT fallback; anything else is a compile
 error (`E3130`):
 
-```
+```dva partial reason="fragment: max2 is a pure user function defined elsewhere"
 x = #! 2 + 2          // x is the constant 4
 n = #! ?"hello"       // n is the constant 5
 m = #! max2(3, 7)     // 7 — a call to a pure user function
@@ -1231,10 +1240,14 @@ The **console.log-style writers** are the ergonomic surface: `io::out(...)` /
 each formatted at compile time (the `#! T: Type` type dispatch), joined with a
 single space, and written + newline to stdout/stderr:
 
-```dva
+```dva complete
+#use io
+PORT = 8080
 io::out(("listening on port", PORT))     // "listening on port 8080"
 io::out("plain string")                  // a lone value needs no record parens
 io::err(("failed to bind port", PORT))   // stderr
+a = 1
+b = 2
 io::outf((a, b), "{}: {}")               // '{}' placeholders, in order
 ```
 
@@ -1589,8 +1602,9 @@ the first branch carries `(value, rest)` (rest is the zero-copy unconsumed
 view of the input); the second is a bare unit — no digits. The payload branch
 comes first in a choice.
 
-```
+```dva complete
+#use str
 r = str::to_int("123abc")
-v = r | \ _.0 | -1        // 123
-r | \ _.1 | "none"        // "abc"
+v = r | (_.0) | -1        // 123
+rest = r | (_.1) | "none" // "abc"
 ```

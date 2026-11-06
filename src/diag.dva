@@ -36,9 +36,9 @@ E2037_params_parenthesized = !=>
 E2039_expr_too_deep: () => String
 E2039_expr_too_deep = !=> "Expression nested too deeply"
 
-E2039_param_mutable_prefix: () => String
-E2039_param_mutable_prefix = !=>
-   "Function parameters cannot be mutable — remove prime suffix from '"
+param_mutable: String => String
+param_mutable = name =>
+   "Function parameters cannot be mutable — remove prime suffix from '${name}'."
 
 E2040_underscore_param: () => String
 E2040_underscore_param = !=>
@@ -66,7 +66,7 @@ E2108_state_binding_target = !=>
 
 E2109_disallowed_variant_wildcard: String => String
 E2109_disallowed_variant_wildcard = tag =>
-   "Disallowed syntax '[" + tag + " _]'. Use '[" + tag + "]' instead."
+   "Disallowed syntax '[${tag} _]'. Use '[${tag}]' instead."
 
 E3003_choice_underscore_undefined: () => String
 E3003_choice_underscore_undefined = !=>
@@ -78,69 +78,45 @@ E3008_not_invalid_type: () => String
 E3008_not_invalid_type = !=>
    "Unary '!' cannot be applied to this type. Use Flag for logical NOT or '+' for Builder freeze."
 
-E3008_not_integer: () => String
-E3008_not_integer = !=> "Unary '!' cannot be applied to an integer. " +
+E3187_not_integer: () => String
+E3187_not_integer = !=> "Unary '!' cannot be applied to an integer. " +
    "To create a Builder with capacity n, use the brace literal '{n}'."
 
-E3032_assign_void_var_prefix: () => String
-E3032_assign_void_var_prefix = !=> "Cannot assign Void expression to variable '"
-
-E3032_assign_void_elem_prefix: () => String
-E3032_assign_void_elem_prefix = !=> "Cannot assign Void expression to element of '"
-
-E3033_reassign_immutable_prefix: () => String
-E3033_reassign_immutable_prefix = !=> "Cannot re-assign immutable binding '"
-
-E3033_reassign_immutable_suffix: () => String
-E3033_reassign_immutable_suffix = !=> "'. Use a prime suffix ('"
-
-E3033_reassign_immutable_tail: () => String
-E3033_reassign_immutable_tail = !=> "'') for rebindable variables."
-
-reassign_immutable: String => String
-reassign_immutable = name =>
-   E3033_reassign_immutable_prefix! + name +
-   E3033_reassign_immutable_suffix! + name + E3033_reassign_immutable_tail!
-
 assign_void_variable: String => String
-assign_void_variable = name => E3032_assign_void_var_prefix! + name + "'."
+assign_void_variable = name => "Cannot assign Void expression to variable '${name}'."
 
 assign_void_element: String => String
-assign_void_element = name => E3032_assign_void_elem_prefix! + name + "'."
+assign_void_element = name => "Cannot assign Void expression to element of '${name}'."
 
 whole_value_init: String => String
 whole_value_init = name =>
-   E3131_whole_val_init_prefix! + name + E3131_whole_val_init_suffix!
+   "Homogeneous record '${name}' requires whole-value initialization before element access."
 
 record_default_missing: String, String => String
 record_default_missing = field, record =>
-   "Field '" + field + "' of '" + record +
-   "' has no default value and was not provided."
+   "Field '${field}' of '${record}' has no default value and was not provided."
 
 enum_no_variant: String, String => String
 enum_no_variant = name, label =>
-   "Enum '" + name + "' has no variant labeled '" + label + "'."
+   "Enum '${name}' has no variant labeled '${label}'."
 
 enum_unit_payload: String, String => String
 enum_unit_payload = name, label =>
-   "Enum '" + name + "' variant '" + label +
-   "' is a bare unit and takes no payload argument."
+   "Enum '${name}' variant '${label}' is a bare unit and takes no payload argument."
 
 enum_payload_type: String, String, String, String => String
 enum_payload_type = name, label, expected, got =>
-   "Enum '" + name + "' variant '" + label +
-   "' expects payload of type " + expected + ", got " + got + "."
+   "Enum '${name}' variant '${label}' expects payload of type ${expected}, got ${got}."
 
 partial_composite_argument: String => String
 partial_composite_argument = name =>
-   "Passing a partially-initialized composite '" + name +
-   "' to a function is disallowed."
+   "Passing a partially-initialized composite '${name}' to a function is disallowed."
 
 E3051_dynamic_index_hetero: () => String
 E3051_dynamic_index_hetero = !=> "Dynamic indexing is only allowed on homogeneous records."
 
-E3051_cycle_iter_hetero: () => String
-E3051_cycle_iter_hetero = !=> "Cycle iteration is only allowed on homogeneous records."
+E3195_cycle_iter_hetero: () => String
+E3195_cycle_iter_hetero = !=> "Cycle iteration is only allowed on homogeneous records."
 
 E3065_rawptr_to_string: () => String
 E3065_rawptr_to_string = !=>
@@ -150,17 +126,17 @@ E3065_rawptr_to_string = !=>
 E3078_addr_builder_or_string: () => String
 E3078_addr_builder_or_string = !=> "Address operator '&' requires a Builder or String operand."
 
-E3084_record_size_mismatch: () => String
-E3084_record_size_mismatch = !=> "Record size mismatch in arithmetic"
+E3182_record_size_mismatch: () => String
+E3182_record_size_mismatch = !=> "Record size mismatch in arithmetic"
 
-E3084_arithmetic_type_mismatch: () => String
-E3084_arithmetic_type_mismatch = !=> "Arithmetic type mismatch"
+E3183_arithmetic_type_mismatch: () => String
+E3183_arithmetic_type_mismatch = !=> "Arithmetic type mismatch"
 
-E3084_builder_append_type: () => String
-E3084_builder_append_type = !=> "Builder append requires byte or String"
+E3184_builder_append_type: () => String
+E3184_builder_append_type = !=> "Builder append requires byte or String"
 
-E3084_choice_branch_mismatch: () => String
-E3084_choice_branch_mismatch = !=> "Incompatible branch result types in choice"
+E3185_choice_branch_mismatch: () => String
+E3185_choice_branch_mismatch = !=> "Incompatible branch result types in choice"
 
 E3091_propagate_ram_operand: () => String
 E3091_propagate_ram_operand = !=> "Operand of '--!' must be a ramification"
@@ -168,11 +144,9 @@ E3091_propagate_ram_operand = !=> "Operand of '--!' must be a ramification"
 E3103_cannot_infer_type: () => String
 E3103_cannot_infer_type = !=> "Cannot infer concrete type for expression"
 
-E3131_whole_val_init_prefix: () => String
-E3131_whole_val_init_prefix = !=> "Homogeneous record '"
-
-E3131_whole_val_init_suffix: () => String
-E3131_whole_val_init_suffix = !=> "' requires whole-value initialization before element access."
+reassign_immutable: String => String
+reassign_immutable = name =>
+   "Cannot re-assign immutable binding '${name}'. Use a prime suffix ('${name}'') for rebindable variables."
 
 E3133_addr_escape_restore: () => String
 E3133_addr_escape_restore = !=> "Cannot return Addr from an arena-restore scope. " +
@@ -205,8 +179,8 @@ E3172_exit_status_integerish = !=> "'#exit' expects an integerish status code"
 E3173_return_outside_fn: () => String
 E3173_return_outside_fn = !=> "Return '--|' can only be used inside a function."
 
-E3173_propagate_outside_fn: () => String
-E3173_propagate_outside_fn = !=> "Propagate operator '--!' can only be used inside a function."
+E3193_propagate_outside_fn: () => String
+E3193_propagate_outside_fn = !=> "Propagate operator '--!' can only be used inside a function."
 
 E3175_choice_const_discarded: () => String
 E3175_choice_const_discarded = !=>
@@ -214,111 +188,146 @@ E3175_choice_const_discarded = !=>
 
 // Shared text fragments retain caller-specific names, types, and source locations.
 
-uninitialized_variable_prefix: () => String
-uninitialized_variable_prefix = !=> "Use of uninitialized variable '"
+uninitialized_variable: String => String
+uninitialized_variable = name => "Use of uninitialized variable '${name}'."
 
-E3050_reserved_type_name_suffix: () => String
-E3050_reserved_type_name_suffix = !=>
-   "' — it is a built-in type name and is reserved for type coercion."
+uninitialized_load: String => String
+uninitialized_load = name =>
+   "Use of uninitialized variable '${name}' — a forward annotation ('name: Type') " +
+   "allocates no storage; assign a value before reading."
 
-return_type_mismatch_prefix: () => String
-return_type_mismatch_prefix = !=> "Return type mismatch in function: "
+reserved_type_name: String => String
+reserved_type_name = name =>
+   "Cannot define '${name}' — it is a built-in type name and is reserved for type coercion."
 
-assignment_type_mismatch_prefix: () => String
-assignment_type_mismatch_prefix = !=> "Type mismatch in assignment to: "
+return_type_mismatch: String => String
+return_type_mismatch = name => "Return type mismatch in function: ${name}"
+
+assignment_type_mismatch: String => String
+assignment_type_mismatch = name => "Type mismatch in assignment to: ${name}"
 
 member_index_constant: () => String
 member_index_constant = !=>
    "Member index 'x.(i)' must be a compile-time constant (a per-field cycle index)."
 
-field_assignment_type_mismatch_prefix: () => String
-field_assignment_type_mismatch_prefix = !=> "Type mismatch in field assignment: "
+field_assignment_type_mismatch: String => String
+field_assignment_type_mismatch = field =>
+   "Type mismatch in field assignment: ${field}"
 
-E3067_string_write_prefix: () => String
-E3067_string_write_prefix = !=> "Cannot write through a String call-target '"
+string_write: String => String
+string_write = fn =>
+   "Cannot write through a String call-target '${fn}(...)' — Strings are immutable " +
+   "and a Builder is written with 'b + c'."
 
-E3067_string_write_suffix: () => String
-E3067_string_write_suffix = !=>
-   "(...)' — Strings are immutable and a Builder is written with 'b + c'."
+slice_write: String => String
+slice_write = fn =>
+   "Cannot write element of forward-annotated slice '${fn}' before whole-value initialization."
 
-E3049_slice_write_prefix: () => String
-E3049_slice_write_prefix = !=> "Cannot write element of forward-annotated slice '"
+return_type_inference: String => String
+return_type_inference = name =>
+   "Cannot infer concrete return type for function '${name}'"
 
-E3049_slice_write_suffix: () => String
-E3049_slice_write_suffix = !=> "' before whole-value initialization."
+function_value_signature: String => String
+function_value_signature = name =>
+   "Function '${name}' is used as a value but its parameter types cannot be " +
+   "determined — no declared signature and no call site to infer from. " +
+   "Declare a signature: '${name}: T1, T2 => R'."
 
-return_type_inference_prefix: () => String
-return_type_inference_prefix = !=> "Cannot infer concrete return type for function '"
+expected_primary: String => String
+expected_primary = text => "Expected primary expression, got '${text}'"
 
-E3128_function_value_signature_suffix: () => String
-E3128_function_value_signature_suffix = !=>
-   "' is used as a value but its parameter types cannot be determined — no declared " +
-   "signature and no call site to infer from. Declare a signature: '"
+cycle_jump_depth: String => String
+cycle_jump_depth = text =>
+   "Cycle jump suffix must be a positive integer depth (e.g. '-->2'), got '${text}'"
 
-expected_primary_prefix: () => String
-expected_primary_prefix = !=> "Expected primary expression, got '"
+record_repeat_count: String => String
+record_repeat_count = text =>
+   "Record type repetition count must be a positive integer, got '${text}'"
 
-cycle_jump_depth_prefix: () => String
-cycle_jump_depth_prefix = !=>
-   "Cycle jump suffix must be a positive integer depth (e.g. '-->2'), got '"
+record_repeat_limit: Int => String
+record_repeat_limit = n =>
+   "Record type repetition count ${n} exceeds the maximum of 1000000"
 
-record_repeat_count_prefix: () => String
-record_repeat_count_prefix = !=> "Record type repetition count must be a positive integer, got '"
+repetition_count_limit: Int => String
+repetition_count_limit = n =>
+   "Repetition count ${n} exceeds the maximum of 1000000"
 
-record_repeat_limit_suffix: () => String
-record_repeat_limit_suffix = !=> " exceeds the maximum of 1000000"
+infix_right_binding_power: Int, String => String
+infix_right_binding_power = lbp, text =>
+   "Expected an integer right binding-power after '#infix ${lbp}', got '${text}'."
 
-infix_right_binding_power_prefix: () => String
-infix_right_binding_power_prefix = !=> "Expected an integer right binding-power after '#infix "
+infix_left_binding_power: String => String
+infix_left_binding_power = text =>
+   "Expected an integer left binding-power after '#infix', got '${text}'."
 
-infix_left_binding_power_prefix: () => String
-infix_left_binding_power_prefix = !=> "Expected an integer left binding-power after '#infix', got '"
+name_clash_imported: String, String, String => String
+name_clash_imported = bare, from, src =>
+   "E3033: Name clash: symbol '${bare}' imported from '${from}' conflicts with " +
+   "symbol already imported from '${src}'"
 
-imported_symbol_conflict_suffix: () => String
-imported_symbol_conflict_suffix = !=> "' conflicts with symbol already imported from '"
+name_clash_foreign_imported: String, String, String => String
+name_clash_foreign_imported = bare, from, src =>
+   "E3033: Name clash: foreign function '${bare}' imported from '${from}' " +
+   "conflicts with symbol already imported from '${src}'"
 
-E3033_foreign_function_clash_prefix: () => String
-E3033_foreign_function_clash_prefix = !=> "E3033: Name clash: foreign function '"
+name_clash_declared: String, String => String
+name_clash_declared = bare, src =>
+   "E3033: Name clash: symbol '${bare}' declared in module conflicts with " +
+   "symbol imported from '${src}'"
 
-declared_symbol_conflict_suffix: () => String
-declared_symbol_conflict_suffix = !=> "' declared in module conflicts with symbol imported from '"
+name_clash_foreign_declared: String, String => String
+name_clash_foreign_declared = bare, src =>
+   "E3033: Name clash: foreign function '${bare}' declared in module conflicts " +
+   "with symbol imported from '${src}'"
 
-E5038_package_import_cycle_prefix: () => String
-E5038_package_import_cycle_prefix = !=> "E5038: module import cycle across packages: "
+package_import_cycle: String => String
+package_import_cycle = chain =>
+   "E5038: module import cycle across packages: ${chain}"
 
-clang_compilation_failed_suffix: () => String
-clang_compilation_failed_suffix = !=> ": Clang compilation failed with exit code "
+clang_compilation_failed: Int, Int => String
+clang_compilation_failed = code, exit_code =>
+   "E${code}: Clang compilation failed with exit code ${exit_code}"
 
 E5007_no_input: () => String
 E5007_no_input = !=> "E5007: No input .dva file specified."
 
-E3084_open_record_fields: () => String
-E3084_open_record_fields = !=> "Record does not satisfy open record fields"
+E3186_open_record_fields: () => String
+E3186_open_record_fields = !=> "Record does not satisfy open record fields"
 
-E3089_ram_shape_prefix: () => String
-E3089_ram_shape_prefix = !=> "Cannot assign ramification of shape "
+ram_shape_mismatch: String, String => String
+ram_shape_mismatch = from, to =>
+   "Cannot assign ramification of shape ${from} to ${to}"
 
-locked_manifest_stale_prefix: () => String
-locked_manifest_stale_prefix = !=> "--locked: edva.lock.ccl is out of date ("
+ram_shape_assign_mismatch: String, String, String => String
+ram_shape_assign_mismatch = shape, name, declared =>
+   "Cannot assign ramification of shape ${shape} to '${name}' (declared as ${declared})."
 
-repository_illegal_path_suffix: () => String
-repository_illegal_path_suffix = !=> "': repository contains illegal path or escaping symlink"
+locked_manifest_stale: String => String
+locked_manifest_stale = what =>
+   "--locked: edva.lock.ccl is out of date (${what} changed)"
 
-vendor_tree_mismatch_prefix: () => String
-vendor_tree_mismatch_prefix = !=> "tampered vendor content: tree hash mismatch for '"
+repository_illegal_path: String => String
+repository_illegal_path = alias =>
+   "dependency '${alias}': repository contains illegal path or escaping symlink"
 
-archive_illegal_path_suffix: () => String
-archive_illegal_path_suffix = !=> "': archive contains illegal path or path traversal"
+vendor_tree_mismatch: String, String, String => String
+vendor_tree_mismatch = alias, expected, got =>
+   "tampered vendor content: tree hash mismatch for '${alias}' " +
+   "(expected ${expected}, got ${got})"
 
-E3127_ram_ordering_suffix: () => String
-E3127_ram_ordering_suffix = !=>
-   "' cannot be applied to ramifications — ramifications have no ordering; test their " +
-   "slots with '|' branches instead."
+archive_illegal_path: String => String
+archive_illegal_path = alias =>
+   "dependency '${alias}': archive contains illegal path or path traversal"
 
-E3127_enum_ordering_suffix: () => String
-E3127_enum_ordering_suffix = !=>
-   "' cannot be applied to enums — enums have no ordering; match their " +
-   "variants with '[Variant]' branches instead."
+ram_ordering: String => String
+ram_ordering = op =>
+   "Operator '${op}' cannot be applied to ramifications — ramifications have no " +
+   "ordering; test their slots with '|' branches instead."
+
+enum_ordering: String => String
+enum_ordering = op =>
+   "Operator '${op}' cannot be applied to enums — enums have no ordering; match " +
+   "their variants with '[Variant]' branches instead."
 
 record_field_index_constant: () => String
 record_field_index_constant = !=>
@@ -333,21 +342,22 @@ E4002_string_length_overflow: () => String
 E4002_string_length_overflow = !=>
    "E4002: string length overflow (concatenation exceeds 64-bit capacity)\n"
 
-E3007_cycle_jump_level_prefix: () => String
-E3007_cycle_jump_level_prefix = !=> "' targets cycle-nesting level "
-
-E3007_cycle_jump_level_suffix: () => String
-E3007_cycle_jump_level_suffix = !=> " enclosing cycle(s) exist at this point."
+cycle_jump_level: String, Int, Int => String
+cycle_jump_level = op, level, depth =>
+   "'${op}' targets cycle-nesting level ${level}, but only ${depth} " +
+   "enclosing cycle(s) exist at this point."
 
 E4007_unwrap_empty_or_error: () => String
 E4007_unwrap_empty_or_error = !=> "E4007: unwrap on empty or error ramification\n"
 
-compile_time_parameter_suffix: () => String
-compile_time_parameter_suffix = !=> "' is not compile-time evaluable"
+compile_time_parameter: String => String
+compile_time_parameter = ct =>
+   "Compile-time parameter '${ct}' is not compile-time evaluable"
 
-E3105_enum_label_ambiguous_suffix: () => String
-E3105_enum_label_ambiguous_suffix = !=>
-   "' is ambiguous — declared by multiple enums; qualify the variant as 'Enum::"
+enum_label_ambiguous: String => String
+enum_label_ambiguous = label =>
+   "Enum label '${label}' is ambiguous — declared by multiple enums; " +
+   "qualify the variant as 'Enum::${label}'."
 
 E4008_builder_length_bounds: () => String
 E4008_builder_length_bounds = !=> "E4008: Builder length assignment out of bounds\n"
@@ -366,11 +376,305 @@ E4003_arena_chunk_limit = !=> "E4003: arena chunk limit reached (too many arena 
 E4001_arena_exhausted: () => String
 E4001_arena_exhausted = !=> "E4001: arena allocator exhausted (out of memory)\n"
 
-E5012_write_ir_prefix: () => String
-E5012_write_ir_prefix = !=> "E5012: Failed to write LLVM IR to '"
+write_ir_failed: String => String
+write_ir_failed = path => "E5012: Failed to write LLVM IR to '${path}'"
+
+write_ir_failed_reason: String, String => String
+write_ir_failed_reason = path, err =>
+   "E5012: Failed to write LLVM IR to '${path}': ${err}"
 
 E1008_string_unterminated: () => String
 E1008_string_unterminated = !=> "Unterminated string literal -- missing closing '\"'"
+
+// --- Diagnostic Code Registry -----------------------------------------------
+// DiagCode is the typed registry of front-end diagnostic codes (lexer E1xxx,
+// parser E2xxx, type checker E3xxx). One code = one cause: a code reused for
+// distinct causes must be split. code_int maps a code to the numeric
+// identifier used in output, structured capture (LSP), and DiagEntry.
+
+#type DiagCode <
+   E1001
+   E1002
+   E1003
+   E1004
+   E1007
+   E1008
+   E1009
+   E1010
+   E1011
+   E1012
+   E1013
+   E1015
+   E1017
+   E1018
+   E1019
+   E2001
+   E2003
+   E2004
+   E2011
+   E2014
+   E2015
+   E2016
+   E2017
+   E2018
+   E2019
+   E2024
+   E2025
+   E2026
+   E2027
+   E2031
+   E2032
+   E2033
+   E2037
+   E2039
+   E2040
+   E2041
+   E2042
+   E2043
+   E2044
+   E2048
+   E2049
+   E2050
+   E2054
+   E2055
+   E2056
+   E2058
+   E2059
+   E2060
+   E2063
+   E2064
+   E2065
+   E2066
+   E2067
+   E2070
+   E2071
+   E2074
+   E2075
+   E2076
+   E2081
+   E2082
+   E2083
+   E2084
+   E2085
+   E2086
+   E2090
+   E2091
+   E2093
+   E2095
+   E2096
+   E2097
+   E2098
+   E2099
+   E2100
+   E2104
+   E2105
+   E2106
+   E2107
+   E2108
+   E2109
+   E3003
+   E3004
+   E3008
+   E3023
+   E3027
+   E3032
+   E3033
+   E3043
+   E3049
+   E3050
+   E3051
+   E3057
+   E3065
+   E3067
+   E3078
+   E3084
+   E3089
+   E3091
+   E3096
+   E3097
+   E3098
+   E3099
+   E3100
+   E3102
+   E3103
+   E3105
+   E3117
+   E3120
+   E3127
+   E3128
+   E3130
+   E3131
+   E3132
+   E3138
+   E3139
+   E3142
+   E3150
+   E3153
+   E3170
+   E3173
+   E3175
+   E3176
+   E3177
+   E3178
+   E3179
+   E3180
+   E3181
+   E3182
+   E3183
+   E3184
+   E3185
+   E3186
+   E3187
+   E3190
+   E3191
+   E3192
+   E3193
+   E3194
+   E3195
+>
+
+// Returns the numeric identifier of a diagnostic code.
+code_int: DiagCode => Int
+code_int = code =>
+   code
+      [E1001] 1001
+      [E1002] 1002
+      [E1003] 1003
+      [E1004] 1004
+      [E1007] 1007
+      [E1008] 1008
+      [E1009] 1009
+      [E1010] 1010
+      [E1011] 1011
+      [E1012] 1012
+      [E1013] 1013
+      [E1015] 1015
+      [E1017] 1017
+      [E1018] 1018
+      [E1019] 1019
+      [E2001] 2001
+      [E2003] 2003
+      [E2004] 2004
+      [E2011] 2011
+      [E2014] 2014
+      [E2015] 2015
+      [E2016] 2016
+      [E2017] 2017
+      [E2018] 2018
+      [E2019] 2019
+      [E2024] 2024
+      [E2025] 2025
+      [E2026] 2026
+      [E2027] 2027
+      [E2031] 2031
+      [E2032] 2032
+      [E2033] 2033
+      [E2037] 2037
+      [E2039] 2039
+      [E2040] 2040
+      [E2041] 2041
+      [E2042] 2042
+      [E2043] 2043
+      [E2044] 2044
+      [E2048] 2048
+      [E2049] 2049
+      [E2050] 2050
+      [E2054] 2054
+      [E2055] 2055
+      [E2056] 2056
+      [E2058] 2058
+      [E2059] 2059
+      [E2060] 2060
+      [E2063] 2063
+      [E2064] 2064
+      [E2065] 2065
+      [E2066] 2066
+      [E2067] 2067
+      [E2070] 2070
+      [E2071] 2071
+      [E2074] 2074
+      [E2075] 2075
+      [E2076] 2076
+      [E2081] 2081
+      [E2082] 2082
+      [E2083] 2083
+      [E2084] 2084
+      [E2085] 2085
+      [E2086] 2086
+      [E2090] 2090
+      [E2091] 2091
+      [E2093] 2093
+      [E2095] 2095
+      [E2096] 2096
+      [E2097] 2097
+      [E2098] 2098
+      [E2099] 2099
+      [E2100] 2100
+      [E2104] 2104
+      [E2105] 2105
+      [E2106] 2106
+      [E2107] 2107
+      [E2108] 2108
+      [E2109] 2109
+      [E3003] 3003
+      [E3004] 3004
+      [E3008] 3008
+      [E3023] 3023
+      [E3027] 3027
+      [E3032] 3032
+      [E3033] 3033
+      [E3043] 3043
+      [E3049] 3049
+      [E3050] 3050
+      [E3051] 3051
+      [E3057] 3057
+      [E3065] 3065
+      [E3067] 3067
+      [E3078] 3078
+      [E3084] 3084
+      [E3089] 3089
+      [E3091] 3091
+      [E3096] 3096
+      [E3097] 3097
+      [E3098] 3098
+      [E3099] 3099
+      [E3100] 3100
+      [E3102] 3102
+      [E3103] 3103
+      [E3105] 3105
+      [E3117] 3117
+      [E3120] 3120
+      [E3127] 3127
+      [E3128] 3128
+      [E3130] 3130
+      [E3131] 3131
+      [E3132] 3132
+      [E3138] 3138
+      [E3139] 3139
+      [E3142] 3142
+      [E3150] 3150
+      [E3153] 3153
+      [E3170] 3170
+      [E3173] 3173
+      [E3175] 3175
+      [E3176] 3176
+      [E3177] 3177
+      [E3178] 3178
+      [E3179] 3179
+      [E3180] 3180
+      [E3181] 3181
+      [E3182] 3182
+      [E3183] 3183
+      [E3184] 3184
+      [E3185] 3185
+      [E3186] 3186
+      [E3187] 3187
+      [E3190] 3190
+      [E3191] 3191
+      [E3192] 3192
+      [E3193] 3193
+      [E3194] 3194
+      [E3195] 3195
 
 // --- Structured Diagnostic Capture (LSP / Tooling) -------------------------
 

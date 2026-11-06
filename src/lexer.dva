@@ -255,18 +255,18 @@ lex_get_file = !=> cur_lex_file
 lex_failed: () => <>
 lex_failed = !=> cur_lex_failed
 
-fail: Int, Int, Int, String => Int
+fail: diag::DiagCode, Int, Int, String => Int
 fail = code, line, col, msg =>
    diag::is_capturing!
       |
          cur_lex_failed ::= <+>
-         diag::record_diag(code, cur_lex_file, line, col, msg, <->)
+         diag::record_diag(diag::code_int(code), cur_lex_file, line, col, msg, <->)
          0
       |
          b = {128}
          fn = cur_lex_file != "" | cur_lex_file + ":" | ""
          b += (fn, str::from_int(line), ":", str::from_int(col), ": E",
-            str::from_int(code), ": ", msg)
+            str::from_int(diag::code_int(code)), ": ", msg)
          log::error(+b)
          #exit 1
          0
@@ -524,7 +524,7 @@ scan_radix_rest = lx, kind, start, line, col =>
          | adv(lx, pk(lx, 0))
          |
             pk(lx, 0) == '_'
-               | fail(1019, line, col, "Underscore numeric separators are not supported.")
+               | fail(diag::DiagCode(E1019), line, col, "Underscore numeric separators are not supported.")
             pk(lx, 0) == '{' && lx.pos > start + 2 && try_scan_repeat(lx)
                | --^
                | -->
@@ -548,7 +548,7 @@ scan_frac_opt = lx, q, start, line, col =>
          adv(lx, pk(lx, 0))
          skip_digits(lx, 0)
          pk(lx, 0) == '_'
-            | fail(1019, line, col, "Underscore numeric separators are not supported.")
+            | fail(diag::DiagCode(E1019), line, col, "Underscore numeric separators are not supported.")
    ok
 
 // Optional exponent (e[+-]digits). Returns 1 when consumed.
@@ -560,14 +560,14 @@ scan_exp_opt = lx, q, line, col =>
    has_sign | adv(lx, pk(lx, 0))
    is_e | skip_digits(lx, line)
    is_e && pk(lx, 0) == '_'
-      | fail(1019, line, col, "Underscore numeric separators are not supported.")
+      | fail(diag::DiagCode(E1019), line, col, "Underscore numeric separators are not supported.")
    is_e
 
 scan_dec: Lx, Int, Int, Int => Tok
 scan_dec = lx, start, line, col => 
    skip_digits(lx, 0)
    pk(lx, 0) == '_'
-      | fail(1019, line, col, "Underscore numeric separators are not supported.")
+      | fail(diag::DiagCode(E1019), line, col, "Underscore numeric separators are not supported.")
    0.. @
       lx.pos !< ?lx.src | -->
       pk(lx, 0) == '{' && lx.pos > start && try_scan_repeat(lx)
@@ -576,7 +576,7 @@ scan_dec = lx, start, line, col =>
    f1 = scan_frac_opt(lx, 0, start, line, col)
    bad_dot = !f1 && pk(lx, 0) == '.' && pk_off(lx, 1) != '.' &&
       !is_special(pk_off(lx, 1)) && !(start > 0 && lx.src(start - 1) == '.')
-   bad_dot | fail(1012, line, col,
+   bad_dot | fail(diag::DiagCode(E1012), line, col,
       "Float literal requires a digit after the decimal point; " +
       "padding zeros are mandatory (write '1.0', not '1.').")
    f2 = scan_exp_opt(lx, 0, 0, line)
@@ -802,7 +802,7 @@ scan_next_str_part = lx =>
    adv(lx, pk(lx, 0))
    body_str = lx.pos
    closed_str = scan_string_body(lx, lx.line, lx.col)
-   closed_str [0] fail(1008, lx.line, lx.col,
+   closed_str [0] fail(diag::DiagCode(E1008), lx.line, lx.col,
       diag::E1008_string_unterminated!)
    endq = lx.pos - 1
    str_s = lx.src(body_str..endq)
@@ -827,7 +827,7 @@ scan_rune: Lx, Int, Int, Int => Tok
 scan_rune = lx, start, line, col => 
    adv(lx, pk(lx, 0))
    bad_head = lx.pos !< ?lx.src || pk(lx, 0) == '\''
-   bad_head | fail(1009, line, col,
+   bad_head | fail(diag::DiagCode(E1009), line, col,
       "Empty character literal '' -- expected a character between the quotes")
    v = pk(lx, 0)
    val = v == '\\'
@@ -837,7 +837,7 @@ scan_rune = lx, start, line, col =>
       | adv(lx, v)
    pk(lx, 0) == '\''
       | adv(lx, pk(lx, 0))
-      | fail(1010, line, col,
+      | fail(diag::DiagCode(E1010), line, col,
          "Unterminated character literal -- missing closing '''")
    mktok(lx, TokKind(Rune), start, lx.pos - start,
       line, col, str::from_int(val))
@@ -859,7 +859,7 @@ skip_block_comment = lx, line, col =>
       pk(lx, 0) == '*' && pk_off(lx, 1) == '/'
          | adv(lx, pk(lx, 0)); adv(lx, pk(lx, 0)); done' = <+>; -->
          | adv(lx, pk(lx, 0))
-   !done' | fail(1007, line, col,
+   !done' | fail(diag::DiagCode(E1007), line, col,
       "Unterminated block comment -- missing closing '*/'")
 
 // --- directives (#…) ------------------------------------------------------
@@ -895,7 +895,7 @@ scan_quoted_path = lx, line, col =>
    adv(lx, pk(lx, 0))
    p = lx.pos
    closed = scan_qp_body(lx, line)
-   closed [0] fail(1011, line, col,
+   closed [0] fail(diag::DiagCode(E1011), line, col,
       "Unterminated import path -- missing closing '\"'")
    endq = lx.pos - 1
    path = lx.src(p..endq)
@@ -937,7 +937,7 @@ scan_use_directive = lx, hstart, line, col =>
                         -->
                   c == '\0' || is_nl(c)
                      |
-                        fail(1015, line, col,
+                        fail(diag::DiagCode(E1015), line, col,
                            "Unterminated '#use(...)' — expected closing ')'.")
                         -->
                   wstart = lx.pos
@@ -947,7 +947,7 @@ scan_use_directive = lx, hstart, line, col =>
                      ["dynamic"] is_dyn' = <+>
                      ["import"] is_imp' = <+>
                      |
-                        fail(1015, line, col,
+                        fail(diag::DiagCode(E1015), line, col,
                            "Invalid #use option '" + word +
                            "' — expected 'dynamic' or 'import'.")
                   skip_ws(lx, 0)
@@ -961,7 +961,7 @@ scan_use_directive = lx, hstart, line, col =>
    first_seg = pk(lx, 0) == '"'
       | scan_quoted_path(lx, line, col)
       | scan_bare_path(lx, line)
-   ?first_seg == 0 | fail(1015, line, col,
+   ?first_seg == 0 | fail(diag::DiagCode(E1015), line, col,
       "Expected a module name or quoted path after '#use'.")
    skip_hws(lx, 0)
    has_alias = pk(lx, 0) == '=' && pk_off(lx, 1) != '=' && pk_off(lx, 1) != '>'
@@ -972,7 +972,7 @@ scan_use_directive = lx, hstart, line, col =>
          rhs = pk(lx, 0) == '"'
             | scan_quoted_path(lx, line, col)
             | scan_bare_path(lx, line)
-         ?rhs == 0 | fail(1015, line, col,
+         ?rhs == 0 | fail(diag::DiagCode(E1015), line, col,
             "Expected a module name or quoted path after '='.")
          first_seg + " = " + rhs
       | first_seg
@@ -993,14 +993,14 @@ skip_ws = lx, q => scan_while(lx, is_ws)
 // so these wrappers supply the matching String value for the value-position use.
 pragma_int_fail: String, Int, Int => String
 pragma_int_fail = word, line, col =>
-   fail(1013, line, col,
+   fail(diag::DiagCode(E1013), line, col,
       "Invalid '#pragma integer' type '" + word +
       "' — expected an integer type (i8/u8..i64/u64) or 'default'.")
    ""
 
 pragma_float_fail: String, Int, Int => String
 pragma_float_fail = word, line, col =>
-   fail(1013, line, col,
+   fail(diag::DiagCode(E1013), line, col,
       "Invalid '#pragma float' type '" + word +
       "' — expected a float type (f32, f64) or 'default'.")
    ""
@@ -1020,7 +1020,7 @@ scan_pragma = lx, hstart, line, col =>
 
 pragma_miss_fail: Lx, Int, Int, Int => Tok
 pragma_miss_fail = lx, hstart, line, col =>
-   fail(1013, line, col, "Expected 'integer', 'float', 'fpfast', or 'swizzle' after '#pragma'.")
+   fail(diag::DiagCode(E1013), line, col, "Expected 'integer', 'float', 'fpfast', or 'swizzle' after '#pragma'.")
    mktok(lx, TokKind(PragmaKw), hstart, 0, line, col, "#pragma")
 
 // "#pragma integer <type>": parse the type word and switch the default integer
@@ -1080,7 +1080,7 @@ scan_pragma_fp = lx, hstart, line, col =>
 
 pragma_fp_fail: String, Int, Int => String
 pragma_fp_fail = word, line, col =>
-   fail(1013, line, col,
+   fail(diag::DiagCode(E1013), line, col,
       "Invalid '#pragma fpfast' mode '" + word +
       "' — expected 'all' or 'none'.")
    ""
@@ -1100,7 +1100,7 @@ scan_pragma_swizzle = lx, hstart, line, col =>
 
 pragma_swizzle_fail: String, Int, Int => String
 pragma_swizzle_fail = word, line, col =>
-   fail(1013, line, col,
+   fail(diag::DiagCode(E1013), line, col,
       "Invalid '#pragma swizzle' mode '" + word +
       "' — expected 'all', 'xyzw', 'rgba', or 'none'.")
    "none"
@@ -1254,13 +1254,13 @@ count_indent = lx, q =>
       sp' = sp' + (is_sp | 1 | 0)
       tabs' = tabs' + (is_tab | 1 | 0)
       adv(lx, pk(lx, 0))
-   sp' > 0 && tabs' > 0 | fail(1001, lx.line, 1,
+   sp' > 0 && tabs' > 0 | fail(diag::DiagCode(E1001), lx.line, 1,
       "Mixed spaces and tabs in indentation are strictly forbidden.")
    sp' > 0 && lx.style == 0 | lx.style = 1
    tabs' > 0 && lx.style == 0 | lx.style = 2
-   sp' > 0 && lx.style == 2 | fail(1002, lx.line, 1,
+   sp' > 0 && lx.style == 2 | fail(diag::DiagCode(E1002), lx.line, 1,
       "Inconsistent indentation. Expected tabs, found spaces.")
-   tabs' > 0 && lx.style == 1 | fail(1003, lx.line, 1,
+   tabs' > 0 && lx.style == 1 | fail(diag::DiagCode(E1003), lx.line, 1,
       "Inconsistent indentation. Expected spaces, found tabs.")
    depth = sp' > 0 | sp' | tabs'
    lx.depth = depth
@@ -1285,7 +1285,7 @@ drain_to = lx, depth, line =>
          queue_indent(lx, line, 1)
       |
          stack_top(lx) != depth
-            | fail(1004, line, 1,
+            | fail(diag::DiagCode(E1004), line, 1,
                "Unindent level " + str::from_int(depth) +
                " does not match any outer indentation level.")
    take_queued(lx, 0)
@@ -1445,12 +1445,12 @@ scan_str_expr = lx, is_multiline =>
       t = next_tok(sub_lx, 0)
       t.kind
          [Eof]
-            fail(1018, lx.line, lx.col,
+            fail(diag::DiagCode(E1018), lx.line, lx.col,
                "Unterminated string literal -- missing closing '}' in interpolation")
             -->
          [Newline]
             !is_multiline |
-               fail(1018, lx.line, lx.col,
+               fail(diag::DiagCode(E1018), lx.line, lx.col,
                   "Unterminated string literal -- missing closing '}' in interpolation")
                -->
             --^
@@ -1533,7 +1533,7 @@ scan_single_string = lx, start, start_line, start_col, is_triple =>
    0.. @
       lx.pos !< ?lx.src
          |
-            fail(1008, start_line, start_col,
+            fail(diag::DiagCode(E1008), start_line, start_col,
                diag::E1008_string_unterminated!)
             -->
       c = pk(lx, 0)
@@ -1563,7 +1563,7 @@ scan_single_string = lx, start, start_line, start_col, is_triple =>
                         ?cur_text' > 0 | cur_parts' += HeredocPart(Text, +cur_text')
                         -->
          ['\n', '\r']
-            fail(1008, lx.line, lx.col,
+            fail(diag::DiagCode(E1008), lx.line, lx.col,
                diag::E1008_string_unterminated!)
             -->
          ['\\']
@@ -1637,7 +1637,7 @@ scan_multiline_string = lx, start, start_line, start_col, is_triple =>
    0.. @
       lx.pos !< ?lx.src
          |
-            fail(1018, start_line, start_col,
+            fail(diag::DiagCode(E1018), start_line, start_col,
                diag::E1018_multiline_unterminated!)
             -->
       c = pk(lx, 0)
@@ -1766,7 +1766,7 @@ scan_multiline_string = lx, start, start_line, start_col, is_triple =>
             |
                fl = lines(first_nb_idx')!!
                sp = fl.indent
-               sp == 0 | fail(1017, fl.line_num, 1,
+               sp == 0 | fail(diag::DiagCode(E1017), fl.line_num, 1,
                   diag::E1017_multiline_under_indented!)
                margin' = sp
 
@@ -1780,7 +1780,7 @@ scan_multiline_string = lx, start, start_line, start_col, is_triple =>
                   add_nl | assembled += HeredocPart(Text, "\n")
                |
                   sp = line.indent
-                  sp < margin' | fail(1017, line.line_num, sp + 1,
+                  sp < margin' | fail(diag::DiagCode(E1017), line.line_num, sp + 1,
                      diag::E1017_multiline_under_indented!)
                   nparts = ?line.parts
                   nparts > 0

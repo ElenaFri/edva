@@ -106,7 +106,7 @@ io::out $ 7 ![4..10]     // <->
 | Position & Shape | Exhaustiveness Requirement | Implicit Fallback Synthesis | Result Type |
 |---|---|---|---|
 | Statement choice | Not required (`cond | side_effect`) | Unmatched path is a no-op | `()` |
-| Expression choice (general) | Required (`E3093` if inexhaustive) | None (never use dummy `| 0`) | Unified branch type (`E3084` on mismatch) |
+| Expression choice (general) | Required (`E3093` if inexhaustive) | None (never use dummy `\| 0`) | Unified branch type (`E3185` on mismatch) |
 | Expression choice (`RamPN` `<T|>` branches) | Auto-completed | Appends implicit `| <-->` (absence) | `<T|>` |
 | Expression choice (`RamNP` `<|E>` branches) | Auto-completed | Appends implicit `| <++>` (success) | `<|E>` |
 | Expression choice (Enum scrutinee) | All variants covered or trailing `|` (`E3102`) | None | Unified branch type |

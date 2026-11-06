@@ -28,7 +28,7 @@ Edva provides **records** for product types (structs, tuples, SIMD vectors, pack
 
 | Operation | Syntax | Semantics | Diagnostic |
 |---|---|---|---|
-| **Positional construction** | `Point(10, 20)` / `(10, 20)` | Initializes fields in declaration order | `E3084`: field type/count mismatch |
+| **Positional construction** | `Point(10, 20)` / `(10, 20)` | Initializes fields in declaration order | `E3177`: field count mismatch; `E3084`: field type mismatch |
 | **Named construction** | `Point(y = 20, x = 10)` | Initializes by field name; omitted fields with defaults use their declared default value | — |
 | **Zero/default value** | `Point.zero` | Initializes all fields to `0` / `<->` / `""` or their declared `= default` expression | — |
 | **Forward declaration** | `p: Point` | Allocates uninitialized record storage; **every field must be written before being read** | `E3130`: reading uninitialized field |
