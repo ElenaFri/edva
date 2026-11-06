@@ -1,0 +1,1241 @@
+// src/parser/pident.dva — Identifier dispatch, assignment, literal folding.
+//
+// Split from the former monolithic src/parser.dva. Sibling parser units are
+// imported unqualified via #use(import); external modules stay qualified.
+
+#use "../lexer"
+#use "../ast"
+#use "path"
+#use "str"
+#use "../operators"
+#use "../diag"
+#use "log"
+#use const
+#use unicode
+#use(import) pstate
+#use(import) pexpr
+#use(import) plambda
+#use(import) ptype
+#use(import) ppost
+#use(import) pchoice
+
+#public
+
+// --- identifier dispatch & assignment --------------------------------------
+
+// An identifier atom: consume the name, then dispatch on named assignment,
+// compound/global mutation, a call, or a bare variable read. Member/module/
+// key postfix ('a.b', 'm::k', 'm ^ k') is handled by parse_primary's pp_member
+// after the atom returns.
+atom_ident: Parser, String => <ast::Expr|>
+atom_ident = p, name =>
+   name == "#size"
+      |
+         parser_advance(p)
+         parse_sizeof(p)
+      |
+         parser_advance(p)
+         is_stmt = p.is_stmt
+         p.is_stmt = <->
+         is_mod = p.curr.text ["::"]
+         is_upper = name_is_upper(name)
+         is_mod && is_upper && is_stmt
+            |
+               parser_error(p, diag::DiagCode(E2004),
+                  "Disallowed type alias. '::' is module access; " +
+                  "type declarations use 'TypeName: (field: Type)'.")
+               <-->
+            |
+               p.no_assign
+                  |
+                     p.curr.text
+                        ["("] parse_expr_after_lparen(p, name)
+                        | <+ ast::Expr(Var, name) +>
+                  |
+                     p.curr.text
+                        ["="] parse_named_assign(p, name, <->)
+                        ["+="] parse_named_assign(p, name, <+>)
+                        ["::="] parse_global_assign(p, name)
+                        [":"] parse_colon_ctx(p, name)
+                        ["("] parse_expr_after_lparen(p, name)
+                        | <+ ast::Expr(Var, name) +>
+
+// Whether an identifier's first rune is uppercase (a type-alias marker).
+name_is_upper: String => <>
+name_is_upper = name =>
+   ?name > 0 && unicode::is_upper(unicode::decode_rune(name, 0))
+
+// Whether an identifier ends with a prime suffix (foo').
+name_is_primed: String => <>
+name_is_primed = name => ?name > 0 && name(-1..) == "'"
+
+// ":" dispatches a forward annotation / signature at STATEMENT level only; in
+// an assignment RHS the colon is leftover ("f = x: Int => ..." is E2003 —
+// inline param types are removed).
+parse_colon_ctx: Parser, String => <ast::Expr|>
+parse_colon_ctx = p, name => parse_colon_ctx_g(p, name, <->)
+
+parse_colon_ctx_g: Parser, String, <> => <ast::Expr|>
+parse_colon_ctx_g = p, name, is_global =>
+   name == "_"
+      |
+         parser_error(p, diag::DiagCode(E2044), diag::E2044_underscore_assign!)
+         <-->
+      |
+         p.in_rhs
+            |
+               parser_error(p, diag::DiagCode(E2003),
+                  "Expected newline or EOF after statement, got ':'")
+               <-->
+            | parse_colon_g(p, name, is_global)
+
+parse_colon: Parser, String => <ast::Expr|>
+parse_colon = p, name => parse_colon_g(p, name, <->)
+
+parse_colon_g: Parser, String, <> => <ast::Expr|>
+parse_colon_g = p, name, is_global =>
+   parser_advance(p)
+   f = p.curr.text
+   f == "#infix"
+      |
+         ok = parse_fixity_clause(p, name)
+         !ok | <--> |
+            p.curr.kind
+               [Comma]
+                  parser_advance(p)
+                  parse_colon_type_g(p, name, is_global)
+               | <+ ast::Expr(Var, name) +>
+      | parse_colon_type_g(p, name, is_global)
+
+// The custom-operator fixity clause: "+++ : #infix 25 20, ..." — the explicit
+// left and right binding powers (custom-operators.md §4). Registers the
+// operator's text in p.user_ops so the Pratt loop can parse it infix; a
+// reserved text (a built-in operator) is rejected. The current token is the
+// "#infix" identifier.
+parse_fixity_clause: Parser, String => <>
+parse_fixity_clause = p, name =>
+   parser_advance(p)
+   op_is_reserved(name)
+      |
+         parser_error(p, diag::DiagCode(E2097), "Operator '" + name + "' already has a " +
+            "built-in meaning and cannot be re-fixed.")
+         <->
+      | p.curr.kind
+         [Int]
+            n1 = parse_int_text(p.curr.text)
+            parser_advance(p)
+            n1
+               | lbp_val =>
+                  p.curr.kind
+                     [Int]
+                        n2 = parse_int_text(p.curr.text)
+                        parser_advance(p)
+                        n2
+                           | rbp_val =>
+                              register_user_op(p, name, lbp_val, rbp_val)
+                           |
+                              parser_error(p, diag::DiagCode(E2098),
+                                 diag::infix_right_binding_power(lbp_val, p.curr.text))
+                              <->
+                     |
+                        parser_error(p, diag::DiagCode(E2098),
+                           diag::infix_right_binding_power(lbp_val, p.curr.text))
+                        <->
+               |
+                  parser_error(p, diag::DiagCode(E2098), diag::infix_left_binding_power(p.curr.text))
+                  <->
+         |
+            parser_error(p, diag::DiagCode(E2098), diag::infix_left_binding_power(p.curr.text))
+            <->
+
+// Registers a user operator's binding powers (rejecting a duplicate fixity).
+register_user_op: Parser, String, Int, Int => <>
+register_user_op = p, name, lbp, rbp =>
+   lbp < 0 || rbp < 0 || lbp > 1000 || rbp > 1000
+      |
+         parser_error(p, diag::DiagCode(E2098), "Operator '" + name + "' binding powers " +
+            "must be 0..1000, got " + str::from_int(lbp) + " and " +
+            str::from_int(rbp) + ".")
+         <->
+      |
+         dup = user_op_lookup(p.user_ops, name)
+         dup.0
+            |
+               parser_error(p, diag::DiagCode(E2099), "Operator '" + name +
+                  "' fixity is declared twice.")
+               <->
+            |
+               p.user_ops = user_op_add(p.user_ops, name, lbp, rbp)
+               <+>
+
+// "name: Type" (after the optional fixity clause) — a forward annotation
+// (binds the name; the selfhost Assign node has no type slot, so the type is
+// parsed for syntax and the name is returned). "name: T1, T2 => R" — a
+// function signature. "name: #! T: Type, T => R" — a
+// compile-time-parameterized (generic) signature.
+parse_colon_type: Parser, String => <ast::Expr|>
+parse_colon_type = p, name => parse_colon_type_g(p, name, <->)
+
+parse_colon_type_g: Parser, String, <> => <ast::Expr|>
+parse_colon_type_g = p, name, is_global =>
+   p.curr.kind
+      [CT] ct_signature_g(p, name, "", ast::CParams(), is_global)
+      | parse_colon_type_vt_g(p, name, is_global)
+
+// The non-generic form of the forward annotation: "name: Type" (a forward
+// annotation), "name: T1, T2 => R" (a function signature).
+parse_colon_type_vt: Parser, String => <ast::Expr|>
+parse_colon_type_vt = p, name => parse_colon_type_vt_g(p, name, <->)
+
+parse_colon_type_vt_g: Parser, String, <> => <ast::Expr|>
+parse_colon_type_vt_g = p, name, is_global =>
+   p.module_level && p.fn_depth == 0 && p.choice_depth == 0 && p.branch_body_depth == 0
+      | p.ct_scope = ""
+   p.curr.kind
+      [LParen]
+         pk = parser_peek_next(p)
+         pk.kind
+            [RParen] parse_zero_sig_g(p, name, is_global)
+            | parse_colon_type_vt_rest_g(p, name, is_global)
+      | parse_colon_type_vt_rest_g(p, name, is_global)
+
+// "fun: () => Ret" — a zero-argument function signature: the empty '()' is a
+// zero-param list, NOT the unit type (mirrors the native
+// parser_parse_signature).
+parse_zero_sig: Parser, String => <ast::Expr|>
+parse_zero_sig = p, name => parse_zero_sig_g(p, name, <->)
+
+parse_zero_sig_g: Parser, String, <> => <ast::Expr|>
+parse_zero_sig_g = p, name, is_global =>
+   parser_advance(p)
+   parser_advance(p)
+   p.curr.text
+      ["=>"]
+         parser_advance(p)
+         ret = parse_type(p)
+         !ret.2 | <--> |
+            sig_ti = ast::TypeInfo(Fn, (ast::VTypes(), ast::VInfos(),
+               ret.0, ret.1, ast::CParams()))
+            <+ ast::Expr(Assign, (name, <+>, <->, is_global, <->,
+               fwd_marker(ret.1), ast::Expr(Var, ""), "", sig_ti)) +>
+      | <-->
+
+type_atom_name: ast::TypeInfo, String => String
+type_atom_name = ti, tok_text =>
+   ti
+      [TypeVar n] n
+      | tok_text
+
+ti_is_packed: ast::TypeInfo => <>
+ti_is_packed = ti =>
+   ti
+      [Align a] ti_is_packed(a.1)
+      [Bitfield] <+>
+      [Rec r] r.5
+      | <->
+
+parse_colon_type_vt_rest: Parser, String => <ast::Expr|>
+parse_colon_type_vt_rest = p, name => parse_colon_type_vt_rest_g(p, name, <->)
+
+parse_colon_type_vt_rest_g: Parser, String, <> => <ast::Expr|>
+parse_colon_type_vt_rest_g = p, name, is_global =>
+   tn = p.curr.text
+   vt = parse_type(p)
+   real_tn = type_atom_name(vt.1, tn)
+   !vt.2 | <--> |
+      p.curr.kind
+         [Comma]
+            params = ast::VTypes()
+            infos = ast::VInfos()
+            params += vt.0
+            infos += vt.1
+            sig_params_g(p, name, params, infos, real_tn, is_global)
+         |
+            p.curr.text
+               ["=>"]
+                  params2 = ast::VTypes()
+                  infos2 = ast::VInfos()
+                  params2 += vt.0
+                  infos2 += vt.1
+                  sig_arrow_g(p, name, params2, infos2, real_tn, is_global)
+               |
+                  is_packed_type = ti_is_packed(vt.1)
+                  is_packed_type
+                     | declare_type(p, name, vt.1)
+                     |
+                        p.module_level && p.fn_depth == 0 && p.choice_depth == 0 && p.branch_body_depth == 0
+                           |
+                              cs = p.consts
+                              cs += ConstEntry(name, ast::Expr(Var, ""))
+                              p.consts = cs
+                        <+ ast::Expr(Assign, (name, <+>, <->, is_global, <->,
+                           fwd_marker(vt.1), ast::Expr(Var, ""), real_tn,
+                           vt.1)) +>
+
+// The forward-annotation marker: Var("<fwd>") for a non-record type, or
+// Var("<fwd>~<comma-joined field names>") for a record type.
+fwd_marker: ast::TypeInfo => ast::Expr
+fwd_marker = ti =>
+   ast::Expr(Var, "<fwd>")
+
+// The comma-joined field names of a record's FieldTypes.
+fwd_fields_str: ast::FieldTypes => String
+fwd_fields_str = flds =>
+   m = {16}
+   flds @ f, i =>
+      i > 0 | m += ","
+      m += f.name
+   +m
+
+sig_params: Parser, String, ast::VTypes, ast::VInfos,
+   String => <ast::Expr|>
+sig_params = p, name, params, infos, first_tn =>
+   sig_params_g(p, name, params, infos, first_tn, <->)
+
+sig_params_g: Parser, String, ast::VTypes, ast::VInfos,
+   String, <> => <ast::Expr|>
+sig_params_g = p, name, params, infos, first_tn, is_global =>
+   parser_advance(p)
+   vt = parse_type(p)
+   !vt.2 | <--> |
+      params += vt.0
+      infos += vt.1
+      p.curr.kind
+         [Comma] sig_params_g(p, name, params, infos, first_tn, is_global)
+         |
+            sig_arrow_g(p, name, params, infos, first_tn, is_global)
+
+// "#! T: Type, ..." — the compile-time parameter list of a generic signature.
+// Mirrors the native parser_parse_ct_signature's syntax (the ct names and the
+// runtime param types are parsed for syntax; the Assign carries only the
+// return marker, since the selfhost Assign has no type slot).
+is_valid_ct_param_type: ast::ValueType => <>
+is_valid_ct_param_type = [Type, Int, Str, Float, F32, Rune, Flag, RawPtr,
+   I8, I16, I32, I64, U8, U16, U32, U64]
+
+ct_signature: Parser, String, String, ast::CParams => <ast::Expr|>
+ct_signature = p, name, prior_names, cps =>
+   ct_signature_g(p, name, prior_names, cps, <->)
+
+ct_signature_g: Parser, String, String, ast::CParams, <> => <ast::Expr|>
+ct_signature_g = p, name, prior_names, cps, is_global =>
+   parser_advance(p) // '#!'
+   p.curr.kind
+      [Id]
+         ct_name = p.curr.text
+         ct_name == "_"
+            |
+               parser_error(p, diag::DiagCode(E2040), diag::E2040_underscore_param!)
+               p.ct_scope = ""
+               <-->
+            |
+               parser_advance(p)
+               p.curr.text
+                  [":"]
+                     parser_advance(p)
+                     names = ct_names_append(prior_names, ct_name)
+                     p.ct_scope = names
+                     vt = parse_ct_type(p)
+                     !vt.2
+                        |
+                           p.ct_scope = ""
+                           <-->
+                        |
+                           !is_valid_ct_param_type(vt.0)
+                              |
+                                 parser_error(p, diag::DiagCode(E2086),
+                                    "Compile-time parameter type must be Type " +
+                                    "or a scalar type.")
+                                 p.ct_scope = ""
+                                 <-->
+                              |
+                                 next_cps = cps
+                                 next_cps += ast::CompileTimeParam(ct_name,
+                                    vt.0, vt.1)
+                                 ct_params_tail_g(p, name, names, next_cps,
+                                    is_global)
+                  |
+                     p.ct_scope = ""
+                     <-->
+      |
+         p.ct_scope = ""
+         <-->
+
+ct_names_append: String, String => String
+ct_names_append = prior, name =>
+   prior == "" | name | prior + "," + name
+
+// "T" — a type variable (a bare identifier that is not a recognized type).
+// A generic signature's params and return may be type variables, which
+// parse_type rejects; accept any bare identifier as a type (syntax-only).
+parse_ct_type: Parser => (ast::ValueType, ast::TypeInfo, <>)
+parse_ct_type = p =>
+   p.curr.kind
+      [Id]
+         // A recognized type (primitive or user) parses normally; any other
+         // bare identifier is a TYPE VARIABLE (a generic-signature param or
+         // return). Check BEFORE parse_type — it consumes the identifier even
+         // when it fails.
+         pn = parse_dva_type_name(p.curr.text)
+         pn
+            | parse_type(p)
+            |
+               lk = lookup_type(p.user_types, p.curr.text)
+               lk
+                  | parse_type(p)
+                  |
+                     is_mod_qual = parser_peek_next(p).text ["::"]
+                     is_mod_qual
+                        | parse_type(p)
+                        |
+                           nm = p.curr.text
+                           parser_advance(p)
+                           parse_type_suffixes(p,
+                              mk_tp(ast::ValueType(Unknown), ast::TypeInfo(TypeVar, nm), <+>))
+      | parse_type(p)
+
+// After one "#! Name: Type" group: a comma leads to another "#! T: Type" or to
+// the runtime params; '=>' skips straight to the return type.
+ct_params_tail: Parser, String, String, ast::CParams => <ast::Expr|>
+ct_params_tail = p, name, ct_names, cps =>
+   ct_params_tail_g(p, name, ct_names, cps, <->)
+
+ct_params_tail_g: Parser, String, String, ast::CParams, <> => <ast::Expr|>
+ct_params_tail_g = p, name, ct_names, cps, is_global =>
+   p.curr.kind
+      [Comma]
+         parser_advance(p)
+         p.curr.kind
+            [CT] ct_signature_g(p, name, ct_names, cps, is_global)
+            | ct_runtime_params_g(p, name, ct_names, cps, ast::VTypes(),
+               ast::VInfos(), is_global)
+      | ct_signature_arrow_g(p, name, ct_names, cps, ast::VTypes(),
+         ast::VInfos(), is_global)
+
+// The runtime (positional) params of a generic signature, comma-separated.
+ct_runtime_params: Parser, String, String, ast::CParams,
+   ast::VTypes, ast::VInfos => <ast::Expr|>
+ct_runtime_params = p, name, ct_names, cps, params, infos =>
+   ct_runtime_params_g(p, name, ct_names, cps, params, infos, <->)
+
+ct_runtime_params_g: Parser, String, String, ast::CParams,
+   ast::VTypes, ast::VInfos, <> => <ast::Expr|>
+ct_runtime_params_g = p, name, ct_names, cps, params, infos, is_global =>
+   vt = parse_ct_type(p)
+   !vt.2
+      |
+         p.ct_scope = ""
+         <-->
+      |
+         next_params = params
+         next_params += vt.0
+         next_infos = infos
+         next_infos += vt.1
+         p.curr.kind
+            [Comma]
+               parser_advance(p)
+               ct_runtime_params_g(p, name, ct_names, cps, next_params,
+                  next_infos, is_global)
+            | ct_signature_arrow_g(p, name, ct_names, cps, next_params,
+               next_infos, is_global)
+
+// "=> ReturnType" closes the generic signature; the forward marker carries the
+// return type's record field names (like the single-type form).
+ct_signature_arrow: Parser, String, String, ast::CParams,
+   ast::VTypes, ast::VInfos => <ast::Expr|>
+ct_signature_arrow = p, name, ct_names, cps, params, infos =>
+   ct_signature_arrow_g(p, name, ct_names, cps, params, infos, <->)
+
+acc_add_cp: ast::CParams, String => ast::CParams
+acc_add_cp = acc, name =>
+   out = acc
+   out += ast::CompileTimeParam(name, ast::ValueType(Type),
+      ast::TypeInfo(Prim, ast::ValueType(Type)))
+   out
+
+cparams_of_names: String, Int, String, ast::CParams => ast::CParams
+cparams_of_names = s, i, cur, acc =>
+   i == ?s
+      |
+         cur != ""
+            | acc_add_cp(acc, cur)
+            | acc
+      |
+         c = s(i)
+         c == 44
+            |
+               next_acc = cur != "" | acc_add_cp(acc, cur) | acc
+               cparams_of_names(s, i + 1, "", next_acc)
+            | cparams_of_names(s, i + 1, cur + s(i..i + 1), acc)
+
+ct_signature_arrow_g: Parser, String, String, ast::CParams,
+   ast::VTypes, ast::VInfos, <> => <ast::Expr|>
+ct_signature_arrow_g = p, name, ct_names, cps, params, infos, is_global =>
+   p.curr.text
+      ["=>"]
+         parser_advance(p)
+         ret = parse_ct_type(p)
+         p.ct_scope = ct_names
+         !ret.2 | <--> |
+            marker = "@ct0:" + ct_names
+            sig_ti = ast::TypeInfo(Fn, (params, infos, ret.0, ret.1, cps))
+            is_gen = ?params == 0
+            gen_ut = add_type(p.user_types, name, sig_ti)
+            next_ut = is_gen | gen_ut | p.user_types
+            p.user_types = next_ut
+            <+ ast::Expr(Assign, (name, <+>, <->, is_global, <->,
+               fwd_marker(ret.1), ast::Expr(Var, ""), marker,
+               sig_ti)) +>
+      |
+         p.ct_scope = ""
+         <-->
+
+sig_arrow: Parser, String, ast::VTypes, ast::VInfos,
+   String => <ast::Expr|>
+sig_arrow = p, name, params, infos, first_tn =>
+   sig_arrow_g(p, name, params, infos, first_tn, <->)
+
+sig_arrow_g: Parser, String, ast::VTypes, ast::VInfos,
+   String, <> => <ast::Expr|>
+sig_arrow_g = p, name, params, infos, first_tn, is_global =>
+   p.curr.text
+      ["=>"]
+         parser_advance(p)
+         ret = parse_type(p)
+         !ret.2 | <--> |
+            // A function signature forward annotation: binds the name, and
+            // the marker carries the return type's record field names (like
+            // the single-type form) so the analyzer knows the schema. The
+            // 9th field carries the full Fn TypeInfo (params + return) for
+            // the signature dump and call-return inference.
+            sig_ti = ast::TypeInfo(Fn, (params, infos, ret.0, ret.1,
+               ast::CParams()))
+            marker = "@sig0:" + first_tn
+            <+ ast::Expr(Assign, (name, <+>, <->, is_global, <->,
+               fwd_marker(ret.1), ast::Expr(Var, ""), marker, sig_ti)) +>
+      | <-->
+
+parse_indented_rhs: Parser => <ast::Expr|>
+parse_indented_rhs = p =>
+   tok_is_nl(p.curr)
+      |
+         parser_advance(p)
+         parse_indented_rhs(p)
+      |
+         p.curr.kind
+            [Indent]
+               parser_advance(p)
+               saved_fd = p.fn_depth
+               p.fn_depth = 0
+               saved_rhs = p.in_rhs
+               p.in_rhs = <->
+               saved_ml = p.module_level
+               p.module_level = <->
+               saved_cd = p.cycle_depth
+               p.cycle_depth = 0
+               res = block_stmts(p, ast::Exprs())
+               p.cycle_depth = saved_cd
+               p.module_level = saved_ml
+               p.in_rhs = saved_rhs
+               p.fn_depth = saved_fd
+               p.curr.kind [Dedent] parser_advance(p); p.just_dedented = <+>
+               res
+                  | blk =>
+                     blk
+                        [Block b]
+                           ?b == 1
+                              | <+ b(0)!! +>
+                              | <+ blk +>
+                        | <+ blk +>
+                  | <-->
+            |
+               parser_error(p, diag::DiagCode(E2064),
+                  "Expected indented block after '=', got '" +
+                  p.curr.text + "'")
+               <-->
+
+parse_assign_rhs: Parser => <ast::Expr|>
+parse_assign_rhs = p =>
+   tok_is_nl(p.curr)
+      | parse_indented_rhs(p)
+      |
+         p.branch_body_depth > 0
+            |
+               lhs = parse_bp(p, 130)
+               lhs
+                  | le =>
+                     p.curr.kind [LBracket] || tok_is_neg_lbracket(p)
+                        | choice_cont(p, le)
+                        | <+ le +>
+                  | <-->
+            | parse_cycle(p)
+
+is_const_folded_expr: ast::Expr => <>
+is_const_folded_expr = e =>
+   e
+      [Int, Float, Str, Rune] <+>
+      [TypeCast tc] (tc.expr [Int, Float, Str, Rune])
+      | <->
+
+const_has_name: ConstEntry{}, String => <>
+const_has_name = lst, name =>
+   found' = <->
+   lst @ e =>
+      e.name == name | (found' = <+>; -->)
+   found'
+
+lookup_const_entry: ConstEntry{}, String => <ast::Expr|>
+lookup_const_entry = lst, name =>
+   res' = <-->
+   i' = ?lst - 1
+   0.. @
+      i' < 0 | -->
+      e = lst(i')!!
+      e.name == name
+         |
+            !(e.expr [Var]) | (res' = <+ e.expr +>)
+            -->
+      i' = i' - 1
+   res'
+
+lookup_const_int: ConstEntry{}, String => <Int|>
+lookup_const_int = lst, name =>
+   lookup_const_entry(lst, name)
+      | e =>
+         e
+            [Int n] <+ n +>
+            [TypeCast tc]
+               tc.expr
+                  [Int n] <+ n +>
+                  | <-->
+            | <-->
+      | <-->
+
+fold_const_unary: ast::UnaryOp, ast::Expr => ast::Expr
+fold_const_unary = op, fo =>
+   op
+      [Neg]
+         fo
+            [Int n] ast::Expr(Int, 0 - n)
+            [Float f] ast::Expr(Float, 0.0 - f)
+            [TypeCast tc]
+               tc.expr
+                  [Int n]
+                     ast::Expr(TypeCast, ast::CastExpr(tc.target_type,
+                        ast::Expr(Int, 0 - n)))
+                  [Float f]
+                     ast::Expr(TypeCast, ast::CastExpr(tc.target_type,
+                        ast::Expr(Float, 0.0 - f)))
+                  | ast::Expr(Unary, (op, fo))
+            | ast::Expr(Unary, (op, fo))
+      [BitNot]
+         fo
+            [Int n] ast::Expr(Int, .!.n)
+            [TypeCast tc]
+               tc.expr
+                  [Int n]
+                     ast::Expr(TypeCast, ast::CastExpr(tc.target_type,
+                        ast::Expr(Int, .!.n)))
+                  | ast::Expr(Unary, (op, fo))
+            | ast::Expr(Unary, (op, fo))
+      | ast::Expr(Unary, (op, fo))
+
+fold_const_bin_int_val: ast::BinaryOp, Int, Int => <Int|>
+fold_const_bin_int_val = op, a, b =>
+   min_i64 = const::min_i64
+   op
+      [Add] <+ a + b +>
+      [Sub] <+ a - b +>
+      [Mul] <+ a * b +>
+      [Div]
+         b == 0 || (a == min_i64 && b == -1)
+            | <-->
+            | <+ a / b +>
+      [Mod]
+         b == 0 || (a == min_i64 && b == -1)
+            | <-->
+            | <+ a % b +>
+      [BitAnd] <+ a .&. b +>
+      [BitOr] <+ a .|. b +>
+      [BitXor] <+ a .^. b +>
+      [Shl]
+         b < 0 || b !< 64
+            | <-->
+            | <+ a .<. b +>
+      [Shr]
+         b < 0 || b !< 64
+            | <-->
+            | <+ a .>. b +>
+      | <-->
+
+fold_const_bin_float_val: ast::BinaryOp, Float, Float => <Float|>
+fold_const_bin_float_val = op, a, b =>
+   op
+      [Add] <+ a + b +>
+      [Sub] <+ a - b +>
+      [Mul] <+ a * b +>
+      [Div] <+ a / b +>
+      | <-->
+
+fold_const_bin: ast::BinaryOp, ast::Expr, ast::Expr => ast::Expr
+fold_const_bin = op, fl, fr =>
+   orig = ast::Expr(Bin, (op, fl, fr))
+   fl
+      [Int a]
+         fr
+            [Int b]
+               fold_const_bin_int_val(op, a, b)
+                  | v => ast::Expr(Int, v)
+                  | orig
+            | orig
+      [Float a]
+         fr
+            [Float b]
+               fold_const_bin_float_val(op, a, b)
+                  | v => ast::Expr(Float, v)
+                  | orig
+            | orig
+      [Str a]
+         fr
+            [Str b]
+               (op [Add] ast::Expr(Str, a + b) | orig)
+            | orig
+      [TypeCast tcl]
+         fr
+            [TypeCast tcr]
+               tcl.target_type == tcr.target_type
+                  |
+                     tcl.expr
+                        [Int a]
+                           tcr.expr
+                              [Int b]
+                                 fold_const_bin_int_val(op, a, b)
+                                    | v =>
+                                       ast::Expr(TypeCast,
+                                          ast::CastExpr(tcl.target_type,
+                                             ast::Expr(Int, v)))
+                                    | orig
+                              | orig
+                        [Float a]
+                           tcr.expr
+                              [Float b]
+                                 fold_const_bin_float_val(op, a, b)
+                                    | v =>
+                                       ast::Expr(TypeCast,
+                                          ast::CastExpr(tcl.target_type,
+                                             ast::Expr(Float, v)))
+                                    | orig
+                              | orig
+                        | orig
+                  | orig
+            | orig
+      | orig
+
+fold_const_cast: ast::ValueType, ast::Expr => ast::Expr
+fold_const_cast = vt, fi =>
+   orig = ast::Expr(TypeCast, ast::CastExpr(vt, fi))
+   vt
+      [Float]
+         fi
+            [Int n] ast::Expr(Float, Float(n))
+            [Float f] ast::Expr(Float, f)
+            [TypeCast tc]
+               tc.expr
+                  [Int n] ast::Expr(Float, Float(n))
+                  [Float f] ast::Expr(Float, f)
+                  | orig
+            | orig
+      [F32]
+         fi
+            [Int n]
+               ast::Expr(TypeCast, ast::CastExpr(vt,
+                  ast::Expr(Float, Float(n))))
+            [Float f]
+               ast::Expr(TypeCast, ast::CastExpr(vt, ast::Expr(Float, f)))
+            [TypeCast tc]
+               tc.expr
+                  [Int n]
+                     ast::Expr(TypeCast, ast::CastExpr(vt,
+                        ast::Expr(Float, Float(n))))
+                  [Float f]
+                     ast::Expr(TypeCast, ast::CastExpr(vt,
+                        ast::Expr(Float, f)))
+                  | orig
+            | orig
+      [Int, I64]
+         fi
+            [Int n] ast::Expr(Int, n)
+            [Float f] ast::Expr(Int, Int(f))
+            [TypeCast tc]
+               tc.expr
+                  [Int n] ast::Expr(Int, n)
+                  [Float f] ast::Expr(Int, Int(f))
+                  | orig
+            | orig
+      [I8, I16, I32, U8, U16, U32, U64]
+         fi
+            [Int n]
+               ast::Expr(TypeCast, ast::CastExpr(vt, ast::Expr(Int, n)))
+            [Float f]
+               ast::Expr(TypeCast, ast::CastExpr(vt,
+                  ast::Expr(Int, Int(f))))
+            [TypeCast tc]
+               tc.expr
+                  [Int n]
+                     ast::Expr(TypeCast, ast::CastExpr(vt,
+                        ast::Expr(Int, n)))
+                  [Float f]
+                     ast::Expr(TypeCast, ast::CastExpr(vt,
+                        ast::Expr(Int, Int(f))))
+                  | orig
+            | orig
+      | orig
+
+fold_const_expr: ConstEntry{}, ast::Expr => ast::Expr
+fold_const_expr = consts, e =>
+   e
+      [Var v]
+         lookup_const_entry(consts, v) | ce => ce | e
+      [Unary u]
+         fold_const_unary(u.0, fold_const_expr(consts, u.1))
+      [Bin b]
+         fold_const_bin(b.0, fold_const_expr(consts, b.1),
+            fold_const_expr(consts, b.2))
+      [TypeCast tc]
+         fold_const_cast(tc.target_type, fold_const_expr(consts, tc.expr))
+      | e
+
+decl_mod_prefix_at: String, Int, Int => Int
+decl_mod_prefix_at = s, i, last =>
+   i + 1 < ?s
+      |
+         next = s(i) == 58 && s(i + 1) == 58 | i | last
+         decl_mod_prefix_at(s, i + 1, next)
+      | last
+
+decl_mod_prefix: String => String
+decl_mod_prefix = name =>
+   pos = decl_mod_prefix_at(name, 0, -1)
+   pos < 0 | "" | name(0..pos)
+
+lookup_const_entry_mod: ConstEntry{}, String, String => <ast::Expr|>
+lookup_const_entry_mod = lst, cur_mod, name =>
+   cur_mod != "" && !string_has_double_colon(name, 0)
+      |
+         r1 = lookup_const_entry(lst, cur_mod + "::" + name)
+         <>(r1)
+            | r1
+            |
+               r2 = lookup_const_entry(lst, cur_mod + "::#" + name)
+               <>(r2) | r2 | lookup_const_entry(lst, name)
+      | lookup_const_entry(lst, name)
+
+fold_const_expr_mod: ConstEntry{}, String, ast::Expr => ast::Expr
+fold_const_expr_mod = consts, cur_mod, e =>
+   e
+      [Var v]
+         lookup_const_entry_mod(consts, cur_mod, v) | ce => ce | e
+      [Unary u]
+         fold_const_unary(u.0, fold_const_expr_mod(consts, cur_mod, u.1))
+      [Bin b]
+         fold_const_bin(b.0, fold_const_expr_mod(consts, cur_mod, b.1),
+            fold_const_expr_mod(consts, cur_mod, b.2))
+      [TypeCast tc]
+         fold_const_cast(tc.target_type, fold_const_expr_mod(consts, cur_mod, tc.expr))
+      | e
+
+is_fwd_marker_expr: ast::Expr => <>
+is_fwd_marker_expr = e =>
+   e [Var v] (v == "<fwd>") | <->
+
+fold_program_consts: ast::Exprs => ast::Exprs
+fold_program_consts = exprs =>
+   consts: ConstEntry{}
+   out = ast::Exprs()
+   exprs @ e =>
+      e
+         [Assign a]
+            name = a.0
+            is_fwd = is_fwd_marker_expr(a.5)
+            has_prior = name != "" && const_has_name(consts, name)
+            is_fwd || a.1 || a.2 || a.4 || name == ""
+               |
+                  name != "" && !has_prior
+                     | consts += ConstEntry(name, ast::Expr(Var, ""))
+                  out += e
+               |
+                  cur_mod = decl_mod_prefix(name)
+                  folded_re = fold_const_expr_mod(consts, cur_mod, a.5)
+                  eff_re = is_const_folded_expr(folded_re) | folded_re | a.5
+                  !a.3 && !has_prior && is_const_folded_expr(eff_re)
+                     | consts += ConstEntry(name, eff_re)
+                     |
+                        !has_prior
+                           | consts += ConstEntry(name, ast::Expr(Var, ""))
+                  out += ast::Expr(Assign, (a.0, a.1, a.2, a.3, a.4,
+                     eff_re, a.6, a.7, a.8))
+         |
+            out += e
+   out
+
+// "name = rhs" / "name += rhs" — a named assignment. The RHS
+// parses at the cycle tier (a trailing '|' stays with an enclosing choice);
+// the assignment continues as a ';'-sequence.
+parse_named_assign: Parser, String, <> => <ast::Expr|>
+parse_named_assign = p, name, is_compound =>
+   parse_named_assign_g(p, name, is_compound, <->)
+
+parse_named_assign_g: Parser, String, <>, <> => <ast::Expr|>
+parse_named_assign_g = p, name, is_compound, is_global =>
+   name == "_"
+      |
+         parser_error(p, diag::DiagCode(E2044), diag::E2044_underscore_assign!)
+         <-->
+      |
+         parser_advance(p)
+         p.in_rhs = <+>
+         rhs = parse_assign_rhs(p)
+         p.in_rhs = <->
+         rhs
+                  | re =>
+                     is_mutable = name_is_primed(name)
+                     is_mutable && !is_compound && expr_is_string_literal(re)
+                        |
+                           parser_error(p, diag::DiagCode(E2001), "Cannot make a mutable binding of " +
+                              "a string literal; assign a copy with '++'.")
+                           <-->
+                        |
+                           is_top = p.module_level && p.fn_depth == 0 &&
+                              p.choice_depth == 0 && p.branch_body_depth == 0
+                           has_prior = const_has_name(p.consts, name)
+                           can_fold = is_top && !is_mutable && !is_compound
+                           folded_re = can_fold | fold_const_expr(p.consts, re) | re
+                           eff_re = can_fold && is_const_folded_expr(folded_re) | folded_re | re
+                           is_top
+                              |
+                                 !is_mutable && !is_compound && !is_global &&
+                                    !has_prior && is_const_folded_expr(eff_re)
+                                    |
+                                       cs = p.consts
+                                       cs += ConstEntry(name, eff_re)
+                                       p.consts = cs
+                                    |
+                                       !has_prior
+                                          |
+                                             cs = p.consts
+                                             cs += ConstEntry(name, ast::Expr(Var, ""))
+                                             p.consts = cs
+                                 p.ct_scope = ""
+                           n = ast::Expr(Assign, (name, is_mutable, is_compound,
+                              is_global, <->, eff_re, ast::Expr(Var, ""), "",
+                              ast::TypeInfo(Prim, ast::ValueType(Unknown))))
+                           seq_cont_loop(p, n)
+                  | <-->
+
+expr_is_string_literal: ast::Expr => <>
+expr_is_string_literal = e => e [Str]
+
+// "name ::= rhs" — global mutation; the RHS is a full expression (or indented
+// block), matching '=' and '+=' so enclosing choices are not swallowed.
+parse_global_assign: Parser, String => <ast::Expr|>
+parse_global_assign = p, name =>
+   name == "_"
+      |
+         parser_error(p, diag::DiagCode(E2044), diag::E2044_underscore_assign!)
+         <-->
+      |
+         parser_advance(p)
+         p.in_rhs = <+>
+         rhs = parse_assign_rhs(p)
+         p.in_rhs = <->
+         rhs
+            | re =>
+               n = ast::Expr(Assign, (name, <->, <->, <+>, <->, re,
+                  ast::Expr(Var, ""), "",
+                  ast::TypeInfo(Prim, ast::ValueType(Unknown))))
+               seq_cont_loop(p, n)
+            | <-->
+
+// "%bitcast(T, x)" — first argument is a type T, remaining arguments are expressions.
+parse_bitcast_args: Parser => <ast::Exprs|>
+parse_bitcast_args = p =>
+   args = ast::Exprs()
+   p.curr.kind [RParen] <+ args +> |
+      vt = parse_ct_type(p)
+      !vt.2
+         | <-->
+         |
+            args += ast::Expr(SizeOf, ast::SizeOfExpr(vt.0, vt.1))
+            args_loop(p, args)
+
+// "name(arg1, arg2)" — a parenthesized call, then postfix calls and the
+// cycle/choice continuation.
+parse_expr_after_lparen: Parser, String => <ast::Expr|>
+parse_expr_after_lparen = p, name =>
+   p.curr.lead
+      |
+         parser_error(p, diag::DiagCode(E2032), diag::E2032_call_paren_whitespace!)
+         <-->
+      |
+         parser_advance(p)
+         args = name == "%bitcast" | parse_bitcast_args(p) | parse_comma_args(p)
+         args
+            | argv =>
+               p.curr.kind
+                  [RParen]
+                     parser_advance(p)
+                     c = make_call(p, name, argv)
+                     pc = parse_postfix_calls(p, c)
+                     pc
+                        | pce =>
+                           p.curr.text
+                              ["="] parse_finish_assignment(p, pce)
+                              | <+ pce +>
+                        | <-->
+                  | <-->
+            | <-->
+
+// "lhs = rhs" / "lhs += rhs" — a member/key/call write. The RHS parses at the
+// addition tier so a following '|' / '!|' choice wraps the whole write.
+parse_finish_assignment: Parser, ast::Expr => <ast::Expr|>
+parse_finish_assignment = p, lhs =>
+   is_compound = p.curr.text ["+="]
+   parser_advance(p)
+   rhs = tok_is_nl(p.curr) | parse_indented_rhs(p) | parse_bp(p, 130)
+   rhs
+      | re =>
+         is_mut_lhs = name_is_primed(lhs_name(lhs))
+         n = ast::Expr(Assign, (lhs_name(lhs), is_mut_lhs, is_compound,
+            <->, <->, re, lhs, "",
+            ast::TypeInfo(Prim, ast::ValueType(Unknown))))
+         lhs
+            [Call] choice_cont(p, n)
+            | seq_cont_loop(p, n)
+      | <-->
+
+lhs_name: ast::Expr => String
+lhs_name = e =>
+   e
+      [Var v] v
+      | ""
+
+// The identifier fallback: range/choice/cycle continuation from a variable lhs.
+parse_cycle_with_lhs: Parser, ast::Expr => <ast::Expr|>
+parse_cycle_with_lhs = p, lhs =>
+   c = parse_choice_with_lhs(p, lhs)
+   c | ce => cycle_cont(p, ce)
+
+parse_choice_with_lhs: Parser, ast::Expr => <ast::Expr|>
+parse_choice_with_lhs = p, lhs =>
+   r = parse_range_with_lhs(p, lhs)
+   r | re => choice_cont(p, re)
+
+// --- literal text -> value -------------------------------------------------
+
+// Strips an integer type suffix ("i8".."u64") if present.
+int_clean: String => String
+int_clean = text =>
+   s2 = text(-2..)
+   s3 = text(-3..)
+   s2
+      ["i8", "u8"] text(..-2)
+      |
+         s3
+            ["i16", "i32", "i64", "u16", "u32", "u64"] text(..-3)
+            | text
+
+// Detects a 0x/0b/0o base prefix; returns the base (16/2/8) or 10.
+int_base: String => Int
+int_base = text =>
+   text(..2)
+      ["0x", "0X"] 16
+      ["0b"] 2
+      ["0B"] 2
+      ["0o"] 8
+      ["0O"] 8
+      | 10
+
+// One digit rune's numeric value (0..35), or -1 for a non-digit.
+digit_val: Rune => Int
+digit_val = c =>
+   c
+      [(_ > '/' && _ < ':')] c - '0'
+      [(_ > '@' && _ < 'G')] c - 'A' + 10
+      [(_ > '`' && _ < 'g')] c - 'a' + 10
+      | -1
+
+has_char: String, Rune => <>
+has_char = s, ch =>
+   found' = <->
+   ?s @ i =>
+      s(i) == ch | found' = <+>
+   found'
+
+expand_int_repeats: String => <String|>
+expand_int_repeats = s =>
+   slen = ?s
+   !has_char(s, '{') | <+ s +> |
+      b = {slen * 2}
+      i' = 0
+      err' = <->
+      0.. @
+         i' !< slen | -->
+         c = s(i')
+         i' + 1 < slen && s(i' + 1) == '{'
+            |
+               is_prefix_letter = i' == 1 && s(0) == '0' && (c ['b', 'B', 'x', 'X', 'o', 'O'])
+               is_prefix_letter
+                  | (err' = <+>; -->)
+                  |
+                     close' = 0 - 1
+                     j' = i' + 2
+                     0.. @
+                        j' !< slen | -->
+                        s(j') == '}'
+                           | (close' = j'; -->)
+                           |
+                              s(j') ['0'...'9']
+                                 | (j' = j' + 1)
+                                 | -->
+                     close' < 0
+                        | (err' = <+>; -->)
+                        |
+                           cnt_str = s(i' + 2..close')
+                           cnt = str::to_int(cnt_str) | (.0) | -1
+                           cnt ![0...64]
+                              | (err' = <+>; -->)
+                              |
+                                 cnt @
+                                    b += c
+                                 i' = close' + 1
+            |
+               b += c
+               i' = i' + 1
+      err' | <--> | <+ +b +>
+
+// Parses an integer literal: optional 0x/0b/0o base, optional type suffix
+// (both stripped). Returns <Int|>.
+parse_int_text: String => <Int|>
+parse_int_text = text =>
+   clean = int_clean(text)
+   exp = expand_int_repeats(clean)
+   exp
+      | expanded =>
+         base = int_base(expanded)
+         digits = base [16, 2, 8] expanded(2..) | expanded
+         okf' = ?digits > 0
+         val' = 0
+         digits @ c =>
+            dv = digit_val(c)
+            dv !< 0
+               |
+                  val' = val' * base + dv
+               |
+                  okf' = <->
+         okf' | <+ val' +>
+      | <-->
+
+
+// Strips a float suffix ("f32", "f64", "f", "F").
+float_clean: String => String
+float_clean = text =>
+   s3 = text(-3..)
+   s1 = text(-1..)
+   s3
+      ["f32", "f64"] text(..-3)
+      | s1 ["f", "F"] text(..-1) | text
+
+float_suffix_vt: String => ast::ValueType
+float_suffix_vt = text =>
+   s3 = text(-3..)
+   s1 = text(-1..)
+   s3 == "f32" || (s1 ["f", "F"])
+      | ast::ValueType(F32)
+      | ast::ValueType(Float)
+
+// 10.0^n via repeated multiplication (negative n -> 1/10^|n|).
+pow10: Int => Float
+pow10 = n =>
+   r' = 1.0
+   a = n < 0 | 0 - n | n
+   a @ r' = r' * 10.0
+   n < 0 | 1.0 / r' | r'
+
+// Parses a float literal: optional sign, mantissa, fraction, exponent
+// (suffix already stripped). Returns (value, ok). One cycle scans the digits
+// with mutable state (cf. str::to_int); the state flags feeding the final
+// computation are Int (0/1) — bare-`<>` flags in a `:=` choice computation
+// were an older codegen gap.
+#type FState (val: Int, fdig: Int, exp: Int)
+
+// One digit's effect on the mantissa/frac/exponent state: in the exponent
+// phase it extends exp, else it extends val (and the fraction digit count
+// when in the fraction). Returns the updated state.
+digit_add: <>, Rune, FState, <> => FState
+digit_add = in_exp, c, st, in_frac =>
+   in_exp
+      |
+         FState(st.val, st.fdig, st.exp * 10 + (c - '0'))
+      |
+         st.val > 900000000000000000
+            |
+               in_frac
+                  | st
+                  | FState(st.val, st.fdig, st.exp + 1)
+            |
+               nv = st.val * 10 + (c - '0')
+               FState(nv, st.fdig + (in_frac | 1 | 0), st.exp)
+
+parse_float_text: String => <Float|>
+parse_float_text = text =>
+   clean = float_clean(text)
+   i' = 0
+   neg' = <->
+   ?clean > 0 && clean(0) == '-'
+      |
+         neg' = <+>
+         i' = 1
+      |
+         ?clean > 0 && clean(0) == '+'
+            |
+               i' = 1
+   st' = FState(0, 0, 0)
+   in_frac' = <->
+   in_exp' = <->
+   exp_neg' = <->
+   has' = <->
+   exp_has' = <->
+   0.. @
+      i' !< ?clean | -->
+      c = clean(i')
+      i' = i' + 1
+      c
+         [str::is_digit]
+            has' = <+>
+            in_exp' | exp_has' = <+>
+            st' = digit_add(in_exp', c, st', in_frac')
+         ['.']
+            in_frac' = <+>
+         ['e', 'E']
+            in_exp' = <+>
+         ['-']
+            exp_neg' = <+>
+         ['+']
+            exp_neg' = <->
+         | -->
+   has' && (!in_exp' || exp_has')
+      |
+         m1 = Float(st'.val) / pow10(st'.fdig)
+         ex = exp_neg' | 0 - st'.exp | st'.exp
+         m2 = m1 * pow10(ex)
+         m3 = neg' | 0.0 - m2 | m2
+         <+ m3 +>
+      | <-->
+
+has_free_underscore_map: ast::MapPairs => <>
+has_free_underscore_map = ps =>
+   found' = <->
+   ps @ pr =>
+      has_free_underscore(pr.key) || has_free_underscore(pr.value)
+         | found' = <+>; -->
+   found'

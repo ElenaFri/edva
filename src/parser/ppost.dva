@@ -1,0 +1,495 @@
+// src/parser/ppost.dva — Postfix tier: call / member / module / key access.
+//
+// Split from the former monolithic src/parser.dva. Sibling parser units are
+// imported unqualified via #use(import); external modules stay qualified.
+
+#use "../lexer"
+#use "../ast"
+#use "path"
+#use "str"
+#use "../operators"
+#use "../diag"
+#use "log"
+#use const
+#use unicode
+#use(import) pstate
+#use(import) pexpr
+#use(import) plambda
+#use(import) ptype
+#use(import) pchoice
+#use(import) pident
+
+#public
+
+// --- postfix (call / member / module / key) --------------------------------
+
+// The postfix tier: after a primary atom, consume module '::', member '.',
+// key-access '^'/'^?', a writable member/key assignment, postfix calls
+// '(...)'/'!', and postfix repetition '{N}'.
+parse_primary: Parser => <ast::Expr|>
+parse_primary = p =>
+   parse_atom(p)
+      | a => parse_primary_atom(p, a)
+      | <-->
+
+parse_primary_atom: Parser, ast::Expr => <ast::Expr|>
+parse_primary_atom = p, a =>
+   pp_member(p, a)
+      | pm =>
+         pm
+            [Member t]
+               t.is_module_access
+                  // A module member is not writable ("mod::x = v" is not an
+                  // assignment), but it IS callable: "mod::fn1(x)".
+                  | pp_postfix(p, pm)
+                  | pp_write(p, pm)
+            [KeyAccess t]
+               t.is_membership
+                  | pp_postfix(p, pm)
+                  | pp_write(p, pm)
+            // A raw-memory address is a write target: "@[q] = v" stores.
+            [RawMemory t] pp_write(p, pm)
+            // A named assignment or type decl is already complete:
+            // postfix repetition must never apply to it ("q = x {2} {3}"'s
+            // second '{3}' is a new statement, not a repeat of the assign).
+            [Assign, Fn, TypeDecl] <+ pm +>
+            // Any other completed atom (a plain Var, a literal, ...) still
+            // takes postfix calls and repetition: "x {3}", "5 {2}".
+            | pp_postfix(p, pm)
+      | <-->
+
+// Continue a member/key chain: ':: name', '. name', '^ key', '^? key'.
+pp_member: Parser, ast::Expr => <ast::Expr|>
+pp_member = p, lhs =>
+   is_dot_float = p.curr.kind [Float] && ?p.curr.text > 1 && p.curr.text(0) == '.'
+   is_dot_float
+      |
+         f = p.curr.text(1..)
+         parser_advance(p)
+         pp_member(p, ast::Expr(Member, ast::MemberExpr(lhs, f, <->,
+            ast::Expr(Var, ""), p.curr.line, p.curr.col)))
+      |
+         p.curr.text
+            ["::"] pp_double_colon(p, lhs)
+            ["."] pp_dot(p, lhs)
+            ["^"] pp_caret(p, lhs)
+            ["^?"] pp_caret_mem(p, lhs)
+            ["^-"] pp_caret_del(p, lhs)
+            | <+ lhs +>
+
+pp_double_colon: Parser, ast::Expr => <ast::Expr|>
+pp_double_colon = p, lhs =>
+   parser_advance(p)
+   p.curr.kind
+      [Id]
+         f = p.curr.text
+         parser_advance(p)
+         pp_member(p, ast::Expr(Member, ast::MemberExpr(lhs, f, <+>,
+            ast::Expr(Var, ""), p.curr.line, p.curr.col)))
+      | <-->
+
+pp_dot: Parser, ast::Expr => <ast::Expr|>
+pp_dot = p, lhs =>
+   parser_advance(p)
+   p.curr.kind
+      [LParen]
+         parser_advance(p)
+         parser_skip_layout(p)
+         parse_expr(p)
+            | idx =>
+               parser_skip_layout(p)
+               p.curr.kind
+                  [RParen]
+                     parser_advance(p)
+                     pp_member(p, ast::Expr(Member, ast::MemberExpr(lhs, "", <->, idx,
+                        p.curr.line, p.curr.col)))
+                  |
+                     parser_error(p, diag::DiagCode(E2027), "Expected ')' after member index, got '" +
+                        p.curr.text + "'.")
+                     <-->
+            | <-->
+      [Id, Int]
+         f = p.curr.text
+         parser_advance(p)
+         pp_member(p, ast::Expr(Member, ast::MemberExpr(lhs, f, <->,
+            ast::Expr(Var, ""), p.curr.line, p.curr.col)))
+      | <-->
+
+parse_key_chain: Parser, ast::Expr => <ast::Expr|>
+parse_key_chain = p, lhs =>
+   !p.curr.lead && (p.curr.text [".", "::"])
+      |
+         is_mod = p.curr.text == "::"
+         parser_advance(p)
+         p.curr.kind
+            [Id, Int]
+               f = p.curr.text
+               parser_advance(p)
+               parse_key_chain(p, ast::Expr(Member, ast::MemberExpr(lhs, f, is_mod,
+                  ast::Expr(Var, ""), p.curr.line, p.curr.col)))
+            | <+ lhs +>
+      |
+         !p.curr.lead && (p.curr.kind [LParen])
+            |
+               parser_advance(p)
+               parse_comma_args(p)
+                  | args =>
+                     p.curr.kind
+                        [RParen]
+                           parser_advance(p)
+                           nc = make_postfix_call(p, lhs, args)
+                           parse_key_chain(p, nc)
+                        | <-->
+                  | <-->
+            | <+ lhs +>
+
+parse_key_atom: Parser => <ast::Expr|>
+parse_key_atom = p =>
+   saved_no_assign = p.no_assign
+   p.no_assign = <+>
+   res = parse_atom(p)
+      | a => parse_key_chain(p, a)
+      | <-->
+   p.no_assign = saved_no_assign
+   res
+
+pp_caret: Parser, ast::Expr => <ast::Expr|>
+pp_caret = p, lhs =>
+   parser_advance(p)
+   // A key is a single atom (a Var or a literal), not a full primary —
+   // postfix repetition/calls on the KEY would otherwise steal a trailing
+   // "expr {N}" meant for the whole access ("m ^ k {2}" repeats the access,
+   // not k).
+   parse_key_atom(p)
+      | key =>
+         pp_member(p, ast::Expr(KeyAccess,
+            ast::KeyAccessExpr(lhs, key, <->, <->,
+               p.curr.line, p.curr.col)))
+      | <-->
+
+pp_caret_mem: Parser, ast::Expr => <ast::Expr|>
+pp_caret_mem = p, lhs =>
+   parser_advance(p)
+   parse_key_atom(p)
+      | key =>
+         <+ ast::Expr(KeyAccess, ast::KeyAccessExpr(lhs, key, <+>, <->,
+            p.curr.line, p.curr.col)) +>
+      | <-->
+
+// "m ^- k" — delete the entry; a bare Flag (RamNN) for whether it was
+// present.
+pp_caret_del: Parser, ast::Expr => <ast::Expr|>
+pp_caret_del = p, lhs =>
+   parser_advance(p)
+   parse_key_atom(p)
+      | key =>
+         <+ ast::Expr(KeyAccess, ast::KeyAccessExpr(lhs, key, <->, <+>,
+            p.curr.line, p.curr.col)) +>
+      | <-->
+
+// A writable member/key: '=' assignment, else postfix calls +
+// repetition.
+pp_write: Parser, ast::Expr => <ast::Expr|>
+pp_write = p, lhs =>
+   p.curr.text
+      ["="] parse_finish_assignment(p, lhs)
+      ["+="] parse_finish_assignment(p, lhs)
+      |
+         parse_postfix_calls(p, lhs)
+            | c =>
+               p.curr.kind
+                  [LBrace]
+                     parse_postfix_repetition(p, c)
+                        | rc => pp_postfix(p, rc)
+                        | <-->
+                  |
+                     p.curr.text
+                        ["="] parse_finish_assignment(p, c)
+                        | <+ c +>
+            | <-->
+
+// Postfix calls + repetition for a NON-writable lhs (a plain atom, a module
+// member, a "^?" membership probe): calls "f(x)" and repetition "expr {N}"
+// apply, but "= v" never is an assignment here.
+pp_postfix: Parser, ast::Expr => <ast::Expr|>
+pp_postfix = p, lhs =>
+   parse_postfix_calls(p, lhs)
+      | c =>
+         p.curr.kind
+            [LBrace]
+               parse_postfix_repetition(p, c)
+                  | rc => pp_postfix(p, rc)
+                  | <-->
+            | <+ c +>
+      | <-->
+
+// Consumes trailing '(...)' postfix call lists on a completed expression.
+parse_postfix_calls: Parser, ast::Expr => <ast::Expr|>
+parse_postfix_calls = p, lhs =>
+   p.curr.kind
+      [LParen]
+         p.curr.lead
+            |
+               parser_error(p, diag::DiagCode(E2032), diag::E2032_call_paren_whitespace!)
+               <-->
+            |
+               parser_advance(p)
+               parse_comma_args(p)
+                  | args =>
+                     p.curr.kind
+                        [RParen]
+                           parser_advance(p)
+                           nc = make_postfix_call(p, lhs, args)
+                           parse_postfix_calls(p, nc)
+                        | <-->
+                  | <-->
+      [Op]
+         p.curr.text
+            ["!"]
+               !p.curr.lead
+                  |
+                     parser_advance(p)
+                     args2 = ast::Exprs()
+                     nc2 = make_postfix_call(p, lhs, args2)
+                     parse_postfix_calls(p, nc2)
+                  | <+ lhs +>
+            ["!!"]
+               !p.curr.lead
+                  |
+                     parser_advance(p)
+                     u = ast::Expr(Unary, (ast::UnaryOp(Unwrap), lhs))
+                     pp_member(p, u)
+                        | mu => parse_postfix_calls(p, mu)
+                        | <-->
+                  | <+ lhs +>
+            ["--!"]
+               !p.curr.lead
+                  |
+                     parser_advance(p)
+                     u = ast::Expr(Unary, (ast::UnaryOp(Propagate), lhs))
+                     pp_member(p, u)
+                        | mu => parse_postfix_calls(p, mu)
+                        | <-->
+                  | <+ lhs +>
+            [".", "::", "^", "^?", "^-"]
+               pp_member(p, lhs)
+                  | mu => parse_postfix_calls(p, mu)
+                  | <-->
+            | <+ lhs +>
+      | <+ lhs +>
+
+make_call: Parser, String, ast::Exprs => ast::Expr
+make_call = p, name, args =>
+   ast::Expr(Call, ast::CallExpr(name, ast::Expr(Var, ""),
+      args, p.curr.line, p.curr.col))
+
+make_postfix_call: Parser, ast::Expr, ast::Exprs => ast::Expr
+make_postfix_call = p, lhs, args =>
+   is_empty_arr = (lhs [ArrayCreate]) && ?args == 0
+   is_empty_arr
+      | lhs
+      |
+         n = member_chain_name(lhs)
+         n == ""
+            | ast::Expr(Call, ast::CallExpr("", lhs, args,
+               p.curr.line, p.curr.col))
+            | ast::Expr(Call, ast::CallExpr(n, ast::Expr(Var, ""),
+               args, p.curr.line, p.curr.col))
+
+member_chain_name: ast::Expr => String
+member_chain_name = e =>
+   e
+      [Var v] v
+      [Member t]
+         b = member_chain_name(t.target)
+         b == "" | "" | b + (t.is_module_access | "::" | ".") + t.field_name
+      | ""
+
+parse_arg: Parser => <ast::Expr|>
+parse_arg = p =>
+   saved_cd = p.cycle_depth
+   p.cycle_depth = 0
+   is_id = p.curr.kind [Id]
+   nxt = parser_peek_next(p)
+   is_named = is_id && (nxt.text [":", "="])
+   res = is_named
+      |
+         name = p.curr.text
+         parser_advance(p)
+         parser_advance(p)
+         parse_choice(p)
+            | val => <+ ast::Expr(NamedArg, ast::NamedArgExpr(name, val)) +>
+            | <-->
+      | parse_choice(p)
+   p.cycle_depth = saved_cd
+   res
+
+parse_comma_args: Parser => <ast::Exprs|>
+parse_comma_args = p =>
+   args = ast::Exprs()
+   parser_skip_layout(p)
+   p.curr.kind [RParen] <+ args +> |
+      parse_arg(p)
+         | a =>
+            args += a
+            args_loop(p, args)
+         | <-->
+
+args_loop: Parser, ast::Exprs => <ast::Exprs|>
+args_loop = p, args =>
+   parser_skip_layout(p)
+   p.curr.kind
+      [Comma]
+         parser_advance(p)
+         parser_skip_layout(p)
+         p.curr.kind [RParen] <+ args +> |
+            parse_arg(p)
+               | a =>
+                  args += a
+                  args_loop(p, args)
+               | <-->
+      | <+ args +>
+
+// Resolves an expression that represents a type name or type constructor into
+// TypeInfo, for anonymous array creation (e.g. "Int{}", "Int{}", "matrix{}").
+expr_to_type_info: Parser, ast::Expr => <ast::TypeInfo|>
+expr_to_type_info = p, e =>
+   e
+      [Var name]
+         name
+            ["Void", "void"] <-->
+            ["<>"]
+               e_slot = ast::RamSlotInfo(<->, ast::ValueType(Unknown),
+                  ast::TypeInfo(Prim, ast::ValueType(Unknown)))
+               <+ ast::TypeInfo(Ram, (e_slot, e_slot)) +>
+            |
+               pr = parse_dva_type_name(name)
+               pr
+                  | vt => <+ ast::TypeInfo(Prim, vt) +>
+                  |
+                     lt = lookup_type(p.user_types, name)
+                     lt
+                        | <+ ast::TypeInfo(TypeVar, name) +>
+                        |
+                           ct_scope_has(p.ct_scope, name)
+                              | <+ ast::TypeInfo(TypeVar, name) +>
+                              |
+                                 name_is_upper(name)
+                                    | <+ ast::TypeInfo(TypeVar, name) +>
+                                    | <-->
+      [Member m]
+         m.is_module_access
+            |
+               m.target
+                  [Var mod]
+                     qual = mod + "::" + m.field_name
+                     <+ ast::TypeInfo(TypeVar, qual) +>
+                  | <-->
+            | <-->
+      [ArrayCreate ac]
+         real_cap = ac.cap < 1 | 16 | ac.cap
+         elem_ti = ac.elem_type
+         elem_vt = type_info_value_type(elem_ti)
+         <+ ast::TypeInfo(Array, (elem_vt, elem_ti, real_cap)) +>
+      [Record r]
+         fts' = ast::FieldTypes()
+         all_ok' = <+>
+         r.fields @ f =>
+            fti = expr_to_type_info(p, f.val)
+            fti
+               | ti =>
+                  vt = type_info_value_type(ti)
+                  fts' += ast::RecordFieldType(f.name, vt, ti, <->,
+                     ast::Expr(Int, 0))
+               |
+                  all_ok' = <->
+         all_ok'
+            | <+ ast::TypeInfo(Rec, (fts', <->, <->, ast::ValueType(Unknown),
+               ?fts', <->)) +>
+            | <-->
+      | <-->
+
+// "expr {N}" — postfix repetition: a record of N copies of expr.
+// When expr is a type ("T{}", "T{}", "T{cap}"), this parses an anonymous
+// growable array constructor instead.
+parse_postfix_repetition: Parser, ast::Expr => <ast::Expr|>
+parse_postfix_repetition = p, lhs =>
+   has_lead = p.curr.lead
+   parser_advance(p)
+   is_const_id = (p.curr.kind [Id]) && <>(lookup_const_int(p.consts, p.curr.text))
+   is_cnt = (p.curr.kind [Int]) || is_const_id
+   p.curr.kind
+      [RBrace]
+         ti_opt = expr_to_type_info(p, lhs)
+         ti_opt
+            | ti =>
+               parser_advance(p)
+               <+ ast::Expr(ArrayCreate, ast::ArrayCreateExpr(ti, 0)) +>
+            |
+               parser_error(p, diag::DiagCode(E2048),
+                  "Expected an integer repetition count after the " +
+                  "opening brace, got '}'")
+               <-->
+      |
+         is_cnt
+            |
+               ti_opt = !has_lead | expr_to_type_info(p, lhs) | <-->
+               ti_opt
+                  | ti =>
+                     cap = rep_count(p)
+                     parser_advance(p)
+                     p.curr.kind
+                        [RBrace]
+                           parser_advance(p)
+                           <+ ast::Expr(ArrayCreate,
+                              ast::ArrayCreateExpr(ti, cap)) +>
+                        |
+                           parser_error(p, diag::DiagCode(E2049),
+                              "Expected '}' after array capacity, got '" +
+                              p.curr.text + "'")
+                           <-->
+                  |
+                     n = rep_count(p)
+                     n < 1
+                        |
+                           parser_error(p, diag::DiagCode(E2065),
+                              "Repetition count must be a positive integer, got '" +
+                              p.curr.text + "'")
+                           <-->
+                        |
+                           n > 1000000
+                              |
+                                 parser_error(p, diag::DiagCode(E2056),
+                                    diag::repetition_count_limit(n))
+                                 <-->
+                              |
+                                 parser_advance(p)
+                                 p.curr.kind
+                                    [RBrace]
+                                       parser_advance(p)
+                                       <+ ast::Expr(Record, ast::RecordExpr(
+                                          repeat_fields(lhs, n), <+>)) +>
+                                    |
+                                       parser_error(p, diag::DiagCode(E2049),
+                                          "Expected '}' after repetition count, " +
+                                          "got '" + p.curr.text + "'")
+                                       <-->
+            |
+               parser_error(p, diag::DiagCode(E2048),
+                  "Expected an integer repetition count after the " +
+                  "opening brace, got '" + p.curr.text + "'")
+               <-->
+
+rep_count: Parser => Int
+rep_count = p =>
+   p.curr.kind
+      [Id]
+         lookup_const_int(p.consts, p.curr.text) | n => n | 0
+      | (str::to_int(p.curr.text) | (.0) | 0)
+
+repeat_fields: ast::Expr, Int => ast::Fields
+repeat_fields = e, n =>
+   fs = ast::Fields()
+   n @ fs += ast::RecordField(<->, "", e)
+   fs
+

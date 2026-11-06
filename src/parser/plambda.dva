@@ -1,0 +1,419 @@
+// src/parser/plambda.dva — Lambda & block parsing; whole-program statement entry.
+//
+// Split from the former monolithic src/parser.dva. Sibling parser units are
+// imported unqualified via #use(import); external modules stay qualified.
+
+#use "../lexer"
+#use "../ast"
+#use "path"
+#use "str"
+#use "../operators"
+#use "../diag"
+#use "log"
+#use const
+#use unicode
+#use(import) pstate
+#use(import) pexpr
+#use(import) ptype
+#use(import) ppost
+#use(import) pchoice
+#use(import) pident
+
+#public
+
+// --- lambdas & blocks ------------------------------------------------------
+
+is_fn_scan: lexer::Lx => <>
+is_fn_scan = lx =>
+   t = lexer::next_tok(lx, 0)
+   is_comma = t.kind [Comma]
+   is_op = t.kind [Op]
+   is_arrow = t.text ["=>", "!=>"]
+   is_comma
+      |
+         nt = lexer::next_tok(lx, 0)
+         nt_id = nt.kind [Id]
+         nt_ct = nt.kind [CT]
+         nt_id
+            | is_fn_scan(lx)
+            | nt_ct
+               |
+                  nnt = lexer::next_tok(lx, 0)
+                  nnt_id = nnt.kind [Id]
+                  nnt_id && is_fn_scan(lx)
+               | <->
+      | is_op && is_arrow
+
+// An identifier or '#!' starts a lambda when a '=>' or a ',' follows.
+is_fn_start: Parser => <>
+is_fn_start = p =>
+   p.curr.kind
+      [Id]
+         c = lexer::clone_lx(p.lx)
+         is_fn_scan(c)
+      [CT]
+         c = lexer::clone_lx(p.lx)
+         tok = lexer::next_tok(c, 0)
+         tok.kind [Id] is_fn_scan(c) | <->
+      | <->
+
+// "x, y => body" / "#! T, x => body" — a bare-parameter lambda. Consumes the
+// param list (and optional compile-time params) then '=>' and a block body.
+parse_fn: Parser => <ast::Expr|>
+parse_fn = p =>
+   fn_params(p, ast::Names(), ast::Names())
+
+fn_params: Parser, ast::Names, ast::Names => <ast::Expr|>
+fn_params = p, params, ct_params =>
+   p.curr.kind
+      [CT]
+         parser_advance(p)
+         p.curr.kind
+            [Id]
+               pname = p.curr.text
+               pname == "_"
+                  |
+                     parser_error(p, diag::DiagCode(E2040), diag::E2040_underscore_param!)
+                     <-->
+                  |
+                     name_is_primed(pname)
+                        |
+                           parser_error(p, diag::DiagCode(E2039), diag::param_mutable(pname))
+                           <-->
+                        |
+                           ct_params += pname
+                           p.ct_scope = ct_names_append(p.ct_scope, pname)
+                           parser_advance(p)
+                           fn_param_next(p, params, ct_params)
+            |
+               parser_error(p, diag::DiagCode(E2085),
+                  "Expected a name after '#!' in the parameter list.")
+               <-->
+      [Id]
+         pname = p.curr.text
+         pname == "_"
+            |
+               parser_error(p, diag::DiagCode(E2040), diag::E2040_underscore_param!)
+               <-->
+            |
+               name_is_primed(pname)
+                  |
+                     parser_error(p, diag::DiagCode(E2039), diag::param_mutable(pname))
+                     <-->
+                  |
+                     params += pname
+                     parser_advance(p)
+                     is_colon = p.curr.text [":"]
+                     is_colon
+                        |
+                           parser_error(p, diag::DiagCode(E2067),
+                              "Inline parameter types are removed — declare the " +
+                              "signature separately.")
+                           <-->
+                        | fn_param_next(p, params, ct_params)
+      | fn_arrow(p, params, ct_params)
+
+fn_param_next: Parser, ast::Names, ast::Names => <ast::Expr|>
+fn_param_next = p, params, ct_params =>
+   p.curr.kind
+      [Comma]
+         parser_advance(p)
+         fn_params(p, params, ct_params)
+      | fn_arrow(p, params, ct_params)
+
+split_ct_scope_names: String, Int, String, ast::Names => ast::Names
+split_ct_scope_names = s, i, cur, acc =>
+   i == ?s
+      |
+         cur != "" | (acc += cur)
+         acc
+      |
+         c = s(i)
+         c == 44
+            |
+               cur != "" | (acc += cur)
+               split_ct_scope_names(s, i + 1, "", acc)
+            | split_ct_scope_names(s, i + 1, cur + s(i..i + 1), acc)
+
+fn_arrow: Parser, ast::Names, ast::Names => <ast::Expr|>
+fn_arrow = p, params, ct_params =>
+   p.curr.text
+      // "=>" (params already read) and "!=>" (zero-argument) both arrow.
+      ["=>", "!=>"]
+         parser_advance(p)
+         eff_ct_params = (?ct_params == 0 && p.module_level && p.fn_depth == 0 &&
+            p.choice_depth == 0 && p.branch_body_depth == 0 && p.ct_scope != "")
+            | split_ct_scope_names(p.ct_scope, 0, "", ast::Names())
+            | ct_params
+         saved_rhs = p.in_rhs
+         p.in_rhs = <->
+         saved_ml = p.module_level
+         p.module_level = <->
+         saved_cd = p.cycle_depth
+         p.cycle_depth = 0
+         body = parse_block(p)
+         p.cycle_depth = saved_cd
+         p.module_level = saved_ml
+         p.in_rhs = saved_rhs
+         body
+            | b => <+ ast::Expr(Fn, ast::FnExpr(params, eff_ct_params, b)) +>
+            | <-->
+      |
+         parser_error(p, diag::DiagCode(E2011),
+            "Expected '=>' after function parameters, got '" +
+            p.curr.text + "'")
+         <-->
+
+peek_has_block_cont: Parser => <>
+peek_has_block_cont = p =>
+   p.curr.kind [Indent]
+      |
+         c = lexer::clone_lx(p.lx)
+         t2' = lexer::next_tok(c, 0)
+         0.. @
+            t2'.kind [Newline]
+               | t2' = lexer::next_tok(c, 0)
+               | -->
+         !(t2'.kind [LBracket] || token_is_pipe(t2'))
+      |
+         !tok_is_nl(p.curr)
+            | <->
+            |
+               c = lexer::clone_lx(p.lx)
+               cd' = p.cont_depth
+               t1' = lexer::next_tok(c, 0)
+               0.. @
+                  t1'.kind [Newline]
+                     | t1' = lexer::next_tok(c, 0)
+                     |
+                        t1'.kind [Dedent] && cd' > 0
+                           |
+                              cd' = cd' - 1
+                              t1' = lexer::next_tok(c, 0)
+                           | -->
+               t1'.kind ![Indent]
+                  | <->
+                  |
+                     t2' = lexer::next_tok(c, 0)
+                     0.. @
+                        t2'.kind [Newline]
+                           | t2' = lexer::next_tok(c, 0)
+                           | -->
+                     !(t2'.kind [LBracket] || token_is_pipe(t2'))
+
+maybe_inline_block_cont: Parser, <ast::Expr|> => <ast::Expr|>
+maybe_inline_block_cont = p, first_res =>
+   first_res
+      | first_e =>
+         is_empty = first_e [Var v] (v == "<empty>") | <->
+         is_cyc_fn = p.cycle_depth > 0 && (first_e [Fn])
+         is_empty || is_cyc_fn || !peek_has_block_cont(p)
+            | <+ first_e +>
+            |
+               0.. @
+                  tok_is_nl(p.curr) || (p.curr.kind [Dedent] && p.cont_depth > 0)
+                     | parser_advance(p)
+                     | -->
+               p.curr.kind [Indent] | parser_advance(p)
+               stmts = ast::Exprs()
+               stmts += first_e
+               saved_fd = p.fn_depth
+               p.fn_depth = 0
+               res = block_stmts(p, stmts)
+               p.fn_depth = saved_fd
+               p.curr.kind [Dedent] parser_advance(p); p.just_dedented = <+>
+               res
+      | <-->
+
+// A block: an indented statement list, or a single inline expression (optionally
+// followed by an indented statement list when the block starts on the same line).
+parse_block: Parser => <ast::Expr|>
+parse_block = p =>
+   tok_is_nl(p.curr)
+      |
+         parser_advance(p)
+         parse_block(p)
+      |
+         p.curr.kind
+            [Indent]
+               parser_advance(p)
+               saved_fd = p.fn_depth
+               p.fn_depth = 0
+               res = block_stmts(p, ast::Exprs())
+               p.fn_depth = saved_fd
+               p.curr.kind [Dedent] parser_advance(p); p.just_dedented = <+>
+               res
+            |
+               first_res = parse_expr(p)
+               maybe_inline_block_cont(p, first_res)
+
+block_stmts: Parser, ast::Exprs => <ast::Expr|>
+block_stmts = p, stmts =>
+   p.curr.kind
+      [Eof] <+ ast::Expr(Block, stmts) +>
+      [Dedent]
+         p.cont_depth > 0
+            |
+               parser_advance(p)
+               block_stmts(p, stmts)
+            | <+ ast::Expr(Block, stmts) +>
+      |
+         tok_is_nl(p.curr)
+            |
+               parser_advance(p)
+               block_stmts(p, stmts)
+            |
+               p.is_stmt = <+>
+               st = parse_expr(p)
+               p.is_stmt = <->
+               st
+                  | s =>
+                     p.module_level | mark_decl_item(p, s)
+                     stmts += s
+                     stmt_end_ok(p)
+                        |
+                           tok_is_nl(p.curr)
+                              | parser_advance(p); block_stmts(p, stmts)
+                              | block_stmts(p, stmts)
+                        |
+                           parser_error(p, diag::DiagCode(E2026),
+                              "Expected newline or dedent after statement " +
+                              "in block, got '" + p.curr.text + "'")
+                           <-->
+                  | <-->
+
+// A full program: the statement loop (mirrors parser_parse). Each statement is
+// a full expression; newlines separate them. Returns a Block of the statements.
+parse_program: Parser => <ast::Expr|>
+parse_program = p =>
+   r = prog_loop(p, ast::Exprs())
+   r
+      | stmts =>
+         p.recovered_errors > 0 || lexer::lex_failed!
+            | <-->
+            |
+               resolve_refs(p)
+                  | <+ ast::Expr(Block, stmts) +>
+                  | <-->
+      | <-->
+
+// At EOF, a forward-referenced type name must have been declared; an
+// undeclared name is a typo (E2014).
+resolve_refs: Parser => <>
+resolve_refs = p =>
+   ok' = <+>
+   p.forward_refs @ fr =>
+      has_lt = <>(lookup_type(p.user_types, fr.name))
+      has_mod = string_has_double_colon(fr.name, 0)
+      fn = p.source_file != "" | p.source_file + ":" | ""
+      !has_lt && !(has_mod && p.allow_module_refs) && !p.has_use_import
+         |
+            has_mod
+            |
+               diag::is_capturing!
+                  | diag::record_diag(diag::code_int(diag::DiagCode(E3120)), p.source_file, fr.tok.line, fr.tok.col,
+                       "Unresolved type name '" + fr.name + "'", <->)
+                  | log::error $ fn + str::from_int(fr.tok.line) + ":" +
+                       str::from_int(fr.tok.col) + ": E3120: Unresolved type name '" +
+                       fr.name + "'"
+            |
+               diag::is_capturing!
+                  | diag::record_diag(diag::code_int(diag::DiagCode(E2014)), p.source_file, fr.tok.line, fr.tok.col,
+                       "Unknown type name '" + fr.name + "'", <->)
+                  | log::error $ fn + str::from_int(fr.tok.line) + ":" +
+                       str::from_int(fr.tok.col) + ": E2014: Unknown type name '" +
+                       fr.name + "'"
+            ok' = <->
+   ok'
+
+// Whether a String contains the "::" module-access marker (an unresolved
+// module-qualified type name reports E3120, a bare name E2014).
+string_has_double_colon: String, Int => <>
+string_has_double_colon = s, i =>
+   i + 1 < ?s
+      |
+         a = s(i)
+         b = s(i + 1)
+         a == 58 && b == 58
+            | <+>
+            | string_has_double_colon(s, i + 1)
+      | <->
+
+parser_skip_to_sync_point: Parser, Int => ()
+parser_skip_to_sync_point = p, entry_level =>
+   is_sync = tok_is_eof(p.curr) || tok_is_nl(p.curr) ||
+      (tok_is_dedent(p.curr) && p.indent_level !> entry_level)
+   !is_sync
+      |
+         ind = tok_is_indent(p.curr)
+         ded = tok_is_dedent(p.curr)
+         d_ind = ind | 1 | 0
+         d_ded = ded | 1 | 0
+         p.indent_level = p.indent_level + d_ind - d_ded
+         p.just_dedented = ded
+         p.curr = lexer::next_tok(p.lx, 0)
+         parser_skip_to_sync_point(p, entry_level)
+
+prog_loop: Parser, ast::Exprs => <ast::Exprs|>
+prog_loop = p, stmts =>
+   p.curr.kind
+      [Eof] <+ stmts +>
+      |
+         tok_is_nl(p.curr)
+            |
+               parser_advance(p)
+               prog_loop(p, stmts)
+            |
+               // The native program loop skips Newline/Dedent between
+               // top-level statements; a multi-line fn body (or an indented
+               // block) leaves a trailing DEDENT that must not abort the loop.
+               tok_is_dedent(p.curr)
+                  |
+                     parser_advance(p)
+                     prog_loop(p, stmts)
+                  |
+                     p.is_stmt = <+>
+                     s_line = p.curr.line
+                     s_col = p.curr.col
+                     st = parse_expr(p)
+                     p.is_stmt = <->
+                     st
+                        | s =>
+                           p.top_lines += s_line
+                           p.top_cols += s_col
+                           p.module_level | mark_decl_item(p, s)
+                           stmts += s
+                           stmt_end_ok(p)
+                              |
+                                 tok_is_nl(p.curr)
+                                    |
+                                       parser_advance(p)
+                                       prog_loop(p, stmts)
+                                    | prog_loop(p, stmts)
+                              |
+                                 parser_error(p, diag::DiagCode(E2003),
+                                    "Expected newline or EOF after " +
+                                    "statement, got '" + p.curr.text +
+                                    "'")
+                                 <-->
+                        |
+                           p.recovered_errors = p.recovered_errors + 1
+                           p.recovered_errors > 16
+                              | <-->
+                              |
+                                 parser_skip_to_sync_point(p, 0)
+                                 p.cont_depth = 0
+                                 tok_is_nl(p.curr) | parser_advance(p)
+                                 prog_loop(p, stmts)
+
+// A statement may end at a newline, EOF, Indent/Dedent, or a ';' sequence
+// separator (the seq loop consumes ';' and continues on the same line).
+stmt_end_ok: Parser => <>
+stmt_end_ok = p =>
+   is_nl = tok_is_nl(p.curr)
+   is_nl
+      | <+>
+      |
+         tok_end = p.curr.kind [Eof, Indent, Dedent, Semi]
+         p.just_dedented || tok_end
+

@@ -1,0 +1,239 @@
+// src/parser/pstate.dva — Parser state, token helpers, and the error/advance core.
+//
+// Consumes lexer::Tok from lexer.dva and builds ast::Expr /
+// ast::TypeInfo from ast.dva. Split from the former monolithic src/parser.dva.
+
+#use "lexer"
+#use "ast"
+#use "path"
+#use "str"
+#use "operators"
+#use "diag"
+#use "log"
+#use const
+#use unicode
+
+
+#foreign "c"
+   write: (fd: Int, buf: Addr, count: Int) => Int
+
+#private
+   print: String => Int
+   print = s =>
+      b = {?s + 1}
+      b += s
+      b += 10
+      write(1, &b, ?b)
+
+#public
+
+cur_target_triple = ""
+
+set_target_triple: String => ()
+set_target_triple = t =>
+   cur_target_triple ::= t
+
+// --- parser state ----------------------------------------------------------
+
+// user_types maps a declared type name to its TypeInfo (a growable array —
+// map fields can't be read/written reliably, so the parser keeps a list).
+#type TypeEntry (name: String, ti: ast::TypeInfo)
+
+// A recorded forward reference (mutual recursion): the name token (for the
+// typo diagnostic), the bare name, and the placeholder TypeInfo returned to
+// every site that named it before it was declared. parser_parse copies the
+// then-declared type into each placeholder at EOF.
+#type ForwardRef (
+   tok: lexer::Tok,
+   name: String,
+   placeholder: ast::TypeInfo,
+)
+
+// A user-defined binary operator (custom-operators.md): the two binding
+// powers registered by its "#infix <lbp> <rbp>" fixity clause. A list, like
+// user_types — map fields can't be read/written reliably.
+#type UserOpEntry (
+   text: String,
+   lbp: Int,
+   rbp: Int,
+)
+
+#type ConstEntry (name: String, expr: ast::Expr)
+
+#type Parser (
+   lx: lexer::Lx,
+   curr: lexer::Tok,
+   choice_depth: Int,
+   branch_body_depth: Int,
+   fn_depth: Int,
+   expr_depth: Int,
+   indent_level: Int,
+   cont_depth: Int,
+   cycle_depth: Int,
+   user_types: TypeEntry{},
+   forward_refs: ForwardRef{},
+   user_ops: UserOpEntry{},
+   just_dedented: <>,
+   in_rhs: <>,
+   is_stmt: <>,
+   no_assign: <>,
+   allow_module_refs: <>,
+   exports: ast::Names,
+   publics: ast::Names,
+   privates: ast::Names,
+   ct_scope: String,
+   recovered_errors: Int,
+   dp_var_count: Int,
+   has_use_import: <>,
+   is_public: <>,
+   is_export: <>,
+   export_alias: String,
+   module_level: <>,
+   source_file: String,
+   top_lines: ast::Ints,
+   top_cols: ast::Ints,
+   consts: ConstEntry{}
+)
+
+// A binary operator's binding powers + node op, from the precedence tower.
+// The type and the bin_info table live in the generated operators module
+// (selfhost/operators.dva, from process/spec/operators.yaml).
+
+// --- token helpers ---------------------------------------------------------
+
+tok_is_op: lexer::Tok => <>
+tok_is_op = t => t.kind [Op]
+
+tok_is_nl: lexer::Tok => <>
+tok_is_nl = t => t.kind [Newline]
+
+tok_is_eof: lexer::Tok => <>
+tok_is_eof = t => t.kind [Eof]
+
+tok_is_indent: lexer::Tok => <>
+tok_is_indent = t => t.kind [Indent]
+
+tok_is_dedent: lexer::Tok => <>
+tok_is_dedent = t => t.kind [Dedent]
+
+token_is_op: lexer::Tok, String => <>
+token_is_op = t, text => tok_is_op(t) && t.text == text
+
+token_is_pipe: lexer::Tok => <>
+token_is_pipe = t =>
+   tok_is_op(t) && (t.text ["|", "!|", "|->", "|+>", "|-->", "|++>"])
+
+// Whether an operator text already has a meaning: a built-in binary operator
+// (the generated bin_info table) or one of the special token forms (ram
+// literal "<+", cycle jump "-->", etc.). User-defined operators cannot reuse
+// any of these.
+op_is_reserved: String => <>
+op_is_reserved = text =>
+   operators::bin_info(text)
+      | <+>
+      |
+         text
+            ["<+", "<-", "<+>", "<->", "<++>", "<-->", "<>", "+>", "->",
+            "-->", "--^", "--|", ">--", "@", "[@",
+            "@@", "^", "^?", "?", "!", "*", "&", "=>",
+            "!=>", "|", "|->", "|+>", "|-->", "|++>",
+            "=", ":=", "+=", "::=", "..", "...", "..=", "::", ".", ":",
+            "??", ".!.", "++", "~~", "--!", "!!", "^-", "^="]
+
+user_op_lookup: UserOpEntry{}, String => (found': <>, lbp': Int, rbp': Int)
+user_op_lookup = lst, text =>
+   found' = <->
+   lbp' = 0
+   rbp' = 0
+   lst @ e =>
+      e.text == text
+         |
+            found' = <+>
+            lbp' = e.lbp
+            rbp' = e.rbp
+            -->
+   (found', lbp', rbp')
+
+user_op_add: UserOpEntry{}, String, Int, Int => UserOpEntry{}
+user_op_add = lst, text, lbp, rbp =>
+   lst += UserOpEntry(text, lbp, rbp)
+   lst
+
+// Reports whether a token may continue an expression across a newline (the
+// layout following a trailing operator).
+is_continuation_op: lexer::Tok => <>
+is_continuation_op = t =>
+   is_delim = t.kind [Comma, LParen, LBracket, LBrace]
+   is_op = t.kind [Op] &&
+      (t.text ["+", "-", "*", "/", "%", "$>", "$>>",
+         "..", "...", "..=", "::", "&&", "||", ".<.", ".>.", ".&.", ".|.", ".^."])
+   is_delim || is_op
+
+// --- driver ----------------------------------------------------------------
+
+parser_init: lexer::Lx => Parser
+parser_init = lx =>
+   user_types: TypeEntry{}
+   forward_refs: ForwardRef{}
+   user_ops: UserOpEntry{}
+   consts: ConstEntry{}
+   tl = ast::Ints()
+   tc = ast::Ints()
+   p = Parser(lx, lexer::Tok(lexer::TokKind(Eof), 0, 0, 1, 1, <->, <->, ""),
+      0, 0, 0, 0, 0, 0, 0, user_types, forward_refs, user_ops,
+      <->, <->, <->, <->, <->, ast::Names(), ast::Names(), ast::Names(), "", 0, 0,
+      <->, <->, <->, "", <+>, lexer::lex_get_file(), tl, tc, consts)
+   parser_advance(p)
+   p
+
+parser_set_file: Parser, String => ()
+parser_set_file = p, file =>
+   p.source_file = file
+
+// Consume the current token: read the next token, adjust the indent level for
+// Indent/Dedent, transparently skip continuation layout after a trailing
+// operator, and record whether we just crossed a Dedent boundary.
+parser_advance: Parser => ()
+parser_advance = p =>
+   prev = ++p.curr
+   p.curr = lexer::next_tok(p.lx, 0)
+   ind = tok_is_indent(prev)
+   ded = tok_is_dedent(prev)
+   p.indent_level = p.indent_level + (ind | 1 | 0) - (ded | 1 | 0)
+   ded | p.cont_depth = p.cont_depth - (p.cont_depth > 0 | 1 | 0)
+   is_continuation_op(prev) | skip_cont(p)
+   p.just_dedented = ded
+
+skip_cont: Parser => ()
+skip_cont = p =>
+   tok_is_nl(p.curr) || tok_is_indent(p.curr)
+      |
+         ind = tok_is_indent(p.curr)
+         p.indent_level = p.indent_level + (ind | 1 | 0)
+         p.cont_depth = p.cont_depth + (ind | 1 | 0)
+         p.curr = lexer::next_tok(p.lx, 0)
+         skip_cont(p)
+
+parser_skip_layout: Parser => ()
+parser_skip_layout = p =>
+   is_lay = tok_is_nl(p.curr) || tok_is_indent(p.curr) || tok_is_dedent(p.curr)
+   is_lay
+      |
+         parser_advance(p)
+         parser_skip_layout(p)
+
+parser_error: Parser, diag::DiagCode, String => ()
+parser_error = p, code, msg =>
+   p.recovered_errors = p.recovered_errors + 1
+   diag::is_capturing!
+      | diag::record_diag(diag::code_int(code), p.source_file, p.curr.line, p.curr.col, msg, <->)
+      |
+         fn = p.source_file != "" | p.source_file + ":" | ""
+         log::error $ fn + str::from_int(p.curr.line) + ":" + str::from_int(p.curr.col) +
+            ": E" + str::from_int(diag::code_int(code)) + ": " + msg
+
+// --- precedence (binary operators) ----------------------------------------
+
+// The operator table lives in selfhost/operators.dva (operators::bin_info,
+// GENERATED from process/spec/operators.yaml).
+

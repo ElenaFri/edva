@@ -67,7 +67,9 @@ POLL_BACKEND ?= poll
 
 # --- Modules and Objects -----------------------------------------------------
 STD_MODULES      := const ascii utf str mem sys libc unicode io ccl json uring event path fs cli time log
-COMPILER_MODULES := poll diag ast llvm operators dep_graph layout tast lexer unify type_env show parser annotate version pkg formatter lsp \
+COMPILER_MODULES := poll diag ast llvm operators dep_graph layout tast lexer unify type_env show \
+                    parser/pstate parser/pexpr parser/plambda parser/ptype parser/ppost parser/pchoice parser/pident parser \
+                    annotate version pkg formatter lsp \
                     codegen/types codegen/runtime codegen/expr codegen/match codegen/stmt codegen/main codegen
 ENTRY_MODULE     := edva
 
@@ -178,7 +180,7 @@ uninstall:
 
 fixed-point: bootstrap
 	rm -rf build/stage1 build/stage2 edva_stage1 edva_stage2
-	mkdir -p build/stage1/codegen build/stage2/codegen
+	mkdir -p build/stage1/codegen build/stage2/codegen build/stage1/parser build/stage2/parser
 	for m in $(STD_MODULES); do \
 		./edva std/$$m.dva -c --module $$m -o build/stage1/$$m.o -ir --no-cache || exit 1; \
 		mv -f $$m.ll build/stage1/$$m.ll; \
@@ -211,9 +213,10 @@ fixed-point: bootstrap
 # can bootstrap cleanly. Run `make rebuild-seed` and commit seed/.
 rebuild-seed: fixed-point
 	rm -rf seed/src seed/std seed/ir
-	mkdir -p seed/src/codegen seed/std seed/ir/codegen
+	mkdir -p seed/src/codegen seed/src/parser seed/std seed/ir/codegen seed/ir/parser
 	cp -f src/*.dva seed/src/
 	cp -f src/codegen/*.dva seed/src/codegen/
+	cp -f src/parser/*.dva seed/src/parser/
 	cp -f tools/tokens.txt seed/src/
 	cp -r std/* seed/std/
 	for m in $(STD_MODULES); do \

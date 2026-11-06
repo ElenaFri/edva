@@ -1,0 +1,1729 @@
+// src/parser/pchoice.dva — Choice tier: separators, [guard] branches, headless choices.
+//
+// Split from the former monolithic src/parser.dva. Sibling parser units are
+// imported unqualified via #use(import); external modules stay qualified.
+
+#use "../lexer"
+#use "../ast"
+#use "path"
+#use "str"
+#use "../operators"
+#use "../diag"
+#use "log"
+#use const
+#use unicode
+#use(import) pstate
+#use(import) pexpr
+#use(import) plambda
+#use(import) ptype
+#use(import) ppost
+#use(import) pident
+
+#public
+
+// --- choice tier ------------------------------------------------------------
+
+// The choice continuation: '|' / '!|' separators and '[guard]' branches on an
+// already-parsed lhs, building a ChoiceExpr. An empty branch body is allowed
+// (the branch value is the cond itself — 'is_identity_extractor').
+// Whether the current token is a "binary continuation" operator: "||" is the
+// logical-or OPERATOR, never a choice separator, so a binary operator right
+// after a guard means the guard is a complete empty-body flag operand of an
+// enclosing expression ("x [1] || y" == "(x [1] <+> | <->) || y"). The
+// unary-ambiguous operators (+ - *) only count when followed by whitespace —
+// a glued operand ("-_", "*b") is a unary branch body, not a binary
+// continuation (the address-star distinction).
+is_binary_cont: Parser => <>
+is_binary_cont = p =>
+   !tok_is_op(p.curr)
+      | <->
+      |
+         amb = p.curr.text ["+", "-", "*"]
+         uo = user_op_lookup(p.user_ops, p.curr.text)
+         (!amb || p.curr.trail) &&
+            (operators::bin_info(p.curr.text) | <+> | uo.0)
+
+guard_peek_after_indent: lexer::Lx, lexer::Tok => <>
+guard_peek_after_indent = lx, tok =>
+   tok.kind
+      [Newline, Indent] guard_peek_after_indent(lx, lexer::next_tok(lx, 0))
+      | !token_is_pipe(tok)
+
+guard_peek_is_indent: lexer::Lx, lexer::Tok => <>
+guard_peek_is_indent = lx, tok =>
+   tok.kind
+      [Newline] guard_peek_is_indent(lx, lexer::next_tok(lx, 0))
+      [Indent] guard_peek_after_indent(lx, lexer::next_tok(lx, 0))
+      | <->
+
+scan_past_rbracket: lexer::Lx, lexer::Tok, Int => <lexer::Tok|>
+scan_past_rbracket = lx, tok, depth =>
+   tok.kind
+      [Eof, Newline] <-->
+      [LParen, LBracket, LBrace]
+         scan_past_rbracket(lx, lexer::next_tok(lx, 0), depth + 1)
+      [RParen, RBrace]
+         depth > 1
+            | scan_past_rbracket(lx, lexer::next_tok(lx, 0), depth - 1)
+            | <-->
+      [RBracket]
+         depth == 1
+            | <+ lexer::next_tok(lx, 0) +>
+            | scan_past_rbracket(lx, lexer::next_tok(lx, 0), depth - 1)
+      | scan_past_rbracket(lx, lexer::next_tok(lx, 0), depth)
+
+tok_is_empty_guard_follow: Parser, lexer::Lx, lexer::Tok => <>
+tok_is_empty_guard_follow = p, lx, tok =>
+   tok_is_nl(tok)
+      | !guard_peek_is_indent(lx, lexer::next_tok(lx, 0))
+      |
+         kstop = tok.kind [Eof, Dedent, RParen, RBracket, RBrace, Comma, Semi]
+         tstop = token_is_pipe(tok)
+         amb = tok.text ["+", "-", "*"]
+         uo = user_op_lookup(p.user_ops, tok.text)
+         bstop = tok_is_op(tok) && (!amb || tok.trail) &&
+            (operators::bin_info(tok.text) | <+> | uo.0)
+         kstop || tstop || bstop
+
+lbracket_is_empty_guard: Parser => <>
+lbracket_is_empty_guard = p =>
+   c = lexer::clone_lx(p.lx)
+   first = lexer::next_tok(c, 0)
+   first.kind
+      [RBracket, Eof, Newline] <->
+      |
+         scan_past_rbracket(c, first, 1)
+            | after_rb => tok_is_empty_guard_follow(p, c, after_rb)
+            | <->
+
+// Whether a guard's branch is EMPTY (no body follows): a binary operator, a
+// '|' / '[' branch separator, or a terminator (')', ',', ';', EOF, dedent).
+// On a newline, peeks ahead: if an INDENT follows, a branch body exists.
+choice_guard_is_empty: Parser => <>
+choice_guard_is_empty = p =>
+   tok_is_nl(p.curr)
+      |
+         c = lexer::clone_lx(p.lx)
+         tok = lexer::next_tok(c, 0)
+         !guard_peek_is_indent(c, tok)
+      |
+         kstop = p.curr.kind [Eof, LBracket, Dedent, RParen, Comma, Semi]
+         tstop = token_is_pipe(p.curr)
+         kstop || tstop || is_binary_cont(p)
+
+// A choice is syntax-exhaustive when it has a trailing bare fallback, or its
+// guards are all variants. Enum coverage remains a codegen concern: this only
+// records that the branch form can partition the scrutinee, matching the
+// native parser's choice_branches_exhaustive.
+choice_branches_exhaustive: ast::Branches => <>
+choice_branches_exhaustive = bs =>
+   ?bs < 2
+      | <->
+      | choice_branches_nonempty_exhaustive(bs)
+
+// Callers establish that the final entry exists. The fallback is only the
+// static shape needed to unwrap growable-array indexing.
+choice_branches_nonempty_exhaustive: ast::Branches => <>
+choice_branches_nonempty_exhaustive = bs =>
+   last = bs(?bs - 1) | _ | ast::ChoiceBranch(
+      ast::GuardKind(Case), ast::Exprs(), ast::Expr(Var, "?"),
+      ast::Names(), ast::Names(), <->, ast::Expr(Var, "?"))
+   choice_branch_is_bare(last)
+      | <+>
+      | choice_branches_all_variant(bs, 0)
+
+choice_branch_is_bare: ast::ChoiceBranch => <>
+choice_branch_is_bare = br => br.kind [Bare]
+
+choice_branch_is_variant: ast::ChoiceBranch => <>
+choice_branch_is_variant = br => br.kind [Variant]
+
+choice_branches_all_variant: ast::Branches, Int => <>
+choice_branches_all_variant = bs, i =>
+   i == ?bs
+      | <+>
+      | choice_branches_all_variant_step(bs, i)
+
+choice_branches_all_variant_step: ast::Branches, Int => <>
+choice_branches_all_variant_step = bs, i =>
+   b = bs(i) | _ | ast::ChoiceBranch(
+      ast::GuardKind(Case), ast::Exprs(), ast::Expr(Var, "?"),
+      ast::Names(), ast::Names(), <->, ast::Expr(Var, "?"))
+   choice_branch_is_variant(b)
+      | choice_branches_all_variant(bs, i + 1)
+      | <->
+
+choice_branches_has_middle_bare: ast::Branches, Int => <>
+choice_branches_has_middle_bare = bs, i =>
+   i !< ?bs - 1
+      | <->
+      |
+         b = bs(i) | _ | ast::ChoiceBranch(
+            ast::GuardKind(Case), ast::Exprs(), ast::Expr(Var, "?"),
+            ast::Names(), ast::Names(), <->, ast::Expr(Var, "?"))
+         choice_branch_is_bare(b)
+            | <+>
+            | choice_branches_has_middle_bare(bs, i + 1)
+
+choice_branches_first_bare_has_non_bare: ast::Branches, Int => <>
+choice_branches_first_bare_has_non_bare = bs, i =>
+   i == ?bs
+      | <->
+      |
+         b = bs(i) | _ | ast::ChoiceBranch(
+            ast::GuardKind(Case), ast::Exprs(), ast::Expr(Var, "?"),
+            ast::Names(), ast::Names(), <->, ast::Expr(Var, "?"))
+         !choice_branch_is_bare(b)
+            | <+>
+            | choice_branches_first_bare_has_non_bare(bs, i + 1)
+
+choice_branches_first_bare_mix: ast::Branches => <>
+choice_branches_first_bare_mix = bs =>
+   fb = bs(0) | _ | ast::ChoiceBranch(
+      ast::GuardKind(Case), ast::Exprs(), ast::Expr(Var, "?"),
+      ast::Names(), ast::Names(), <->, ast::Expr(Var, "?"))
+   choice_branch_is_bare(fb) && choice_branches_first_bare_has_non_bare(bs, 1)
+
+choice_unwind: Parser, Int => ()
+choice_unwind = p, entry_indent =>
+   is_lay = tok_is_nl(p.curr) || tok_is_dedent(p.curr)
+   p.indent_level > entry_indent && is_lay
+      |
+         parser_advance(p)
+         choice_unwind(p, entry_indent)
+
+#type ParsedBranch (
+   pattern: ast::Pattern,
+   is_deep: <>,
+   branch: ast::ChoiceBranch,
+)
+empty_pbrs: () => ParsedBranch{}
+empty_pbrs = !=>
+   res: ParsedBranch{}
+   res
+#type PatCondResult (
+   stmts: ast::Exprs,
+   cond: ast::Expr,
+)
+
+fresh_dp_var: Parser => String
+fresh_dp_var = p =>
+   p.dp_var_count = p.dp_var_count + 1
+   "_dp_" + str::from_int(p.dp_var_count)
+
+pat_rec: ast::Pattern => ast::PatternRecord
+pat_rec = p =>
+   p
+      [Node pr] pr
+      | ast::PatternRecord(ast::PatternKind(Wildcard), "", "",
+         ast::Expr(Var, ""), ast::Patterns())
+
+pat_wildcard: () => ast::Pattern
+pat_wildcard = !=>
+   ast::Pattern(Node, ast::PatternRecord(ast::PatternKind(Wildcard), "", "_",
+      ast::Expr(Var, ""), ast::Patterns()))
+
+pat_bind: String => ast::Pattern
+pat_bind = name =>
+   ast::Pattern(Node, ast::PatternRecord(ast::PatternKind(Bind), "", name,
+      ast::Expr(Var, ""), ast::Patterns()))
+
+pat_lit: ast::Expr => ast::Pattern
+pat_lit = lit =>
+   ast::Pattern(Node, ast::PatternRecord(ast::PatternKind(Lit), "", "", lit,
+      ast::Patterns()))
+
+pat_variant: String, ast::Patterns => ast::Pattern
+pat_variant = tag, subs =>
+   ast::Pattern(Node, ast::PatternRecord(ast::PatternKind(Variant), "", tag,
+      ast::Expr(Var, ""), subs))
+
+pat_record: ast::Patterns => ast::Pattern
+pat_record = subs =>
+   ast::Pattern(Node, ast::PatternRecord(ast::PatternKind(Record), "", "",
+      ast::Expr(Var, ""), subs))
+
+guard_is_variant: lexer::Tok => <>
+guard_is_variant = t =>
+   t.kind
+      [Id]
+         ?t.text > 0 && unicode::is_upper(unicode::decode_rune(t.text, 0))
+      | <->
+
+pattern_is_deep: ast::Pattern => <>
+pattern_is_deep = pat_in =>
+   pat = pat_rec(pat_in)
+   pat.kind
+      [Record] <+>
+      [Variant]
+         n = ?pat.subpatterns
+         n == 0
+            | <->
+            |
+               n > 1
+                  | <+>
+                  |
+                     sub = pat_rec(pat.subpatterns(0) | _ | pat_wildcard())
+                     sub.kind
+                        [Bind, Wildcard] <->
+                        | <+>
+      | <->
+
+pat_tok_is_delim: lexer::Tok => <>
+pat_tok_is_delim = tok =>
+   tok.kind
+      [RBracket, RParen, Comma] <+>
+      |
+         token_is_pipe(tok)
+            | <+>
+            | tok_is_nl(tok)
+
+parse_lit_pattern: Parser => <ast::Pattern|>
+parse_lit_pattern = p =>
+   p.curr.kind
+      [Int]
+         txt = p.curr.text
+         parser_advance(p)
+         ival = parse_int_text(txt) | _ | 0
+         <+ pat_lit(ast::Expr(Int, ival)) +>
+      [Float]
+         txt = p.curr.text
+         parser_advance(p)
+         fval = parse_float_text(txt) | _ | 0.0
+         <+ pat_lit(ast::Expr(Float, fval)) +>
+      [Str]
+         txt = p.curr.text
+         parser_advance(p)
+         <+ pat_lit(ast::Expr(Str, txt)) +>
+      [Rune]
+         txt = p.curr.text
+         parser_advance(p)
+         rval = parse_int_text(txt) | n => Rune(n) | ' '
+         <+ pat_lit(ast::Expr(Rune, rval)) +>
+      |
+         token_is_op(p.curr, "-")
+            |
+               parser_advance(p)
+               p.curr.kind
+                  [Int]
+                     txt = p.curr.text
+                     parser_advance(p)
+                     ival = parse_int_text(txt) | _ | 0
+                     <+ pat_lit(ast::Expr(Int, 0 - ival)) +>
+                  [Float]
+                     txt = p.curr.text
+                     parser_advance(p)
+                     fval = parse_float_text(txt) | _ | 0.0
+                     neg_val = fval == 0.0 | -1.0 * 0.0 | (0.0 - fval)
+                     <+ pat_lit(ast::Expr(Float, neg_val)) +>
+                  | <-->
+            | <-->
+
+pat_peek_is_eq: Parser => <>
+pat_peek_is_eq = p =>
+   c = lexer::clone_lx(p.lx)
+   tok = lexer::next_tok(c, 0)
+   token_is_op(tok, "=")
+
+scan_record_pattern_comma: lexer::Lx, lexer::Tok, Int => <>
+scan_record_pattern_comma = lx, tok, depth =>
+   depth !> 0
+      | <->
+      |
+         tok.kind
+            [LParen]
+               scan_record_pattern_comma(lx, lexer::next_tok(lx, 0),
+                  depth + 1)
+            [RParen]
+               depth == 1
+                  | <->
+                  |
+                     scan_record_pattern_comma(lx, lexer::next_tok(lx, 0),
+                        depth - 1)
+            [Comma]
+               depth == 1
+                  | <+>
+                  |
+                     scan_record_pattern_comma(lx, lexer::next_tok(lx, 0),
+                        depth)
+            [Newline, Eof] <->
+            |
+               scan_record_pattern_comma(lx, lexer::next_tok(lx, 0), depth)
+
+guard_is_record_pattern: Parser => <>
+guard_is_record_pattern = p =>
+   c = lexer::clone_lx(p.lx)
+   tok = lexer::next_tok(c, 0)
+   scan_record_pattern_comma(c, tok, 1)
+
+parse_record_pattern_cont: Parser, ast::Patterns => <ast::Pattern|>
+parse_record_pattern_loop: Parser, ast::Patterns => <ast::Pattern|>
+
+parse_pattern: Parser => <ast::Pattern|>
+parse_pattern = p =>
+   p.curr.kind
+      [Id]
+         p.curr.text == "_"
+            |
+               parser_advance(p)
+               <+ pat_wildcard() +>
+            |
+               guard_is_variant(p.curr)
+                  |
+                     tag = p.curr.text
+                     parser_advance(p)
+                     has_sub = !pat_tok_is_delim(p.curr)
+                     has_sub
+                        |
+                           sub = parse_pattern(p)
+                           sub
+                              | s =>
+                                 pr = pat_rec(s)
+                                 pr.kind
+                                    [Wildcard]
+                                       parser_error(p, diag::DiagCode(E2109), diag::E2109_disallowed_variant_wildcard(tag))
+                                       <+ pat_variant(tag, ast::Patterns()) +>
+                                    |
+                                       subs = ast::Patterns()
+                                       subs += s
+                                       <+ pat_variant(tag, subs) +>
+                              | <-->
+                        |
+                           <+ pat_variant(tag, ast::Patterns()) +>
+                  |
+                     vname = p.curr.text
+                     parser_advance(p)
+                     <+ pat_bind(vname) +>
+      [LParen]
+         parser_advance(p)
+         parse_record_pattern(p)
+      [Int, Float, Str, Rune]
+         parse_lit_pattern(p)
+      |
+         token_is_op(p.curr, "-")
+            | parse_lit_pattern(p)
+            | <-->
+
+parse_record_pattern: Parser => <ast::Pattern|>
+parse_record_pattern = p =>
+   subs = ast::Patterns()
+   p.curr.kind
+      [RParen]
+         parser_advance(p)
+         <+ pat_record(subs) +>
+      | parse_record_pattern_loop(p, subs)
+
+parse_record_pattern_loop = p, subs =>
+   is_named = p.curr.kind [Id] && pat_peek_is_eq(p)
+   is_named
+      |
+         fname = p.curr.text
+         parser_advance(p)
+         parser_advance(p)
+         elem = parse_pattern(p)
+         elem
+            | ep =>
+               epr = pat_rec(ep)
+               epr.field_name = fname
+               subs += ast::Pattern(Node, epr)
+               parse_record_pattern_cont(p, subs)
+            | <-->
+      |
+         elem = parse_pattern(p)
+         elem
+            | ep =>
+               subs += ep
+               parse_record_pattern_cont(p, subs)
+            | <-->
+
+parse_record_pattern_cont = p, subs =>
+   p.curr.kind
+      [Comma]
+         parser_advance(p)
+         p.curr.kind
+            [RParen]
+               parser_advance(p)
+               <+ pat_record(subs) +>
+            | parse_record_pattern_loop(p, subs)
+      [RParen]
+         parser_advance(p)
+         s0_pr = pat_rec(subs(0)!!)
+         is_group = ?subs == 1 && (s0_pr.field_name == "")
+         is_group
+            | <+ subs(0)!! +>
+            | <+ pat_record(subs) +>
+      |
+         parser_error(p, diag::DiagCode(E2095), "Expected ',' or ')' in record pattern")
+         <-->
+
+mk_assign: String, ast::Expr => ast::Expr
+mk_assign = name, val =>
+   ast::Expr(Assign, (name, <->, <->, <->, <->, val, ast::Expr(Var, ""), "",
+      ast::TypeInfo(Prim, ast::ValueType(Unknown))))
+
+mk_block: ast::Exprs, ast::Expr => ast::Expr
+mk_block = stmts, last =>
+   ?stmts == 0
+      | last
+      |
+         exprs = ast::Exprs()
+         stmts @ st => exprs += st
+         exprs += last
+         ast::Expr(Block, exprs)
+
+tag_names_single: String => ast::Names
+tag_names_single = name =>
+   ns = ast::Names()
+   ns += name
+   ns
+
+mk_choice_flag: ast::Expr, String => ast::Expr
+mk_choice_flag = target, tag_name =>
+   br0 = ast::ChoiceBranch(ast::GuardKind(Variant), ast::Exprs(),
+      ast::Expr(Var, "?"), tag_names_single(tag_name), ast::Names(), <->,
+      ast::Expr(Variant, (ast::Tag(Positive), ast::Exprs())))
+   br1 = mk_branch(ast::Expr(Variant, (ast::Tag(Negative), ast::Exprs())))
+   brs = ast::Branches()
+   brs += br0
+   brs += br1
+   ast::Expr(Choice, ast::ChoiceExpr(target, <+>, brs))
+
+mk_extract_pay: ast::Expr, String, String => ast::Expr
+mk_extract_pay = target, tag_name, out_var =>
+   binds = tag_names_single(out_var)
+   br0 = ast::ChoiceBranch(ast::GuardKind(Variant), ast::Exprs(),
+      ast::Expr(Var, "?"), tag_names_single(tag_name), binds, <->,
+      ast::Expr(Var, out_var))
+   brs = ast::Branches()
+   brs += br0
+   rhs = ast::Expr(Choice, ast::ChoiceExpr(target, <+>, brs))
+   mk_assign(out_var, rhs)
+
+pat_is_unconditional: ast::Pattern => <>
+pat_is_unconditional = pat_in =>
+   pat = pat_rec(pat_in)
+   pat.kind
+      [Wildcard, Bind] <+>
+      [Record]
+         all_unc' = <+>
+         pat.subpatterns @ sub =>
+            !pat_is_unconditional(sub) | all_unc' = <->
+         all_unc'
+      | <->
+
+pat_has_binds: ast::Pattern => <>
+pat_has_binds = pat_in =>
+   pat = pat_rec(pat_in)
+   pat.kind
+      [Bind] <+>
+      [Variant, Record]
+         has' = <->
+         pat.subpatterns @ sub =>
+            pat_has_binds(sub) | has' = <+>
+         has'
+      | <->
+
+pat_extract_bindings: Parser, ast::Expr, ast::Pattern => ast::Exprs
+pat_extract_bindings = p, target, pat_in =>
+   pat = pat_rec(pat_in)
+   res = ast::Exprs()
+   pat.kind
+      [Wildcard, Lit] res
+      [Bind]
+         res += mk_assign(pat.name, target)
+         res
+      [Variant]
+         ?pat.subpatterns == 0
+            | res
+            |
+               sub_raw = pat.subpatterns(0) | _ | pat_wildcard()
+               sub = pat_rec(sub_raw)
+               sub.kind
+                  [Bind]
+                     res += mk_extract_pay(target, pat.name, sub.name)
+                     res
+                  |
+                     pat_has_binds(sub_raw)
+                        |
+                           pay_name = fresh_dp_var(p)
+                           pay_var = ast::Expr(Var, pay_name)
+                           res += mk_extract_pay(target, pat.name, pay_name)
+                           sub_binds = pat_extract_bindings(p, pay_var, sub_raw)
+                           sub_binds @ sb => res += sb
+                           res
+                        | res
+      [Record]
+         k = ?pat.subpatterns
+         k @ idx =>
+            sub_raw = pat.subpatterns(idx) | _ | pat_wildcard()
+            sub = pat_rec(sub_raw)
+            fld_str = sub.field_name != ""
+               | sub.field_name
+               | str::from_int(idx)
+            fld_access = ast::Expr(Member, ast::MemberExpr(target,
+               fld_str, <->, ast::Expr(Var, ""), 0, 0))
+            sub_binds = pat_extract_bindings(p, fld_access, sub_raw)
+            sub_binds @ sb => res += sb
+         res
+      | res
+
+pat_match_cond: Parser, ast::Expr, ast::Pattern => PatCondResult
+pat_match_cond = p, target, pat_in =>
+   pat = pat_rec(pat_in)
+   pat.kind
+      [Wildcard, Bind]
+         PatCondResult(ast::Exprs(),
+            ast::Expr(Variant, (ast::Tag(Positive), ast::Exprs())))
+      [Lit]
+         cond = ast::Expr(Bin, (ast::BinaryOp(Eq), target, pat.lit_val))
+         PatCondResult(ast::Exprs(), cond)
+      [Variant]
+         ?pat.subpatterns == 0
+            | PatCondResult(ast::Exprs(), mk_choice_flag(target, pat.name))
+            |
+               sub_raw = pat.subpatterns(0) | _ | pat_wildcard()
+               pat_is_unconditional(sub_raw)
+                  | PatCondResult(ast::Exprs(),
+                     mk_choice_flag(target, pat.name))
+                  |
+                     tmp_p = fresh_dp_var(p)
+                     tmp_p_var = ast::Expr(Var, tmp_p)
+                     sub_res = pat_match_cond(p, tmp_p_var, sub_raw)
+                     sub_body = mk_block(sub_res.stmts, sub_res.cond)
+                     br0 = ast::ChoiceBranch(ast::GuardKind(Variant),
+                        ast::Exprs(), ast::Expr(Var, "?"),
+                        tag_names_single(pat.name), tag_names_single(tmp_p),
+                        <->, sub_body)
+                     br1 = mk_branch(ast::Expr(Variant,
+                        (ast::Tag(Negative), ast::Exprs())))
+                     brs = ast::Branches()
+                     brs += br0
+                     brs += br1
+                     cond = ast::Expr(Choice, ast::ChoiceExpr(target,
+                        <+>, brs))
+                     PatCondResult(ast::Exprs(), cond)
+      [Record]
+         stmts = ast::Exprs()
+         has_cond' = <->
+         acc_cond' = ast::Expr(Variant, (ast::Tag(Positive), ast::Exprs()))
+         k = ?pat.subpatterns
+         k @ idx =>
+            sub_raw = pat.subpatterns(idx) | _ | pat_wildcard()
+            !pat_is_unconditional(sub_raw)
+               |
+                  sub = pat_rec(sub_raw)
+                  fld_str = sub.field_name != ""
+                     | sub.field_name
+                     | str::from_int(idx)
+                  fld_access = ast::Expr(Member, ast::MemberExpr(target,
+                     fld_str, <->, ast::Expr(Var, ""), 0, 0))
+                  sub_res = pat_match_cond(p, fld_access, sub_raw)
+                  sub_res.stmts @ sbs => stmts += sbs
+                  cond_var = fresh_dp_var(p)
+                  stmts += mk_assign(cond_var, sub_res.cond)
+                  cond_ref = ast::Expr(Var, cond_var)
+                  acc_cond' = has_cond'
+                     | ast::Expr(Bin, (ast::BinaryOp(And), acc_cond', cond_ref))
+                     | cond_ref
+                  has_cond' = <+>
+         PatCondResult(stmts, acc_cond')
+      | PatCondResult(ast::Exprs(), ast::Expr(Variant, (ast::Tag(Positive), ast::Exprs())))
+
+desugar_inner_pattern_group: Parser, ast::Expr, ParsedBranch{},
+   ast::Expr => ast::Expr
+desugar_inner_pattern_group = p, target, inner_pbrs, fallback_expr =>
+   n = ?inner_pbrs
+   cur_cont' = fallback_expr
+   n @ step =>
+      idx = (n - 1) - step
+      b = inner_pbrs(idx) | _ | ParsedBranch(pat_wildcard(), <->,
+         mk_branch(ast::Expr(Var, "")))
+      is_unc = pat_is_unconditional(b.pattern)
+      is_unc
+         |
+            binds = pat_extract_bindings(p, target, b.pattern)
+            cur_cont' = mk_block(binds, b.branch.block)
+         |
+            res = pat_match_cond(p, target, b.pattern)
+            binds = pat_extract_bindings(p, target, b.pattern)
+            succ_block = mk_block(binds, b.branch.block)
+            br0 = mk_branch(succ_block)
+            br1 = mk_branch(cur_cont')
+            brs = ast::Branches()
+            brs += br0
+            brs += br1
+            ch = ast::Expr(Choice,
+               ast::ChoiceExpr(res.cond, <+>, brs))
+            cur_cont' = mk_block(res.stmts, ch)
+   cur_cont'
+
+desugar_deep_choice: Parser, ast::Expr, ParsedBranch{} => ast::Expr
+desugar_deep_choice = p, lhs, pbrs =>
+   n = ?pbrs
+   is_var = lhs [Var]
+   s_name = is_var | "" | fresh_dp_var(p)
+   scrut = is_var | lhs | ast::Expr(Var, s_name)
+
+   last_idx = n - 1
+   last_pb = pbrs(last_idx) | _ | ParsedBranch(pat_wildcard(), <->,
+      mk_branch(ast::Expr(Var, "")))
+   has_fallback = choice_branch_is_bare(last_pb.branch)
+   fallback_expr = has_fallback
+      | last_pb.branch.block
+      | ast::Expr(Block, ast::Exprs())
+
+   end_idx = has_fallback | last_idx - 1 | last_idx
+
+   cur_cont' = fallback_expr
+   num_to_fold = end_idx + 1
+   num_to_fold @ step =>
+      idx = end_idx - step
+      pb = pbrs(idx) | _ | ParsedBranch(pat_wildcard(), <->,
+         mk_branch(ast::Expr(Var, "")))
+      pb.is_deep
+         |
+            is_unc = pat_is_unconditional(pb.pattern)
+            is_unc
+               |
+                  binds = pat_extract_bindings(p, scrut, pb.pattern)
+                  cur_cont' = mk_block(binds, pb.branch.block)
+               |
+                  res = pat_match_cond(p, scrut, pb.pattern)
+                  binds = pat_extract_bindings(p, scrut, pb.pattern)
+                  succ_block = mk_block(binds, pb.branch.block)
+                  br0 = mk_branch(succ_block)
+                  br1 = mk_branch(cur_cont')
+                  brs = ast::Branches()
+                  brs += br0
+                  brs += br1
+                  ch = ast::Expr(Choice,
+                     ast::ChoiceExpr(res.cond, <+>, brs))
+                  cur_cont' = mk_block(res.stmts, ch)
+         |
+            brs = ast::Branches()
+            brs += pb.branch
+            brs += mk_branch(cur_cont')
+            cur_cont' = ast::Expr(Choice, ast::ChoiceExpr(scrut, <+>, brs))
+
+   is_var
+      | cur_cont'
+      |
+         assign = ast::Expr(Assign, (s_name, <->, <->, <->, <->, lhs,
+            ast::Expr(Var, ""), "",
+            ast::TypeInfo(Prim, ast::ValueType(Unknown))))
+         exprs = ast::Exprs()
+         exprs += assign
+         exprs += cur_cont'
+         ast::Expr(Block, exprs)
+
+parsed_branches_has_deep: ParsedBranch{} => <>
+parsed_branches_has_deep = brs =>
+   has' = <->
+   brs @ b =>
+      b.is_deep | has' = <+>
+   has'
+
+group_variant_run_deep: ParsedBranch{}, Int, Int => <>
+group_variant_run_deep = pbrs, start_idx, end_idx =>
+   k = end_idx - start_idx
+   k > 1
+      | <+>
+      |
+         pb = pbrs(start_idx) | _ | ParsedBranch(pat_wildcard(), <->,
+            mk_branch(ast::Expr(Var, "")))
+         pb.is_deep
+
+build_grouped_variant: Parser, ParsedBranch{}, Int, Int,
+   String, ast::Expr => ParsedBranch
+build_grouped_variant = p, pbrs, start_idx, end_idx, tag, fallback_expr =>
+   pay_name = fresh_dp_var(p)
+   pay_expr = ast::Expr(Var, pay_name)
+   inner_pbrs = empty_pbrs()
+   k = end_idx - start_idx
+   k @ i =>
+      b = pbrs(start_idx + i) | _ | ParsedBranch(pat_wildcard(), <->,
+         mk_branch(ast::Expr(Var, "")))
+      b_pr = pat_rec(b.pattern)
+      sps = b_pr.subpatterns
+      ns = ?sps
+      sub_pat = ns == 0
+         | pat_wildcard()
+         |
+            ns == 1
+               | sps(0) | _ | pat_wildcard()
+               | pat_record(sps)
+      is_d = pattern_is_deep(sub_pat)
+      inner_pbrs += ParsedBranch(sub_pat, is_d, b.branch)
+   inner_body = desugar_inner_pattern_group(p, pay_expr, inner_pbrs,
+      fallback_expr)
+   vnames = ast::Names()
+   vnames += tag
+   binds = ast::Names()
+   binds += pay_name
+   top_cb = ast::ChoiceBranch(ast::GuardKind(Variant), ast::Exprs(),
+      ast::Expr(Var, "?"), vnames, binds, <->, inner_body)
+   ParsedBranch(pat_variant(tag, ast::Patterns()), <->, top_cb)
+
+find_variant_run_end: ParsedBranch{}, String, Int, Int => Int
+find_variant_run_end = pbrs, tag, j, limit =>
+   j !< limit
+      | limit
+      |
+         curr = pbrs(j) | _ | ParsedBranch(pat_wildcard(), <->,
+            mk_branch(ast::Expr(Var, "")))
+         curr_pr = pat_rec(curr.pattern)
+         is_same = curr_pr.kind [Variant] && (curr_pr.name == tag)
+         is_same
+            | find_variant_run_end(pbrs, tag, j + 1, limit)
+            | j
+
+group_variant_branches_loop: Parser, ParsedBranch{}, Int, Int,
+   ast::Expr, ParsedBranch{} => ParsedBranch{}
+group_variant_branches_loop = p, pbrs, i, limit, fallback_expr, acc =>
+   i !< limit
+      | acc
+      |
+         pb = pbrs(i) | _ | ParsedBranch(pat_wildcard(), <->,
+            mk_branch(ast::Expr(Var, "")))
+         pb_pr = pat_rec(pb.pattern)
+         is_var = pb_pr.kind [Variant]
+         is_var
+            |
+               tag = pb_pr.name
+               next_i = find_variant_run_end(pbrs, tag, i + 1, limit)
+               is_deep_run = group_variant_run_deep(pbrs, i, next_i)
+               is_deep_run
+                  |
+                     acc += build_grouped_variant(p, pbrs, i, next_i, tag,
+                        fallback_expr)
+                     group_variant_branches_loop(p, pbrs, next_i, limit,
+                        fallback_expr, acc)
+                  |
+                     acc += pb
+                     group_variant_branches_loop(p, pbrs, next_i, limit,
+                        fallback_expr, acc)
+            |
+               acc += pb
+               group_variant_branches_loop(p, pbrs, i + 1, limit,
+                  fallback_expr, acc)
+
+group_variant_branches: Parser, ParsedBranch{} => ParsedBranch{}
+group_variant_branches = p, pbrs =>
+   n = ?pbrs
+   n == 0
+      | pbrs
+      |
+         last_idx = n - 1
+         last_pb = pbrs(last_idx) | _ | ParsedBranch(pat_wildcard(), <->,
+            mk_branch(ast::Expr(Var, "")))
+         has_fallback = choice_branch_is_bare(last_pb.branch)
+         fallback_expr = has_fallback
+            | last_pb.branch.block
+            | ast::Expr(Block, ast::Exprs())
+         limit = has_fallback | last_idx | n
+         acc = empty_pbrs()
+         res = group_variant_branches_loop(p, pbrs, 0, limit,
+            fallback_expr, acc)
+         has_fallback | res += last_pb
+         res
+
+finish_parsed_choice: Parser, ast::Expr, ParsedBranch{} => <ast::Expr|>
+finish_parsed_choice = p, lhs, pbrs =>
+   ?pbrs == 0
+      | <+ lhs +>
+      |
+         gpbrs = group_variant_branches(p, pbrs)
+         has_deep = parsed_branches_has_deep(gpbrs)
+         has_deep
+            | <+ desugar_deep_choice(p, lhs, gpbrs) +>
+            |
+               brs = ast::Branches()
+               gpbrs @ b => brs += b.branch
+               ?brs > 2 && choice_branches_has_middle_bare(brs, 1)
+                  |
+                     parser_error(p, diag::DiagCode(E2024), diag::E2024_bare_bar_position!)
+                     <-->
+                  |
+                     ?brs > 1 && choice_branches_first_bare_mix(brs)
+                        |
+                           parser_error(p, diag::DiagCode(E2054),
+                              "Cannot mix bare '|' branches with " +
+                              "'[pattern]' guards — a choice is either " +
+                              "'| a | b' (ramification) or '[a] [b] ... " +
+                              "| default'.")
+                           <-->
+                        |
+                           ex = choice_branches_exhaustive(brs)
+                           <+ ast::Expr(Choice,
+                              ast::ChoiceExpr(lhs, ex, brs)) +>
+
+tok_is_neg_lbracket: Parser => <>
+tok_is_neg_lbracket = p =>
+   token_is_op(p.curr, "!") && !p.curr.trail && peek_is_lbracket(p)
+
+parse_pos_guard_choice: Parser, ast::Expr => <ast::Expr|>
+parse_pos_guard_choice = p, lhs =>
+   g = choice_guard(p)
+   g
+      | gb =>
+         b = gb.branch
+         b.block = ast::Expr(Variant, (ast::Tag(Positive), ast::Exprs()))
+         neg_b = mk_branch(ast::Expr(Variant, (ast::Tag(Negative), ast::Exprs())))
+         brs = empty_pbrs()
+         brs += ParsedBranch(gb.pattern, gb.is_deep, b)
+         brs += ParsedBranch(pat_wildcard(), <->, neg_b)
+         finish_parsed_choice(p, lhs, brs)
+      | <-->
+
+parse_neg_guard_choice: Parser, ast::Expr => <ast::Expr|>
+parse_neg_guard_choice = p, lhs =>
+   parser_advance(p)
+   parse_pos_guard_choice(p, lhs)
+      | ce => <+ ast::Expr(Unary, (ast::UnaryOp(Not), ce)) +>
+      | <-->
+
+choice_cont: Parser, ast::Expr => <ast::Expr|>
+choice_cont = p, lhs =>
+   choice_cont_init(p, lhs, -1)
+
+headless_choice_cont: Parser, ast::Expr => <ast::Expr|>
+headless_choice_cont = p, lhs =>
+   choice_cont_init(p, lhs, p.indent_level)
+
+choice_cont_init: Parser, ast::Expr, Int => <ast::Expr|>
+choice_cont_init = p, lhs, init_bi =>
+   tok_is_neg_lbracket(p)
+      |
+         parse_neg_guard_choice(p, lhs)
+            | neg_e => choice_cont_init(p, neg_e, init_bi)
+            | <-->
+      |
+         p.choice_depth = p.choice_depth + 1
+         entry_indent = p.indent_level
+         r = choice_cont_loop(p, empty_pbrs(), entry_indent, init_bi)
+         p.choice_depth = p.choice_depth - 1
+         choice_unwind(p, entry_indent)
+         r
+            | pbrs => finish_parsed_choice(p, lhs, pbrs)
+            | <-->
+
+choice_peek_pipe: Parser, Int => <Int|>
+choice_peek_pipe = p, min_indent =>
+   p.fn_depth > 0
+      | <-->
+      |
+         tok_is_nl(p.curr) || tok_is_indent(p.curr)
+            |
+               c = lexer::clone_lx(p.lx)
+               tok = lexer::next_tok(c, 0)
+               init_indent = p.indent_level + (tok_is_indent(p.curr) | 1 | 0)
+               choice_scan_pipe(c, tok, init_indent, min_indent)
+            | <-->
+
+choice_scan_pipe: lexer::Lx, lexer::Tok, Int, Int => <Int|>
+choice_scan_pipe = lx, tok, cur_indent, min_indent =>
+   tok.kind
+      [Newline]
+         choice_scan_pipe(lx, lexer::next_tok(lx, 0),
+            cur_indent, min_indent)
+      [Indent]
+         choice_scan_pipe(lx, lexer::next_tok(lx, 0), cur_indent + 1,
+            min_indent)
+      [Dedent]
+         cur_indent - 1 < min_indent
+            | <-->
+            |
+               choice_scan_pipe(lx, lexer::next_tok(lx, 0), cur_indent - 1,
+                  min_indent)
+      [LBracket] <+ cur_indent +>
+      |
+         is_sep = token_is_pipe(tok)
+         is_sep | <+ cur_indent +>
+
+choice_can_skip: Parser, Int => <>
+choice_can_skip = p, entry_indent =>
+   tok_is_nl(p.curr) || tok_is_indent(p.curr) ||
+      tok_is_dedent(p.curr) && p.indent_level > entry_indent
+
+choice_skip_layout: Parser, Int => ()
+choice_skip_layout = p, entry_indent =>
+   choice_can_skip(p, entry_indent)
+      |
+         parser_advance(p)
+         choice_skip_layout(p, entry_indent)
+
+choice_cont_nest: Parser, ParsedBranch{}, Int, Int => <ParsedBranch{}|>
+choice_cont_nest = p, brs, entry_indent, branch_indent =>
+   last_idx = ?brs - 1
+   last = brs(last_idx) | _ | ParsedBranch(pat_wildcard(), <->,
+      mk_branch(ast::Expr(Var, "")))
+   new_brs = empty_pbrs()
+   brs @ b, i =>
+      i < last_idx | new_brs += b
+   nested = choice_cont(p, last.branch.block)
+   nested
+      | nb =>
+         new_brs += ParsedBranch(pat_wildcard(), <->, mk_branch(nb))
+         choice_cont_loop(p, new_brs, entry_indent, branch_indent)
+      | <-->
+
+choice_cont_next: Parser, ParsedBranch{}, Int, Int, <> => <ParsedBranch{}|>
+choice_cont_next = p, brs, entry_indent, branch_indent, saw_peek =>
+   need_bi = branch_indent < 0 && saw_peek
+   cur_bi = need_bi | p.indent_level | branch_indent
+   st = choice_step(p, brs, saw_peek)
+   st
+      | sbrs => choice_cont_loop(p, sbrs, entry_indent, cur_bi)
+      | <+ brs +>
+
+choice_cont_step: Parser, ParsedBranch{}, Int, Int,
+   <Int|> => <ParsedBranch{}|>
+choice_cont_step = p, brs, entry_indent, branch_indent, peek =>
+   saw_peek = <>(peek)
+   saw_peek | choice_skip_layout(p, entry_indent)
+   is_pipe = token_is_pipe(p.curr)
+   is_brk = p.curr.kind [LBracket]
+   is_sep = is_pipe || is_brk
+   nest = branch_indent !< 0 && saw_peek && p.indent_level > branch_indent &&
+      is_sep && ?brs > 0
+   nest
+      | choice_cont_nest(p, brs, entry_indent, branch_indent)
+      | choice_cont_next(p, brs, entry_indent, branch_indent, saw_peek)
+
+choice_cont_loop: Parser, ParsedBranch{}, Int, Int => <ParsedBranch{}|>
+choice_cont_loop = p, brs, entry_indent, branch_indent =>
+   p.fn_depth > 0 && token_is_pipe(p.curr)
+      | <+ brs +>
+      |
+         min_indent = branch_indent !< 0 | branch_indent | entry_indent + 1
+         peek = choice_peek_pipe(p, min_indent)
+         is_dedent = peek
+            | pi => branch_indent !< 0 && pi < branch_indent
+            | <->
+         is_dedent
+            | <+ brs +>
+            | choice_cont_step(p, brs, entry_indent, branch_indent, peek)
+
+check_redundant_flag_pb: Parser, ParsedBranch{}, ast::Expr => <>
+check_redundant_flag_pb = p, brs, bd =>
+   expr_is_neg_flag(bd)
+      |
+         ?brs > 0
+            |
+               last = brs(?brs - 1) | _ | ParsedBranch(pat_wildcard(), <->,
+                  mk_branch(ast::Expr(Var, "")))
+               is_pos = expr_is_pos_flag(last.branch.block)
+               is_pos
+                  |
+                     parser_error(p, diag::DiagCode(E2105), diag::E2105_redundant_choice_tail!)
+                     <+>
+                  | <->
+            | <->
+      | <->
+
+mk_ram_return: Parser, String => ast::Expr
+mk_ram_return = p, text =>
+   line = p.curr.line
+   col = p.curr.col
+   tag = text
+      ["|->"]  ast::Tag(Negative)
+      ["|+>"]  ast::Tag(Positive)
+      ["|-->"] ast::Tag(Noth)
+      |        ast::Tag(Succ)
+   val = ast::Expr(Variant, (tag, ast::Exprs()))
+   ast::Expr(Return, ast::ReturnExpr(<+>, val, line, col))
+
+choice_step: Parser, ParsedBranch{}, <> => <ParsedBranch{}|>
+choice_step = p, brs, saw_sep =>
+   p.curr.kind
+      [LBracket]
+         g = choice_guard(p)
+         g
+            | gb =>
+               choice_guard_is_empty(p)
+                  |
+                     b = gb.branch
+                     b.block = ast::Expr(Variant,
+                        (ast::Tag(Positive), ast::Exprs()))
+                     neg_b = mk_branch(ast::Expr(Variant,
+                        (ast::Tag(Negative), ast::Exprs())))
+                     brs += ParsedBranch(gb.pattern, gb.is_deep, b)
+                     brs += ParsedBranch(pat_wildcard(), <->, neg_b)
+                     <+ brs +>
+                  |
+                     body = choice_body(p)
+                     body
+                        | bd =>
+                           b = gb.branch
+                           b.block = bd
+                           brs += ParsedBranch(gb.pattern, gb.is_deep, b)
+                           <+ brs +>
+                        | <-->
+            | <-->
+      |
+         p.curr.text
+            ["|"]
+               parser_advance(p)
+               p.curr.kind
+                  [LBracket]
+                     parser_error(p, diag::DiagCode(E2096), diag::E2096_bar_before_guard!)
+                     <-->
+                  |
+                     body = choice_pipe_body(p, saw_sep)
+                     body
+                        | bd =>
+                           check_redundant_flag_pb(p, brs, bd)
+                              | <-->
+                              |
+                                 brs += ParsedBranch(pat_wildcard(), <->,
+                                    mk_branch(bd))
+                                 <+ brs +>
+                        | <-->
+            ["!|"]
+               parser_advance(p)
+               p.curr.kind
+                  [LBracket]
+                     parser_error(p, diag::DiagCode(E2096), diag::E2096_bar_before_guard!)
+                     <-->
+                  |
+                     body = choice_pipe_body(p, saw_sep)
+                     body
+                        | bd =>
+                           v0 = mk_branch(ast::Expr(Block, ast::Exprs()))
+                           brs += ParsedBranch(pat_wildcard(), <->, v0)
+                           brs += ParsedBranch(pat_wildcard(), <->,
+                              mk_branch(bd))
+                           <+ brs +>
+                        | <-->
+            ["|->", "|+>", "|-->", "|++>"]
+               bd = mk_ram_return(p, p.curr.text)
+               parser_advance(p)
+               brs += ParsedBranch(pat_wildcard(), <->, mk_branch(bd))
+               <+ brs +>
+            | <-->
+
+expr_is_pos_flag: ast::Expr => <>
+expr_is_pos_flag = e =>
+   e
+      [Variant v]
+         is_pos = v.tag_name [Positive]
+         is_pos && ?v.args == 0
+      | <->
+
+expr_is_neg_flag: ast::Expr => <>
+expr_is_neg_flag = e =>
+   e
+      [Variant v]
+         is_neg = v.tag_name [Negative]
+         is_neg && ?v.args == 0
+      | <->
+
+check_redundant_flag: Parser, ast::Branches, ast::Expr => <>
+check_redundant_flag = p, brs, body =>
+   is_neg = expr_is_neg_flag(body)
+   has_prev = ?brs > 0
+   has_prev && is_neg
+      |
+         last = brs(?brs - 1)!!
+         is_pos = expr_is_pos_flag(last.block)
+         is_pos
+            |
+               parser_error(p, diag::DiagCode(E2105), diag::E2105_redundant_choice_tail!)
+               <+>
+            | <->
+      | <->
+
+mk_branch: ast::Expr => ast::ChoiceBranch
+mk_branch = body =>
+   ex = body [Var v] (v == "_") | <->
+   ast::ChoiceBranch(
+      ast::GuardKind(Bare), ast::Exprs(), ast::Expr(Var, "?"),
+      ast::Names(), ast::Names(), ex, body)
+
+guard_variants: Parser, ast::Names, ast::Names => <ast::ChoiceBranch|>
+guard_variants = p, vnames, binds =>
+   p.curr.kind
+      [Comma]
+         parser_advance(p)
+         p.curr.kind
+            [Id]
+               vnames += p.curr.text
+               parser_advance(p)
+               guard_variants(p, vnames, binds)
+            |
+               parser_error(p, diag::DiagCode(E2095), "Expected a variant label after " +
+                  "',' in a choice guard, got '" + p.curr.text + "'")
+               <-->
+      [RBracket]
+         parser_advance(p)
+         <+ ast::ChoiceBranch(
+            ast::GuardKind(Variant), ast::Exprs(),
+            ast::Expr(Var, "?"), vnames, binds, <->,
+            ast::Expr(Var, "?")) +>
+      | <-->
+
+mk_shallow_pb: <ast::ChoiceBranch|> => <ParsedBranch|>
+mk_shallow_pb = res =>
+   res
+      | br => <+ ParsedBranch(pat_wildcard(), <->, br) +>
+      | <-->
+
+pat_extract_binds: ast::Patterns => ast::Names
+pat_extract_binds = sps =>
+   binds = ast::Names()
+   sps @ sp_in =>
+      sp = pat_rec(sp_in)
+      is_b = sp.kind [Bind]
+      is_b | binds += sp.name | binds += "_"
+   binds
+
+choice_guard_deep_variant: Parser, ast::Pattern => <ParsedBranch|>
+choice_guard_deep_variant = p, pat =>
+   is_rb = p.curr.kind [RBracket]
+   is_rb
+      |
+         parser_advance(p)
+         dummy_br = ast::ChoiceBranch(
+            ast::GuardKind(Variant), ast::Exprs(),
+            ast::Expr(Var, "?"), ast::Names(), ast::Names(),
+            <->, ast::Expr(Var, "?"))
+         <+ ParsedBranch(pat, <+>, dummy_br) +>
+      |
+         parser_error(p, diag::DiagCode(E2095), "Expected ']' after pattern guard")
+         <-->
+
+choice_guard_shallow_variant: Parser, ast::Pattern => <ParsedBranch|>
+choice_guard_shallow_variant = p, pat_in =>
+   pat = pat_rec(pat_in)
+   vnames = ast::Names()
+   vnames += pat.name
+   binds = pat_extract_binds(pat.subpatterns)
+   mk_shallow_pb(guard_variants(p, vnames, binds))
+
+choice_guard_variant: Parser => <ParsedBranch|>
+choice_guard_variant = p =>
+   pat_res = parse_pattern(p)
+   pat_res
+      | pat =>
+         is_deep = pattern_is_deep(pat)
+         is_deep
+            | choice_guard_deep_variant(p, pat)
+            | choice_guard_shallow_variant(p, pat)
+      | <-->
+
+choice_guard_record: Parser => <ParsedBranch|>
+choice_guard_record = p =>
+   rpat_res = parse_pattern(p)
+   rpat_res
+      | rpat =>
+         is_rb = p.curr.kind [RBracket]
+         is_rb
+            |
+               parser_advance(p)
+               dummy_br = ast::ChoiceBranch(
+                  ast::GuardKind(Case), ast::Exprs(),
+                  ast::Expr(Var, "?"), ast::Names(), ast::Names(),
+                  <->, ast::Expr(Var, "?"))
+               <+ ParsedBranch(rpat, <+>, dummy_br) +>
+            |
+               parser_error(p, diag::DiagCode(E2095), "Expected ']' after record pattern guard")
+               <-->
+      | <-->
+
+choice_guard_expr: Parser => <ParsedBranch|>
+choice_guard_expr = p =>
+   ge = parse_range(p)
+   ge
+      | gv_expr =>
+         p.curr.kind
+            [Comma]
+               vals = ast::Exprs()
+               vals += gv_expr
+               mk_shallow_pb(gv(p, vals))
+            [RBracket]
+               parser_advance(p)
+               <+ ParsedBranch(pat_wildcard(), <->,
+                  guard_branch_from(gv_expr)) +>
+            | <-->
+      | <-->
+
+mk_type_pat_pb: Parser, Int, String, ast::Names => <ParsedBranch|>
+mk_type_pat_pb = p, n_toks, tag, binds =>
+   n_toks @ parser_advance(p)
+   binds @ bn =>
+      p.ct_scope = ct_names_append(p.ct_scope, bn)
+   vnames = ast::Names()
+   vnames += tag
+   br = ast::ChoiceBranch(
+      ast::GuardKind(Variant), ast::Exprs(),
+      ast::Expr(Var, "?"), vnames, binds, <->,
+      ast::Expr(Var, "?"))
+   <+ ParsedBranch(pat_wildcard(), <->, br) +>
+
+choice_guard_type_lparen: Parser => <ParsedBranch|>
+choice_guard_type_lparen = p =>
+   c = lexer::clone_lx(p.lx)
+   t1 = lexer::next_tok(c, 0)
+   t1.kind [RParen]
+      |
+         t2 = lexer::next_tok(c, 0)
+         t2.kind [RBracket]
+            | mk_type_pat_pb(p, 3, "#type:()", ast::Names())
+            | <-->
+      |
+         tok_is_op(t1) && t1.text == ".."
+            |
+               t2 = lexer::next_tok(c, 0)
+               t3 = lexer::next_tok(c, 0)
+               t2.kind [RParen] && t3.kind [RBracket]
+                  | mk_type_pat_pb(p, 4, "#type:(..)", ast::Names())
+                  | <-->
+            |
+               t1.kind [Id]
+                  |
+                     t2 = lexer::next_tok(c, 0)
+                     tok_is_op(t2) && t2.text == "*"
+                        |
+                           t3 = lexer::next_tok(c, 0)
+                           t4 = lexer::next_tok(c, 0)
+                           t5 = lexer::next_tok(c, 0)
+                           t4.kind [RParen] && t5.kind [RBracket]
+                              |
+                                 binds = ast::Names()
+                                 binds += t1.text
+                                 tok_is_op(t3) && t3.text == ".."
+                                    | mk_type_pat_pb(p, 6, "#type:(*..)", binds)
+                                    |
+                                       t3.kind [Int]
+                                          | mk_type_pat_pb(p, 6, "#type:(*" + t3.text + ")", binds)
+                                          | <-->
+                              | <-->
+                        | <-->
+                  | <-->
+
+choice_guard_type_angle: Parser => <ParsedBranch|>
+choice_guard_type_angle = p =>
+   c = lexer::clone_lx(p.lx)
+   t0 = p.curr
+   t1 = lexer::next_tok(c, 0)
+   t0.text ["<>", "<|>"]
+      |
+         t1.kind [RBracket]
+            | mk_type_pat_pb(p, 2, "#type:<>", ast::Names())
+            | <-->
+      |
+         t0.text == "<..>"
+            |
+               t1.kind [RBracket]
+                  | mk_type_pat_pb(p, 2, "#type:<..>", ast::Names())
+                  | <-->
+            |
+               t0.text == "<.."
+                  |
+                     t2 = lexer::next_tok(c, 0)
+                     tok_is_op(t1) && t1.text == ">" && t2.kind [RBracket]
+                        | mk_type_pat_pb(p, 3, "#type:<..>", ast::Names())
+                        | <-->
+                  |
+                     t0.text == "<|"
+                        |
+                           tok_is_op(t1) && t1.text == ">"
+                              |
+                                 t2 = lexer::next_tok(c, 0)
+                                 t2.kind [RBracket]
+                                    | mk_type_pat_pb(p, 3, "#type:<>", ast::Names())
+                                    | <-->
+                              |
+                                 t1.kind [Id]
+                                    |
+                                       t2 = lexer::next_tok(c, 0)
+                                       t3 = lexer::next_tok(c, 0)
+                                       tok_is_op(t2) && t2.text == ">" && t3.kind [RBracket]
+                                          |
+                                             binds = ast::Names()
+                                             binds += t1.text
+                                             mk_type_pat_pb(p, 4, "#type:<|N>", binds)
+                                          | <-->
+                                    | <-->
+                        | choice_guard_type_lt(p, c, t1)
+
+choice_guard_type_lt: Parser, lexer::Lx, lexer::Tok => <ParsedBranch|>
+choice_guard_type_lt = p, c, t1 =>
+   tok_is_op(t1) && t1.text == "..>"
+      |
+         t2 = lexer::next_tok(c, 0)
+         t2.kind [RBracket]
+            | mk_type_pat_pb(p, 3, "#type:<..>", ast::Names())
+            | <-->
+      |
+         tok_is_op(t1) && t1.text == ".."
+            |
+               t2 = lexer::next_tok(c, 0)
+               t3 = lexer::next_tok(c, 0)
+               tok_is_op(t2) && t2.text == ">" && t3.kind [RBracket]
+                  | mk_type_pat_pb(p, 4, "#type:<..>", ast::Names())
+                  | <-->
+            |
+               tok_is_op(t1) && t1.text == "|"
+                        |
+                           t2 = lexer::next_tok(c, 0)
+                           tok_is_op(t2) && t2.text == ">"
+                              |
+                                 t3 = lexer::next_tok(c, 0)
+                                 t3.kind [RBracket]
+                                    | mk_type_pat_pb(p, 4, "#type:<>", ast::Names())
+                                    | <-->
+                              |
+                                 t2.kind [Id]
+                                    |
+                                       t3 = lexer::next_tok(c, 0)
+                                       t4 = lexer::next_tok(c, 0)
+                                       tok_is_op(t3) && t3.text == ">" && t4.kind [RBracket]
+                                          |
+                                             binds = ast::Names()
+                                             binds += t2.text
+                                             mk_type_pat_pb(p, 5, "#type:<|N>", binds)
+                                          | <-->
+                                    | <-->
+                        |
+                           t1.kind [Id]
+                              |
+                                 t2 = lexer::next_tok(c, 0)
+                                 tok_is_op(t2) && t2.text == "|>"
+                                    |
+                                       t3 = lexer::next_tok(c, 0)
+                                       t3.kind [RBracket]
+                                          |
+                                             binds = ast::Names()
+                                             binds += t1.text
+                                             mk_type_pat_pb(p, 4, "#type:<P|>", binds)
+                                          | <-->
+                                    |
+                                       tok_is_op(t2) && t2.text == "|"
+                                          |
+                                             t3 = lexer::next_tok(c, 0)
+                                             tok_is_op(t3) && t3.text == ">"
+                                                |
+                                                   t4 = lexer::next_tok(c, 0)
+                                                   t4.kind [RBracket]
+                                                      |
+                                                         binds = ast::Names()
+                                                         binds += t1.text
+                                                         mk_type_pat_pb(p, 5, "#type:<P|>", binds)
+                                                      | <-->
+                                                |
+                                                   t3.kind [Id]
+                                                      |
+                                                         t4 = lexer::next_tok(c, 0)
+                                                         t5 = lexer::next_tok(c, 0)
+                                                         tok_is_op(t4) && t4.text == ">" && t5.kind [RBracket]
+                                                            |
+                                                               binds = ast::Names()
+                                                               binds += t1.text
+                                                               binds += t3.text
+                                                               mk_type_pat_pb(p, 6, "#type:<P|N>", binds)
+                                                            | <-->
+                                                      | <-->
+                                          | <-->
+                              | <-->
+
+choice_guard_type_ident: Parser => <ParsedBranch|>
+choice_guard_type_ident = p =>
+   c = lexer::clone_lx(p.lx)
+   t0 = p.curr
+   t1 = lexer::next_tok(c, 0)
+   t1.kind
+      [LBrace]
+         t2 = lexer::next_tok(c, 0)
+         t2.kind [RBrace]
+            |
+               t3 = lexer::next_tok(c, 0)
+               t3.kind [RBracket]
+                  |
+                     binds = ast::Names()
+                     binds += t0.text
+                     mk_type_pat_pb(p, 4, "#type:{}", binds)
+                  | <-->
+            |
+               t2.kind [Int]
+                  |
+                     t3 = lexer::next_tok(c, 0)
+                     t4 = lexer::next_tok(c, 0)
+                     t3.kind [RBrace] && t4.kind [RBracket]
+                        |
+                           binds = ast::Names()
+                           binds += t0.text
+                           mk_type_pat_pb(p, 5, "#type:{}", binds)
+                        | <-->
+                  | <-->
+      [LBracket]
+         t2 = lexer::next_tok(c, 0)
+         t3 = lexer::next_tok(c, 0)
+         t2.kind [RBracket] && t3.kind [RBracket]
+            |
+               binds = ast::Names()
+               binds += t0.text
+               mk_type_pat_pb(p, 4, "#type:[]", binds)
+            | <-->
+      |
+         tok_is_op(t1) && t1.text == "^"
+            |
+               t2 = lexer::next_tok(c, 0)
+               t3 = lexer::next_tok(c, 0)
+               t2.kind [Id] && t3.kind [RBracket]
+                  |
+                     binds = ast::Names()
+                     binds += t0.text
+                     binds += t2.text
+                     mk_type_pat_pb(p, 4, "#type:^", binds)
+                  | <-->
+            | <-->
+
+choice_guard_type_pattern: Parser => <ParsedBranch|>
+choice_guard_type_pattern = p =>
+   p.curr.kind
+      [LParen] choice_guard_type_lparen(p)
+      [Id] choice_guard_type_ident(p)
+      [Op]
+         p.curr.text ["<", "<>", "<|>", "<|", "<..", "<..>"]
+            | choice_guard_type_angle(p)
+            | <-->
+      | <-->
+
+choice_guard: Parser => <ParsedBranch|>
+choice_guard = p =>
+   parser_advance(p)
+   tpat = choice_guard_type_pattern(p)
+   tpat
+      | tp => <+ tp +>
+      |
+         nxt = parser_peek_next(p)
+         nxt_is_expr_op = token_is_range_op(nxt) ||
+            (tok_is_op(nxt) && <>(operators::bin_info(nxt.text)))
+         is_var = guard_is_variant(p.curr) && !nxt_is_expr_op
+         is_var
+            | choice_guard_variant(p)
+            |
+               is_rec = p.curr.kind [LParen] && guard_is_record_pattern(p)
+               is_rec
+                  | choice_guard_record(p)
+                  | choice_guard_expr(p)
+
+gv: Parser, ast::Exprs => <ast::ChoiceBranch|>
+gv = p, vals =>
+   parser_advance(p)
+   v = parse_range(p)
+   v
+      | ve =>
+         vals += ve
+         p.curr.kind
+            [Comma] gv(p, vals)
+            [RBracket]
+               parser_advance(p)
+               <+ ast::ChoiceBranch(
+                  ast::GuardKind(Case), vals, ast::Expr(Var, "?"),
+                  ast::Names(), ast::Names(), <->,
+                  ast::Expr(Var, "?")) +>
+            | <-->
+      | <-->
+
+// A non-variant guard expr: a predicate (Fn/section/fn-ref) or a value guard.
+guard_branch_from: ast::Expr => ast::ChoiceBranch
+guard_branch_from = e =>
+   e
+      [Fn] ast::ChoiceBranch(
+         ast::GuardKind(Predicate), ast::Exprs(), e,
+         ast::Names(), ast::Names(), <->, ast::Expr(Var, "?"))
+      |
+         vals = ast::Exprs()
+         vals += e
+         ast::ChoiceBranch(
+            ast::GuardKind(Case), vals, ast::Expr(Var, "?"),
+            ast::Names(), ast::Names(), <->, ast::Expr(Var, "?"))
+
+// A choice branch body: a range-tier sequence, stopping at a '|' / '['
+// separator or a line boundary. An empty body is a Var marker.
+choice_body: Parser => <ast::Expr|>
+choice_body = p =>
+   tok_is_nl(p.curr)
+      | choice_body_indented(p)
+      |
+         p.branch_body_depth = p.branch_body_depth + 1
+         r = choice_body_inner(p)
+         p.branch_body_depth = p.branch_body_depth - 1
+         maybe_inline_block_cont(p, r)
+
+// A bare choice branch may start its body on the next indented line. Consume
+// the matching DEDENT so the following top-level '|' remains available to the
+// same choice continuation instead of becoming a new program statement.
+choice_body_indented: Parser => <ast::Expr|>
+choice_body_indented = p =>
+   parser_advance(p)
+   p.curr.kind
+      [Indent]
+         parser_advance(p)
+         saved_fd = p.fn_depth
+         p.fn_depth = 0
+         body = block_stmts(p, ast::Exprs())
+         p.fn_depth = saved_fd
+         p.curr.kind [Dedent] parser_advance(p); p.just_dedented = <+>
+         body
+      |
+         p.branch_body_depth = p.branch_body_depth + 1
+         r = choice_body_inner(p)
+         p.branch_body_depth = p.branch_body_depth - 1
+         r
+
+choice_body_inner: Parser => <ast::Expr|>
+choice_body_inner = p =>
+   kstop = p.curr.kind [Newline, Eof, LBracket, Dedent]
+   tstop = token_is_pipe(p.curr)
+   stop = kstop || tstop
+   stop | <+ ast::Expr(Var, "<empty>") +> |
+      r = parse_range(p)
+      r | e => seq_cont_loop(p, e)
+
+choice_same_line_stop: Parser => <>
+choice_same_line_stop = p =>
+   is_eof = p.curr.kind [Eof]
+   tok_is_nl(p.curr) || tok_is_indent(p.curr) || tok_is_dedent(p.curr) ||
+      is_eof
+
+choice_same_line_step: Parser, ParsedBranch{} => <ParsedBranch{}|>
+choice_same_line_step = p, brs =>
+   p.curr.kind
+      [LBracket]
+         g = choice_guard(p)
+         g
+            | gb =>
+               choice_guard_is_empty(p)
+                  |
+                     b = gb.branch
+                     b.block = ast::Expr(Variant,
+                        (ast::Tag(Positive), ast::Exprs()))
+                     neg_b = mk_branch(ast::Expr(Variant,
+                        (ast::Tag(Negative), ast::Exprs())))
+                     brs += ParsedBranch(gb.pattern, gb.is_deep, b)
+                     brs += ParsedBranch(pat_wildcard(), <->, neg_b)
+                     <+ brs +>
+                  |
+                     body = choice_body_inner(p)
+                     body
+                        | bd =>
+                           b = gb.branch
+                           b.block = bd
+                           brs += ParsedBranch(gb.pattern, gb.is_deep, b)
+                           <+ brs +>
+                        | <-->
+            | <-->
+      |
+         p.curr.text
+            ["|"]
+               parser_advance(p)
+               p.curr.kind
+                  [LBracket]
+                     parser_error(p, diag::DiagCode(E2096), diag::E2096_bar_before_guard!)
+                     <-->
+                  |
+                     fnb = is_fn_start(p)
+                     fnb | p.fn_depth = p.fn_depth + 1
+                     body = fnb | parse_fn(p) | choice_body_inner(p)
+                     fnb | p.fn_depth = p.fn_depth - 1
+                     body
+                        | bd =>
+                           check_redundant_flag_pb(p, brs, bd)
+                              | <-->
+                              |
+                                 brs += ParsedBranch(pat_wildcard(), <->,
+                                    mk_branch(bd))
+                                 <+ brs +>
+                        | <-->
+            ["!|"]
+               parser_advance(p)
+               p.curr.kind
+                  [LBracket]
+                     parser_error(p, diag::DiagCode(E2096), diag::E2096_bar_before_guard!)
+                     <-->
+                  |
+                     body = choice_body_inner(p)
+                     body
+                        | bd =>
+                           v0 = mk_branch(ast::Expr(Block, ast::Exprs()))
+                           brs += ParsedBranch(pat_wildcard(), <->, v0)
+                           brs += ParsedBranch(pat_wildcard(), <->,
+                              mk_branch(bd))
+                           <+ brs +>
+                        | <-->
+            ["|->", "|+>", "|-->", "|++>"]
+               bd = mk_ram_return(p, p.curr.text)
+               parser_advance(p)
+               brs += ParsedBranch(pat_wildcard(), <->, mk_branch(bd))
+               <+ brs +>
+            | <-->
+
+choice_same_line_loop: Parser, ParsedBranch{} => <ParsedBranch{}|>
+choice_same_line_loop = p, brs =>
+   choice_same_line_stop(p)
+      | <+ brs +>
+      |
+         st = choice_same_line_step(p, brs)
+         st
+            | sbrs => choice_same_line_loop(p, sbrs)
+            | <+ brs +>
+
+choice_same_line: Parser => <ast::Expr|>
+choice_same_line = p =>
+   lhs = choice_body_inner(p)
+   lhs
+      | le =>
+         le2_opt = tok_is_neg_lbracket(p) | parse_neg_guard_choice(p, le) | <+ le +>
+         le2_opt
+            | le2 =>
+               r = choice_same_line_loop(p, empty_pbrs())
+               r
+                  | brs =>
+                     ch_opt = finish_parsed_choice(p, le2, brs)
+                     ch_opt
+                        | ce => cycle_cont(p, ce)
+                        | <-->
+                  | <-->
+            | <-->
+      | <-->
+
+choice_same_line_seq: Parser => <ast::Expr|>
+choice_same_line_seq = p =>
+   b = choice_same_line(p)
+   b
+      | be => choice_same_line_seq_loop(p, be)
+      | <-->
+
+choice_same_line_seq_loop: Parser, ast::Expr => <ast::Expr|>
+choice_same_line_seq_loop = p, lhs =>
+   p.curr.kind
+      [Semi]
+         parser_advance(p)
+         choice_same_line(p)
+            | r =>
+               n = ast::Expr(Bin, (ast::BinaryOp(Seq), lhs, r))
+               choice_same_line_seq_loop(p, n)
+            | <-->
+      | <+ lhs +>
+
+choice_pipe_body: Parser, <> => <ast::Expr|>
+choice_pipe_body = p, saw_sep =>
+   tok_is_nl(p.curr)
+      | choice_body_indented(p)
+      |
+         fnb = is_fn_start(p)
+         fnb
+            |
+               p.fn_depth = p.fn_depth + 1
+               rf = parse_fn(p)
+               p.fn_depth = p.fn_depth - 1
+               rf
+            |
+               p.branch_body_depth = p.branch_body_depth + 1
+               rs = saw_sep | choice_same_line_seq(p) | choice_body_inner(p)
+               p.branch_body_depth = p.branch_body_depth - 1
+               maybe_inline_block_cont(p, rs)
+

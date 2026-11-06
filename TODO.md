@@ -61,11 +61,22 @@ Top priority. Without this, any syntax change is risky.
 
 ## Level 1 — Reduce accidental complexity
 
-- [ ] **1.1 — Split `parser.dva` (~7,800 lines)**
+- [x] **1.1 — Split `parser.dva` (~7,800 lines)**
   - Break it into modules like codegen: `parser/expr.dva`, `parser/decl.dva`,
     `parser/type.dva`, `parser/choice.dva`, etc.
   - Prerequisite for any calm evolution of the parser.
   - *Files*: `src/parser.dva` → `src/parser/`
+  - *Done*: split into 7 units along the file's own section seams —
+    `pstate` (state/token helpers/error core), `pexpr` (tiers + Pratt core +
+    atoms), `plambda` (lambdas/blocks + `parse_program`), `ptype` (types +
+    `#type` + `#use`), `ppost` (postfix), `pchoice` (choice tier), `pident`
+    (identifier dispatch + const folding). `src/parser.dva` is now a facade
+    re-exporting the 6-function public API (parse_init, parse_program,
+    parser_set_file, fold_program_consts, last_segment, set_target_triple).
+    Siblings import each other unqualified via `#use(import)`; signatures
+    live with their bodies (the old cross-file forward declarations were
+    hoisted next to their implementations). Makefile, fixed-point, and
+    rebuild-seed updated for the new layout.
 
 - [ ] **1.2 — Eliminate manual state save/restore**
   - Remove the `saved_cd = p.cycle_depth; ...; p.cycle_depth = saved_cd`
@@ -143,7 +154,7 @@ Only undertake once the foundation (0 + 1) is in place.
 | Level | Tasks | Done |
 |---|---|---|
 | 0 — Foundation | 3 | 3 |
-| 1 — Complexity | 3 | 0 |
+| 1 — Complexity | 3 | 1 |
 | 2 — Design | 3 | 0 |
 | 3 — Quality | 3 | 0 |
 

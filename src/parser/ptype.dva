@@ -1,0 +1,1803 @@
+// src/parser/ptype.dva — Type parsing, #type declarations, and #use imports.
+//
+// Split from the former monolithic src/parser.dva. Sibling parser units are
+// imported unqualified via #use(import); external modules stay qualified.
+
+#use "../lexer"
+#use "../ast"
+#use "path"
+#use "str"
+#use "../operators"
+#use "../diag"
+#use "log"
+#use const
+#use unicode
+#use(import) pstate
+#use(import) pexpr
+#use(import) plambda
+#use(import) ppost
+#use(import) pchoice
+#use(import) pident
+
+#public
+
+// --- type parsing (P2-1) ---------------------------------------------------
+
+// A primitive type name -> ValueType (mirrors parse_dva_type_name). The HARD
+// RULES recognize ONLY these canonical names.
+parse_dva_type_name: String => <ast::ValueType|>
+parse_dva_type_name =
+   ["Int"] <+ ast::ValueType(Int) +>
+   ["i64"] <+ ast::ValueType(Int) +>
+   ["i8"] <+ ast::ValueType(I8) +>
+   ["i16"] <+ ast::ValueType(I16) +>
+   ["i32"] <+ ast::ValueType(I32) +>
+   ["u8"] <+ ast::ValueType(U8) +>
+   ["u16"] <+ ast::ValueType(U16) +>
+   ["u32"] <+ ast::ValueType(U32) +>
+   ["u64"] <+ ast::ValueType(U64) +>
+   ["i1"] <+ ast::ValueType(Flag) +>
+   ["Rune"] <+ ast::ValueType(Rune) +>
+   ["Float"] <+ ast::ValueType(Float) +>
+   ["f64"] <+ ast::ValueType(Float) +>
+   ["f32"] <+ ast::ValueType(F32) +>
+   ["String"] <+ ast::ValueType(Str) +>
+   ["Addr"] <+ ast::ValueType(RawPtr) +>
+   ["ptr"] <+ ast::ValueType(RawPtr) +>
+   ["Builder"] <+ ast::ValueType(Builder) +>
+   ["Error"] <+ ast::ValueType(Error) +>
+   ["Type"] <+ ast::ValueType(Type) +>
+   | <-->
+
+parse_ram_np_type: Parser => (ast::ValueType, ast::TypeInfo, <>)
+parse_ram_np_type = p =>
+   parser_advance(p)
+   pt = parse_type(p)
+   !pt.2 | mk_tp(pt.0, pt.1, <->) |
+      p.curr.text
+         [">"]
+            parser_advance(p)
+            empty_l = ast::RamSlotInfo(
+               <->, ast::ValueType(Unknown),
+               ast::TypeInfo(Prim, ast::ValueType(Unknown)))
+            mk_tp(ast::ValueType(Ram),
+               ast::TypeInfo(Ram, (empty_l, ast::RamSlotInfo(
+                  <+>, pt.0, pt.1))), <+>)
+         | mk_tp(pt.0, pt.1, <->)
+
+bitfield_backing_info: String => (ast::ValueType, Int, <>)
+bitfield_backing_info =
+   ["u8"] (ast::ValueType(U8), 8, <+>)
+   ["i8"] (ast::ValueType(I8), 8, <+>)
+   ["u16"] (ast::ValueType(U16), 16, <+>)
+   ["i16"] (ast::ValueType(I16), 16, <+>)
+   ["u32"] (ast::ValueType(U32), 32, <+>)
+   ["i32"] (ast::ValueType(I32), 32, <+>)
+   ["u64"] (ast::ValueType(U64), 64, <+>)
+   ["i64"] (ast::ValueType(I64), 64, <+>)
+   ["Int"] (ast::ValueType(Int), 64, <+>)
+   | (ast::ValueType(Unknown), 0, <->)
+
+parse_align_type: Parser => (ast::ValueType, ast::TypeInfo, <>)
+parse_align_type = p =>
+   parser_advance(p)
+   skip_type_layout(p)
+   p.curr.kind
+      [Int]
+         align_val = int_of_text(p.curr.text)
+         parser_advance(p)
+         skip_type_layout(p)
+         is_pow2 = align_val > 0 && ((align_val .&. (align_val - 1)) == 0)
+         !is_pow2
+            |
+               parser_error(p, diag::DiagCode(E2064),
+                  "Expected positive power-of-two integer after '#align', got '" +
+                  str::from_int(align_val) + "'")
+         inner = parse_type_atom(p)
+         mk_tp(inner.0, ast::TypeInfo(Align, (align_val, inner.1)), inner.2)
+      |
+         parser_error(p, diag::DiagCode(E2064),
+            "Expected integer alignment value after '#align', got '" +
+            p.curr.text + "'")
+         mk_tp(ast::ValueType(Unknown),
+            ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+
+make_ti_packed: ast::TypeInfo => ast::TypeInfo
+make_ti_packed = ti =>
+   ti
+      [Rec r]
+         ast::TypeInfo(Rec, (r.0, r.1, r.2, r.3, r.4, <+>))
+      [Align a]
+         ast::TypeInfo(Align, (a.0, make_ti_packed(a.1)))
+      | ti
+
+parse_packed_type: Parser => (ast::ValueType, ast::TypeInfo, <>)
+parse_packed_type = p =>
+   parser_advance(p)
+   skip_type_layout(p)
+   p.curr.kind
+      [LParen]
+         parse_packed_record_type(p)
+      [Id]
+         parse_bitfield_type(p)
+      [AlignKw]
+         at = parse_align_type(p)
+         mk_tp(at.0, make_ti_packed(at.1), at.2)
+      |
+         parser_error(p, diag::DiagCode(E2064),
+            "Expected '(', integer type, or '#align' after '#packed', got '" +
+            p.curr.text + "'")
+         mk_tp(ast::ValueType(Unknown),
+            ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+
+skip_type_layout: Parser => ()
+skip_type_layout = p =>
+   p.curr.kind
+      [Newline, Indent, Dedent]
+         parser_advance(p)
+         skip_type_layout(p)
+
+peek_indent_loop: lexer::Lx => <>
+peek_indent_loop = c =>
+   t = lexer::next_tok(c, 0)
+   t.kind
+      [Newline] peek_indent_loop(c)
+      | t.kind [Indent]
+
+peek_is_indent_after_nl: Parser => <>
+peek_is_indent_after_nl = p =>
+   c = lexer::clone_lx(p.lx)
+   peek_indent_loop(c)
+
+skip_nl_only: Parser => ()
+skip_nl_only = p =>
+   p.curr.kind
+      [Newline]
+         parser_advance(p)
+         skip_nl_only(p)
+
+skip_nl_and_indent: Parser => ()
+skip_nl_and_indent = p =>
+   p.curr.kind
+      [Newline]
+         parser_advance(p)
+         skip_nl_and_indent(p)
+      [Indent]
+         parser_advance(p)
+         skip_nl_only(p)
+
+unwind_to_indent: Parser, Int => ()
+unwind_to_indent = p, target_indent =>
+   tok_is_nl(p.curr) || (tok_is_dedent(p.curr) && p.indent_level > target_indent)
+      |
+         parser_advance(p)
+         unwind_to_indent(p, target_indent)
+
+skip_nl_dedent: Parser => ()
+skip_nl_dedent = p =>
+   p.curr.kind
+      [Newline, Dedent]
+         parser_advance(p)
+         skip_nl_dedent(p)
+
+skip_nl_indent: Parser => ()
+skip_nl_indent = p =>
+   p.curr.kind
+      [Newline, Indent]
+         parser_advance(p)
+         skip_nl_indent(p)
+
+parse_packed_record_type: Parser => (ast::ValueType, ast::TypeInfo, <>)
+parse_packed_record_type = p =>
+   lp_line = p.curr.line
+   parser_advance(p)
+   skip_type_layout(p)
+   rfields_packed(p, ast::FieldTypes(),
+      (p.curr.col, p.indent_level, lp_line))
+
+rfields_packed_after_comma: Parser, ast::FieldTypes,
+   (Int, Int, Int) => (ast::ValueType, ast::TypeInfo, <>)
+rfields_packed_after_comma = p, fields, layout =>
+   parser_advance(p)
+   skip_type_layout(p)
+   next_layout = layout.2 > 0 && p.curr.line > layout.2 && p.curr.kind ![RParen]
+      | (p.curr.col, p.indent_level, 0)
+      | layout
+   rfields_packed(p, fields, next_layout)
+
+rfields_packed_finish: Parser, ast::FieldTypes => (ast::ValueType, ast::TypeInfo, <>)
+rfields_packed_finish = p, fields =>
+   parser_advance(p)
+   ?fields < 2
+      |
+         parser_error(p, diag::DiagCode(E2084),
+            "Single-field records are not allowed: a record must have at least 2 fields")
+         mk_tp(ast::ValueType(Unknown),
+            ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+      |
+         mk_tp(ast::ValueType(Record),
+            ast::TypeInfo(Rec, (fields, <->, <->,
+               ast::ValueType(Unknown), ?fields, <+>)), <+>)
+
+rfields_packed_misaligned: Parser, Int => (ast::ValueType, ast::TypeInfo, <>)
+rfields_packed_misaligned = p, expected_col =>
+   parser_error(p, diag::DiagCode(E2015),
+      "Misaligned field in packed record type declaration: expected column " +
+      str::from_int(expected_col) + ", got column " + str::from_int(p.curr.col))
+   mk_tp(ast::ValueType(Unknown),
+      ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+
+rfields_packed: Parser, ast::FieldTypes,
+   (Int, Int, Int) => (ast::ValueType, ast::TypeInfo, <>)
+rfields_packed = p, fields, layout =>
+   p.curr.kind
+      [RParen]
+         rfields_packed_finish(p, fields)
+      |
+         fname' = ++""
+         is_id = p.curr.kind [Id]
+         col = parser_peek_next(p).text [":"]
+         is_id && col
+            |
+               fname' = p.curr.text
+               parser_advance(p)
+               parser_advance(p)
+               tok_is_nl(p.curr) && peek_is_indent_after_nl(p)
+                  | skip_nl_and_indent(p)
+         ft = parse_type(p)
+         !ft.2 | mk_tp(ft.0, ft.1, <->) |
+            is_int_ft = ft.0 [Int, I8, I16, I32, I64, U8, U16, U32, U64]
+            def_e = is_int_ft
+               | ast::Expr(TypeCast, ast::CastExpr(ft.0, ast::Expr(Int, 0)))
+               | ast::Expr(Int, 0)
+            rf = ast::RecordFieldType(fname', ft.0, ft.1, is_int_ft, def_e)
+            fields += rf
+            p.curr.kind
+               [Comma]
+                  rfields_packed_after_comma(p, fields, layout)
+               [RParen]
+                  rfields_packed_finish(p, fields)
+               |
+                  has_nl = tok_is_nl(p.curr) || tok_is_dedent(p.curr) || p.just_dedented
+                  !has_nl
+                     |
+                        parser_error(p, diag::DiagCode(E2015),
+                           "Expected ',' or ')' after packed record field, got '" +
+                           p.curr.text + "'")
+                        mk_tp(ast::ValueType(Unknown),
+                           ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+                     |
+                        unwind_to_indent(p, layout.1)
+                        p.curr.kind
+                           [Comma]
+                              rfields_packed_after_comma(p, fields, layout)
+                           [RParen]
+                              rfields_packed_finish(p, fields)
+                           [Dedent]
+                              skip_nl_dedent(p)
+                              p.curr.kind
+                                 [RParen] rfields_packed_finish(p, fields)
+                                 | rfields_packed_misaligned(p, layout.0)
+                           [Indent]
+                              skip_nl_indent(p)
+                              p.curr.kind
+                                 [RParen] rfields_packed_finish(p, fields)
+                                 | rfields_packed_misaligned(p, layout.0)
+                           |
+                              p.curr.col == layout.0 && p.indent_level == layout.1
+                                 | rfields_packed(p, fields, (layout.0, layout.1, 0))
+                                 | rfields_packed_misaligned(p, layout.0)
+
+parse_bitfield_type: Parser => (ast::ValueType, ast::TypeInfo, <>)
+parse_bitfield_type = p =>
+   info = bitfield_backing_info(p.curr.text)
+   !info.2
+      |
+         parser_error(p, diag::DiagCode(E2064),
+            "Expected integer type (u8, u16, u32, u64) after '#packed', got '" +
+            p.curr.text + "'")
+         mk_tp(ast::ValueType(Unknown),
+            ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+      |
+         bvt = info.0
+         expected_bits = info.1
+         parser_advance(p)
+         skip_type_layout(p)
+         p.curr.kind
+            [LParen]
+               lp_line = p.curr.line
+               parser_advance(p)
+               skip_type_layout(p)
+               parse_bitfield_fields(p, ast::BitfieldFields(), 0,
+                  expected_bits, bvt, (p.curr.col, p.indent_level, lp_line))
+            |
+               parser_error(p, diag::DiagCode(E2015),
+                  "Expected '(' after '#packed " + p.curr.text + "', got '" +
+                  p.curr.text + "'")
+               mk_tp(ast::ValueType(Unknown),
+                  ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+
+bitfield_misaligned: Parser, Int => (ast::ValueType, ast::TypeInfo, <>)
+bitfield_misaligned = p, expected_col =>
+   parser_error(p, diag::DiagCode(E2015),
+      "Misaligned field in bitfield type declaration: expected column " +
+      str::from_int(expected_col) + ", got column " + str::from_int(p.curr.col))
+   mk_tp(ast::ValueType(Unknown),
+      ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+
+parse_bitfield_after_field: Parser, ast::BitfieldFields, Int, Int,
+   ast::ValueType, (Int, Int, Int) => (ast::ValueType, ast::TypeInfo, <>)
+parse_bitfield_after_field = p, fields, next_off, expected_bits, bvt, layout =>
+   p.curr.kind
+      [Comma]
+         parser_advance(p)
+         skip_type_layout(p)
+         next_layout = layout.2 > 0 && p.curr.line > layout.2 && !(p.curr.kind [RParen])
+            | (p.curr.col, p.indent_level, 0)
+            | layout
+         parse_bitfield_fields(p, fields,
+            next_off, expected_bits, bvt, next_layout)
+      [RParen]
+         parse_bitfield_fields(p, fields,
+            next_off, expected_bits, bvt, layout)
+      |
+         has_nl = tok_is_nl(p.curr) || tok_is_dedent(p.curr) || p.just_dedented
+         !has_nl
+            |
+               parser_error(p, diag::DiagCode(E2015),
+                  "Expected ',' or ')' after bitfield field, got '" +
+                  p.curr.text + "'")
+               mk_tp(ast::ValueType(Unknown),
+                  ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+            |
+               unwind_to_indent(p, layout.1)
+               p.curr.kind
+                  [Comma]
+                     parser_advance(p)
+                     skip_type_layout(p)
+                     next_layout2 = layout.2 > 0 && p.curr.line > layout.2 && !(p.curr.kind [RParen])
+                        | (p.curr.col, p.indent_level, 0)
+                        | layout
+                     parse_bitfield_fields(p, fields,
+                        next_off, expected_bits, bvt, next_layout2)
+                  [RParen]
+                     parse_bitfield_fields(p, fields,
+                        next_off, expected_bits, bvt, layout)
+                  [Dedent]
+                     skip_nl_dedent(p)
+                     p.curr.kind
+                        [RParen]
+                           parse_bitfield_fields(p, fields,
+                              next_off, expected_bits, bvt, layout)
+                        | bitfield_misaligned(p, layout.0)
+                  [Indent]
+                     skip_nl_indent(p)
+                     p.curr.kind
+                        [RParen]
+                           parse_bitfield_fields(p, fields,
+                              next_off, expected_bits, bvt, layout)
+                        | bitfield_misaligned(p, layout.0)
+                  |
+                     p.curr.col == layout.0 && p.indent_level == layout.1
+                        |
+                           parse_bitfield_fields(p, fields,
+                              next_off, expected_bits, bvt,
+                              (layout.0, layout.1, 0))
+                        | bitfield_misaligned(p, layout.0)
+
+parse_bitfield_fields: Parser, ast::BitfieldFields, Int, Int,
+   ast::ValueType, (Int, Int, Int) => (ast::ValueType, ast::TypeInfo, <>)
+parse_bitfield_fields = p, fields, cur_off, expected_bits, bvt, layout =>
+   p.curr.kind
+      [RParen]
+         parser_advance(p)
+         cur_off != expected_bits
+            |
+               parser_error(p, diag::DiagCode(E3153),
+                  "Bitfield total width " + str::from_int(cur_off) +
+                  " does not match backing integer width " +
+                  str::from_int(expected_bits))
+               mk_tp(ast::ValueType(Unknown),
+                  ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+            |
+               mk_tp(ast::ValueType(Record),
+                  ast::TypeInfo(Bitfield, ast::BitfieldInfo(fields, bvt,
+                     expected_bits)), <+>)
+      [Id]
+         fname = p.curr.text
+         parser_advance(p)
+         p.curr.text != ":"
+            |
+               parser_error(p, diag::DiagCode(E2015),
+                  "Expected ':' after bitfield field name '" + fname +
+                  "', got '" + p.curr.text + "'")
+               mk_tp(ast::ValueType(Unknown),
+                  ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+            |
+               parser_advance(p)
+               tok_is_nl(p.curr) && peek_is_indent_after_nl(p)
+                  | skip_nl_and_indent(p)
+               p.curr.text == "<>"
+                  |
+                     parser_advance(p)
+                     fields += ast::BitfieldField(fname, 1, cur_off, <+>)
+                     parse_bitfield_after_field(p, fields, cur_off + 1,
+                        expected_bits, bvt, layout)
+                  |
+                     p.curr.kind
+                        [Int]
+                           w = int_of_text(p.curr.text)
+                           w < 1
+                              |
+                                 parser_error(p, diag::DiagCode(E2019),
+                                    "Bitfield field width must be positive, got " +
+                                    str::from_int(w))
+                                 mk_tp(ast::ValueType(Unknown),
+                                    ast::TypeInfo(Prim, ast::ValueType(Unknown)),
+                                    <->)
+                              |
+                                 parser_advance(p)
+                                 fields += ast::BitfieldField(fname, w, cur_off, <->)
+                                 parse_bitfield_after_field(p, fields, cur_off + w,
+                                    expected_bits, bvt, layout)
+                        |
+                           parser_error(p, diag::DiagCode(E2018),
+                              "Expected bit width integer after ':', got '" +
+                              p.curr.text + "'")
+                           mk_tp(ast::ValueType(Unknown),
+                              ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+      |
+         parser_error(p, diag::DiagCode(E2064),
+            "Expected field name or ')' in bitfield, got '" + p.curr.text +
+            "'")
+         mk_tp(ast::ValueType(Unknown),
+            ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+
+
+eval_ct_type_str: ast::Expr => String
+eval_ct_type_str = e =>
+   e
+      [Str s] s
+      [Var v]
+         v
+            ["os"] ast::triple_os(cur_target_triple)
+            ["arch"] ast::triple_arch(cur_target_triple)
+            ["target"] cur_target_triple
+            | ""
+      | ""
+
+eval_ct_type_bool: ast::Expr => <>
+eval_ct_type_bool = e =>
+   e
+      [Bin b]
+         b.0
+            [Eq] eval_ct_type_str(b.1) == eval_ct_type_str(b.2)
+            [NotEq] eval_ct_type_str(b.1) != eval_ct_type_str(b.2)
+            [And] eval_ct_type_bool(b.1) && eval_ct_type_bool(b.2)
+            [Or] eval_ct_type_bool(b.1) || eval_ct_type_bool(b.2)
+            | <->
+      [Unary u]
+         u.0
+            [Not] !eval_ct_type_bool(u.1)
+            | <->
+      | <->
+
+validate_ct_type_branch: Parser, ast::Expr => ()
+validate_ct_type_branch = p, e =>
+   e
+      [Var tname]
+         lt = lookup_type(p.user_types, tname)
+         !<>(lt) && !<>(parse_dva_type_name(tname))
+            | parser_error(p, diag::DiagCode(E2064), "Undeclared type '" + tname + "' in #! type expression")
+      [Choice ch]
+         ch.branches @ br => validate_ct_type_branch(p, br.block)
+
+eval_ct_case_match: String, ast::Exprs => <>
+eval_ct_case_match = cond_s, cases =>
+   matched' = <->
+   cases @ cv =>
+      eval_ct_type_str(cv) == cond_s | (matched' = <+>; -->)
+   matched'
+
+eval_ct_type_expr: Parser, ast::Expr => (ast::ValueType, ast::TypeInfo, <>)
+eval_ct_type_expr = p, e =>
+   e
+      [Var tname]
+         lt = lookup_type(p.user_types, tname)
+         lt
+            | ti => mk_tp(type_info_value_type(ti), ti, <+>)
+            |
+               pr = parse_dva_type_name(tname)
+               pr
+                  | vt => mk_tp(vt, ast::TypeInfo(Prim, vt), <+>)
+                  |
+                     mk_tp(ast::ValueType(Unknown),
+                        ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+      [Choice ch]
+         ch.branches @ br => validate_ct_type_branch(p, br.block)
+         cond_s = eval_ct_type_str(ch.cond)
+         cond_b = eval_ct_type_bool(ch.cond)
+         nbr = ?ch.branches
+         picked' = ast::Expr(Int, 0)
+         found' = <->
+         nbr @ bi =>
+            br = ch.branches(bi)!!
+            !found'
+               |
+                  is_match = br.kind
+                     [Case] eval_ct_case_match(cond_s, br.case_values)
+                     [Bare] (bi == nbr - 1) || cond_b
+                     | <->
+                  is_match
+                     |
+                        picked' = br.block
+                        found' = <+>
+         found'
+            | eval_ct_type_expr(p, picked')
+            |
+               mk_tp(ast::ValueType(Unknown),
+                  ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+      |
+         mk_tp(ast::ValueType(Unknown),
+            ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+
+parse_ct_type_expr: Parser => (ast::ValueType, ast::TypeInfo, <>)
+parse_ct_type_expr = p =>
+   parser_advance(p)
+   ch_opt = parse_choice(p)
+   ch_opt
+      | ch_e => eval_ct_type_expr(p, ch_e)
+      |
+         mk_tp(ast::ValueType(Unknown),
+            ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+
+// The type atom: a primitive name, a user-declared type, a forward reference,
+// a parenthesized record/slice type, or a ramification '<>' / '<...>'.
+parse_type_atom: Parser => (ast::ValueType, ast::TypeInfo, <>)
+parse_type_atom = p =>
+   p.curr.text
+      ["<>", "<|>"] parse_ram_type_empty(p)
+      ["<|"] parse_ram_np_type(p)
+      ["<"] parse_ram_type(p)
+      |
+         p.curr.kind
+            [CT] parse_ct_type_expr(p)
+            [PackedKw] parse_packed_type(p)
+            [AlignKw] parse_align_type(p)
+            [LParen] parse_record_type(p)
+            [Id] parse_named_type(p)
+            |
+               mk_tp(ast::ValueType(Unknown),
+                  ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+
+// The optional capacity inside "{}": a positive integer, or 0 (default) when
+// the braces are empty.
+array_cap: Parser => Int
+array_cap = p =>
+   p.curr.kind
+      [Int]
+         n = int_of_text(p.curr.text)
+         parser_advance(p)
+         n
+      [Id]
+         lookup_const_int(p.consts, p.curr.text)
+            | n =>
+               parser_advance(p)
+               n
+            | 0
+      | 0
+
+int_of_text: String => Int
+int_of_text = text =>
+   str::to_int(text) | (.0) | 0
+
+parse_array_cap_and_close: Parser,
+   (ast::ValueType, ast::TypeInfo, <>) => (ast::ValueType, ast::TypeInfo, <>)
+parse_array_cap_and_close = p, elem_t =>
+   parser_advance(p)
+   cap = array_cap(p)
+   p.curr.kind
+      [RBrace]
+         parser_advance(p)
+         ti = ast::TypeInfo(Array, (elem_t.0, elem_t.1, cap))
+         mk_tp(ast::ValueType(Array), ti, <+>)
+      |
+         parser_error(p, diag::DiagCode(E2081),
+            "Expected '}' after the array capacity, got '" +
+            p.curr.text + "'")
+         mk_tp(ast::ValueType(Unknown),
+            ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+
+// The element type of a homogeneous record TypeInfo (its first field's type).
+rec_elem_type: ast::TypeInfo => ast::ValueType
+rec_elem_type = ti =>
+   ti
+      [Rec r] rec_first_field_type(r.0)
+      | ast::ValueType(Unknown)
+
+rec_first_field_type: ast::FieldTypes => ast::ValueType
+rec_first_field_type = fields =>
+   f = fields(0) | _ | ast::RecordFieldType(
+      "", ast::ValueType(Unknown),
+      ast::TypeInfo(Prim, ast::ValueType(Unknown)),
+      <->, ast::Expr(Int, 0))
+   f.val_type
+
+// "<>" — the empty ramification (a bare Flag).
+parse_ram_type_empty: Parser => (ast::ValueType, ast::TypeInfo, <>)
+parse_ram_type_empty = p =>
+   parser_advance(p)
+   e = ast::RamSlotInfo(
+      <->, ast::ValueType(Unknown),
+      ast::TypeInfo(Prim, ast::ValueType(Unknown)))
+   mk_tp(ast::ValueType(Flag), ast::TypeInfo(Ram, (e, e)), <+>)
+
+// "<A | B>" — a declared ramification. Ported minimally: slots are parsed as
+// payload types separated by '|'; a bare '>' closes a no-payload slot.
+parse_ram_type: Parser => (ast::ValueType, ast::TypeInfo, <>)
+parse_ram_type = p =>
+   parser_advance(p)
+   r = slots(p, ast::RamSlotInfo(
+      <->, ast::ValueType(Unknown),
+      ast::TypeInfo(Prim, ast::ValueType(Unknown))),
+      ast::RamSlotInfo(<->, ast::ValueType(Unknown),
+      ast::TypeInfo(Prim, ast::ValueType(Unknown))))
+   mk_tp(r.0, r.1, r.2)
+
+slots: Parser, ast::RamSlotInfo,
+   ast::RamSlotInfo => (ast::ValueType, ast::TypeInfo, <>)
+slots = p, l, r =>
+   p.curr.text
+      ["|>"]
+         parser_advance(p)
+         mk_tp(ast::ValueType(Ram), ast::TypeInfo(Ram, (l, r)), <+>)
+      ["|"]
+         parser_advance(p)
+         p.curr.text
+            [">"]
+               parser_advance(p)
+               mk_tp(ast::ValueType(Ram), ast::TypeInfo(Ram, (l, r)), <+>)
+            |
+               pt = parse_type(p)
+               !pt.2 | mk_tp(pt.0, pt.1, <->) |
+                  p.curr.text
+                     [">"]
+                        parser_advance(p)
+                        mk_tp(ast::ValueType(Ram),
+                           ast::TypeInfo(Ram, (l, ast::RamSlotInfo(
+                              <+>, pt.0, pt.1))), <+>)
+                     | mk_tp(pt.0, pt.1, <->)
+      |
+         p.curr.text
+            [">"]
+               parser_advance(p)
+               mk_tp(ast::ValueType(Ram), ast::TypeInfo(Ram, (l, r)), <+>)
+            |
+               pt = parse_type(p)
+               !pt.2 | mk_tp(pt.0, pt.1, <->) |
+                  n = slots(p, ast::RamSlotInfo(<+>, pt.0, pt.1), r)
+                  mk_tp(n.0, n.1, n.2)
+
+// "(field: Type, ...)" — a record type; "()" is Unit; "T * N" repetition.
+parse_record_type: Parser => (ast::ValueType, ast::TypeInfo, <>)
+parse_record_type = p =>
+   parse_record_type_inner(p, <->)
+
+parse_record_type_inner: Parser, <> => (ast::ValueType, ast::TypeInfo, <>)
+parse_record_type_inner = p, allow_single =>
+   lp_line = p.curr.line
+   parser_advance(p)
+   skip_type_layout(p)
+   p.curr.kind
+      [RParen]
+         parser_advance(p)
+         allow_single
+            |
+               parser_error(p, diag::DiagCode(E2084),
+                  "Single-field records are not allowed: a record must have at least 2 fields")
+               mk_tp(ast::ValueType(Unknown),
+                  ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+            |
+               mk_tp(ast::ValueType(Unit),
+                  ast::TypeInfo(Prim, ast::ValueType(Unit)), <+>)
+      |
+         rf = rfields(p, ast::FieldTypes(), allow_single, <->,
+            (p.curr.col, p.indent_level, <->, lp_line))
+         mk_tp(rf.0, rf.1, rf.2)
+
+rfields: Parser, ast::FieldTypes, <>, <>,
+   (Int, Int, <>, Int) => (ast::ValueType, ast::TypeInfo, <>)
+rfields = p, fields, allow_single, is_repeated, layout =>
+   p.curr.kind
+      [RParen]
+         parser_advance(p)
+         ?fields < 2
+            |
+               parser_error(p, diag::DiagCode(E2084),
+                  "Single-field records are not allowed: a record must have at least 2 fields")
+               mk_tp(ast::ValueType(Unknown),
+                  ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+            |
+               mk_tp(ast::ValueType(Record),
+                  ast::TypeInfo(Rec, (fields, <->, <->,
+                     ast::ValueType(Unknown), ?fields, <->)), <+>)
+      |
+         fname' = ++""
+         is_id = p.curr.kind [Id]
+         col = parser_peek_next(p).text [":"]
+         is_id && col
+            |
+               fname' = p.curr.text
+               parser_advance(p)
+               parser_advance(p)
+               tok_is_nl(p.curr) && peek_is_indent_after_nl(p)
+                  | skip_nl_and_indent(p)
+         is_paren = p.curr.kind [LParen]
+         ft = parse_type(p)
+         !ft.2 | mk_tp(ft.0, ft.1, <->) |
+            is_slice_ft = ft.0 [Slice]
+            is_inline_rec = is_paren && !is_slice_ft && (ft.1 [Rec])
+            is_double_paren = is_paren && !is_slice_ft && !(ft.1 [Array, Map])
+            p.curr.text
+               ["*"]
+                  rfield_repeat(p, fields, fname', ft, (allow_single, is_repeated),
+                     layout)
+               |
+                  rt = rfield_tail(p, fields, fname',
+                     ft, (allow_single, is_repeated, is_inline_rec, is_double_paren), layout)
+                  mk_tp(rt.0, rt.1, rt.2)
+
+rfield_repeat: Parser, ast::FieldTypes, String,
+   (ast::ValueType, ast::TypeInfo, <>), (<>, <>),
+   (Int, Int, <>, Int) => (ast::ValueType, ast::TypeInfo, <>)
+rfield_repeat = p, fields, fname, ft, sr_flags, layout =>
+   fname != ""
+      |
+         parser_error(p, diag::DiagCode(E2017), "A repeated-type record field cannot be named.")
+         mk_tp(ast::ValueType(Unknown),
+            ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+      |
+         parser_advance(p)
+         p.curr.kind
+            [Int]
+               nr = parse_int_text(p.curr.text)
+               nr
+                  | n =>
+                     n < 1
+                        |
+                           parser_error(p, diag::DiagCode(E2019),
+                              diag::record_repeat_count(p.curr.text))
+                           mk_tp(ast::ValueType(Unknown),
+                              ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+                        |
+                           n > 1000000
+                              |
+                                 parser_error(p, diag::DiagCode(E2055),
+                                    diag::record_repeat_limit(n))
+                                 mk_tp(ast::ValueType(Unknown),
+                                    ast::TypeInfo(Prim,
+                                       ast::ValueType(Unknown)), <->)
+                              |
+                                 parser_advance(p)
+                                 (n - 1) @
+                                    fields += ast::RecordFieldType("",
+                                       ft.0, ft.1, <->, ast::Expr(Int, 0))
+                                 rf = ast::RecordFieldType("",
+                                    ft.0, ft.1, <->, ast::Expr(Int, 0))
+                                 rfield_tail_with_rf(p, fields, rf,
+                                    (sr_flags.0, <+>, <->, <->), layout)
+                  |
+                     parser_error(p, diag::DiagCode(E2019),
+                        diag::record_repeat_count(p.curr.text))
+                     mk_tp(ast::ValueType(Unknown),
+                        ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+            |
+               parser_error(p, diag::DiagCode(E2018),
+                  "Expected an integer repetition count after '*', got '" +
+                  p.curr.text + "'")
+               mk_tp(ast::ValueType(Unknown),
+                  ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+
+rfield_fn_type: Parser, ast::FieldTypes, ast::ValueType,
+   ast::TypeInfo => (ast::ValueType, ast::TypeInfo, <>)
+rfield_fn_type = p, all_fields, cur_vt, cur_rec =>
+   parser_advance(p)
+   skip_type_layout(p)
+   ret = parse_type(p)
+   !ret.2 | mk_tp(ret.0, ret.1, <->) |
+      skip_type_layout(p)
+      is_rp = p.curr.kind [RParen]
+      !is_rp
+         |
+            parser_error(p, diag::DiagCode(E2015),
+               "Expected ')' to close function type signature, got '" +
+               p.curr.text + "'")
+            mk_tp(ret.0, ret.1, <->)
+         |
+            parser_advance(p)
+            params = ast::VTypes()
+            infos = ast::VInfos()
+            all_fields @ f =>
+               params += f.val_type
+               infos += f.rec_type
+            is_unit = cur_vt [Unit]
+            is_zero_param = ?all_fields == 0 && is_unit
+            !is_zero_param
+               |
+                  params += cur_vt
+                  infos += cur_rec
+            fn_ti = ast::TypeInfo(Fn, (params, infos, ret.0, ret.1,
+               ast::CParams()))
+            mk_tp(ast::ValueType(Fn), fn_ti, <+>)
+
+rfield_close_rparen: Parser, ast::FieldTypes, ast::RecordFieldType,
+   (<>, <>, <>, <>) => (ast::ValueType, ast::TypeInfo, <>)
+rfield_close_rparen = p, fields, rf, flags =>
+   parser_advance(p)
+   ?fields == 0 && rf.name == "" && !rf.has_default && !flags.1
+      |
+         flags.3
+            |
+               parser_error(p, diag::DiagCode(E2083),
+                  "Redundant double parentheses in type: write '(...)', not '((...))'")
+               mk_tp(ast::ValueType(Unknown),
+                  ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+            |
+               !flags.0
+                  |
+                     parser_error(p, diag::DiagCode(E2084),
+                        "Single-field records are not allowed: a record must have at least 2 fields")
+                     mk_tp(ast::ValueType(Unknown),
+                        ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+                  | mk_tp(rf.val_type, rf.rec_type, <+>)
+      |
+         fields += rf
+         ?fields < 2
+            |
+               parser_error(p, diag::DiagCode(E2084),
+                  "Single-field records are not allowed: a record must have at least 2 fields")
+               mk_tp(ast::ValueType(Unknown),
+                  ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+            |
+               mk_tp(ast::ValueType(Record),
+                  ast::TypeInfo(Rec, (fields, <->, <->,
+                     ast::ValueType(Unknown), ?fields, <->)), <+>)
+
+rfield_after_comma: Parser, ast::FieldTypes, ast::RecordFieldType,
+   (<>, <>, <>, <>), (Int, Int, <>, Int) => (ast::ValueType, ast::TypeInfo, <>)
+rfield_after_comma = p, fields, rf, flags, layout =>
+   parser_advance(p)
+   skip_type_layout(p)
+   fields += rf
+   next_layout = layout.3 > 0 && p.curr.line > layout.3 && !(p.curr.kind [RParen])
+      | (p.curr.col, p.indent_level, layout.2, 0)
+      | layout
+   rfields(p, fields, flags.0, flags.1, next_layout)
+
+rfield_misaligned: Parser, Int => (ast::ValueType, ast::TypeInfo, <>)
+rfield_misaligned = p, expected_col =>
+   parser_error(p, diag::DiagCode(E2015),
+      "Misaligned field in record type declaration: expected column " +
+      str::from_int(expected_col) + ", got column " + str::from_int(p.curr.col))
+   mk_tp(ast::ValueType(Unknown),
+      ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+
+rfield_tail_with_rf: Parser, ast::FieldTypes, ast::RecordFieldType,
+   (<>, <>, <>, <>), (Int, Int, <>, Int) => (ast::ValueType, ast::TypeInfo, <>)
+rfield_tail_with_rf = p, fields, rf, flags, layout =>
+   p.curr.kind
+      [Comma]
+         rfield_after_comma(p, fields, rf, flags, layout)
+      [RParen]
+         rfield_close_rparen(p, fields, rf, flags)
+      |
+         has_nl = tok_is_nl(p.curr) || tok_is_dedent(p.curr) || p.just_dedented
+         !has_nl
+            |
+               parser_error(p, diag::DiagCode(E2015),
+                  "Expected ',' or ')' after record field, got '" +
+                  p.curr.text + "'")
+               mk_tp(ast::ValueType(Unknown),
+                  ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+            |
+               unwind_to_indent(p, layout.1)
+               p.curr.kind
+                  [Comma]
+                     rfield_after_comma(p, fields, rf, flags, layout)
+                  [RParen]
+                     rfield_close_rparen(p, fields, rf, flags)
+                  [Dedent]
+                     skip_nl_dedent(p)
+                     p.curr.kind
+                        [RParen] rfield_close_rparen(p, fields, rf, flags)
+                        | rfield_misaligned(p, layout.0)
+                  [Indent]
+                     skip_nl_indent(p)
+                     p.curr.kind
+                        [RParen] rfield_close_rparen(p, fields, rf, flags)
+                        | rfield_misaligned(p, layout.0)
+                  |
+                     p.curr.col == layout.0 && p.indent_level == layout.1
+                        |
+                           fields += rf
+                           rfields(p, fields, flags.0, flags.1,
+                              (layout.0, layout.1, <+>, 0))
+                        | rfield_misaligned(p, layout.0)
+
+rfield_tail: Parser, ast::FieldTypes, String,
+   (ast::ValueType, ast::TypeInfo, <>), (<>, <>, <>, <>),
+   (Int, Int, <>, Int) => (ast::ValueType, ast::TypeInfo, <>)
+rfield_tail = p, fields, fname, ft, flags, layout =>
+   p.curr.text
+      ["=>"]
+         layout.2
+            |
+               parser_error(p, diag::DiagCode(E2015),
+                  "Function parameter types must be separated by ',', not a newline")
+               mk_tp(ast::ValueType(Unknown),
+                  ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+            |
+               ?fields == 0 && fname == "" && flags.2
+                  |
+                     parser_error(p, diag::DiagCode(E2082),
+                        "Function-parameter types are flat and separate: " +
+                        "write '(A, B => C)', not '((A, B) => C)'. The inner " +
+                        "'(A, B)' parsed as a single record parameter.")
+                     mk_tp(ast::ValueType(Unknown),
+                        ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+                  | rfield_fn_type(p, fields, ft.0, ft.1)
+      |
+         has_def = p.curr.text == "="
+         has_def
+            |
+               parser_advance(p)
+               p.is_stmt = <->
+               def_opt = tok_is_nl(p.curr) | parse_indented_rhs(p) | parse_choice(p)
+               def_opt
+                  | def_e =>
+                     rf = ast::RecordFieldType(fname, ft.0, ft.1, <+>, def_e)
+                     rfield_tail_with_rf(p, fields, rf, flags, layout)
+                  |
+                     mk_tp(ast::ValueType(Unknown),
+                        ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+            |
+               rf = ast::RecordFieldType(fname, ft.0, ft.1, <->,
+                  ast::Expr(Int, 0))
+               rfield_tail_with_rf(p, fields, rf, flags, layout)
+
+ct_scope_has: String, String => <>
+ct_scope_has = scope, name =>
+   ?scope == 0
+      | <->
+      | ct_scope_has_comma(scope, name, 0, 0)
+
+ct_scope_has_comma: String, String, Int, Int => <>
+ct_scope_has_comma = scope, name, start, cur =>
+   cur !> ?scope
+      |
+         cur == ?scope || scope(cur) == 44
+            |
+               scope(start..cur) == name
+                  | <+>
+                  |
+                     cur == ?scope
+                        | <->
+                        | ct_scope_has_comma(scope, name, cur + 1, cur + 1)
+            | ct_scope_has_comma(scope, name, start, cur + 1)
+      | <->
+
+// A named type: a user-declared type, a primitive, or a forward reference.
+ram_ti_vt: ast::TypeInfo => ast::ValueType
+ram_ti_vt = ti =>
+   ti
+      [Ram r]
+         !r.0.has_payload && !r.1.has_payload
+            | ast::ValueType(Flag)
+            | ast::ValueType(Ram)
+      | ast::ValueType(Ram)
+
+type_info_value_type: ast::TypeInfo => ast::ValueType
+type_info_value_type = ti =>
+   ti
+      [Rec] ast::ValueType(Record)
+      [Ram] ram_ti_vt(ti)
+      [Enum] ast::ValueType(Enum)
+      [Array] ast::ValueType(Array)
+      [Map] ast::ValueType(Map)
+      [Prim vt] vt
+      | ast::ValueType(Record)
+
+ti_is_typevar: ast::TypeInfo, String => <>
+ti_is_typevar = ti, name =>
+   ti
+      [TypeVar tv] tv == name
+      | <->
+
+ctfe_subst_type: ast::TypeInfo, String, ast::ValueType,
+   ast::TypeInfo => ast::TypeInfo
+ctfe_subst_type = ti, name, arg_vt, arg_ti =>
+   ti
+      [TypeVar tv]
+         tv == name
+            | arg_ti
+            | ti
+      [Prim] ti
+      [Rec r]
+         new_fields = ast::FieldTypes()
+         r.0 @ f =>
+            sub_ti = ctfe_subst_type(f.rec_type, name, arg_vt, arg_ti)
+            sub_vt = ti_is_typevar(f.rec_type, name) | arg_vt | f.val_type
+            new_fields += ast::RecordFieldType(f.name, sub_vt, sub_ti,
+               f.has_default, f.default_expr)
+         new_elem_vt = r.1 && ?new_fields > 0
+            | (new_fields(0) | nf => nf.val_type | r.3)
+            | r.3
+         ast::TypeInfo(Rec, (new_fields, r.1, r.2, new_elem_vt, r.4, r.5))
+      [Align a]
+         sub_inner = ctfe_subst_type(a.1, name, arg_vt, arg_ti)
+         ast::TypeInfo(Align, (a.0, sub_inner))
+      [Bitfield b] ast::TypeInfo(Bitfield, b)
+      [Ram r]
+         s0 = r.0
+         s1 = r.1
+         new_s0 = s0.has_payload
+            |
+               sub_ti0 = ctfe_subst_type(s0.payload_record, name,
+                  arg_vt, arg_ti)
+               is_tv0 = ti_is_typevar(s0.payload_record, name)
+               sub_vt0 = is_tv0 | arg_vt | s0.payload_type
+               ast::RamSlotInfo(<+>, sub_vt0, sub_ti0)
+            | s0
+         new_s1 = s1.has_payload
+            |
+               sub_ti1 = ctfe_subst_type(s1.payload_record, name,
+                  arg_vt, arg_ti)
+               is_tv1 = ti_is_typevar(s1.payload_record, name)
+               sub_vt1 = is_tv1 | arg_vt | s1.payload_type
+               ast::RamSlotInfo(<+>, sub_vt1, sub_ti1)
+            | s1
+         ast::TypeInfo(Ram, (new_s0, new_s1))
+      [Enum slots]
+         new_slots = ast::EnumSlots()
+         slots @ s =>
+            new_s = s.has_payload
+               |
+                  sub_ti = ctfe_subst_type(s.payload_record, name, arg_vt, arg_ti)
+                  sub_vt = ti_is_typevar(s.payload_record, name) | arg_vt | s.payload_type
+                  ast::EnumSlotInfo(s.label, <+>, sub_vt, sub_ti)
+               | s
+            new_slots += new_s
+         ast::TypeInfo(Enum, new_slots)
+      [Fn f]
+         new_vts = ast::VTypes()
+         new_vis = ast::VInfos()
+         ?f.0 @ k =>
+            pvt = f.0(k) | _ | ast::ValueType(Unknown)
+            pti = f.1(k) | _ | ast::TypeInfo(Prim, pvt)
+            sub_pti = ctfe_subst_type(pti, name, arg_vt, arg_ti)
+            sub_pvt = ti_is_typevar(pti, name) | arg_vt | pvt
+            new_vts += sub_pvt
+            new_vis += sub_pti
+         sub_ret_ti = ctfe_subst_type(f.3, name, arg_vt, arg_ti)
+         sub_ret_vt = ti_is_typevar(f.3, name) | arg_vt | f.2
+         ast::TypeInfo(Fn, (new_vts, new_vis, sub_ret_vt, sub_ret_ti, f.4))
+      [Array a]
+         sub_elem_ti = ctfe_subst_type(a.1, name, arg_vt, arg_ti)
+         sub_elem_vt = ti_is_typevar(a.1, name) | arg_vt | a.0
+         ast::TypeInfo(Array, (sub_elem_vt, sub_elem_ti, a.2))
+      [Map m]
+         sub_val_ti = ctfe_subst_type(m.2, name, arg_vt, arg_ti)
+         sub_val_vt = ti_is_typevar(m.2, name) | arg_vt | m.1
+         ast::TypeInfo(Map, (m.0, sub_val_vt, sub_val_ti))
+      | ti
+
+subst_type_gen: ast::TypeInfo, ast::CParams, ast::VTypes,
+   ast::VInfos, Int => ast::TypeInfo
+subst_type_gen = cur_ti, cps, vts, tis, i =>
+   i == ?vts || i == ?cps
+      | cur_ti
+      |
+         cp = cps(i) | _ | ast::CompileTimeParam("",
+            ast::ValueType(Unknown),
+            ast::TypeInfo(Prim, ast::ValueType(Unknown)))
+         vt = vts(i) | _ | ast::ValueType(Unknown)
+         ti = tis(i) | _ | ast::TypeInfo(Prim, ast::ValueType(Unknown))
+         next_ti = ctfe_subst_type(cur_ti, cp.name, vt, ti)
+         subst_type_gen(next_ti, cps, vts, tis, i + 1)
+
+parse_type_gen_args: Parser, ast::VTypes,
+   ast::VInfos => (ast::VTypes, ast::VInfos, <>)
+parse_type_gen_args = p, vts, tis =>
+   p.curr.kind
+      [RParen] (vts, tis, <+>)
+      |
+         arg_ty = parse_type(p)
+         !arg_ty.2
+            | (vts, tis, <->)
+            |
+               next_vts = vts
+               next_vts += arg_ty.0
+               next_tis = tis
+               next_tis += arg_ty.1
+               p.curr.kind [Comma] parser_advance(p)
+               parse_type_gen_args(p, next_vts, next_tis)
+
+parse_type_gen_call: Parser, String,
+   ast::TypeInfo => (ast::ValueType, ast::TypeInfo, <>)
+parse_type_gen_call = p, name, ti =>
+   parser_advance(p) // consume '('
+   args = parse_type_gen_args(p, ast::VTypes(), ast::VInfos())
+   !args.2
+      | (ast::ValueType(Unknown),
+         ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+      |
+         p.curr.kind [RParen] parser_advance(p)
+         ti
+            [Fn fn_info]
+               subst_ti = subst_type_gen(fn_info.3, fn_info.4, args.0,
+                  args.1, 0)
+               subst_vt = type_info_value_type(subst_ti)
+               mk_tp(subst_vt, subst_ti, <+>)
+            | (ast::ValueType(Unknown),
+               ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+
+parse_named_type: Parser => (ast::ValueType, ast::TypeInfo, <>)
+parse_named_type = p =>
+   tok = p.curr
+   name = p.curr.text
+   parser_advance(p)
+   name
+      ["Void", "void"]
+         parser_error(p, diag::DiagCode(E2106),
+            "'Void' is illegal syntax anywhere except #foreign blocks")
+         mk_tp(ast::ValueType(Unknown),
+            ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+      | parse_named_type_valid(p, tok, name)
+
+parse_named_type_valid: Parser, lexer::Tok,
+   String => (ast::ValueType, ast::TypeInfo, <>)
+parse_named_type_valid = p, tok, name =>
+   ct_scope_has(p.ct_scope, name)
+      | mk_tp(ast::ValueType(Unknown), ast::TypeInfo(TypeVar, name), <+>)
+      |
+         lt = lookup_type(p.user_types, name)
+         lt
+            | ti =>
+               is_lp = p.curr.kind [LParen]
+               is_gen = ti [Fn]
+               is_lp && is_gen
+                  | parse_type_gen_call(p, name, ti)
+                  |
+                     tvar = ast::TypeInfo(TypeVar, name)
+                     ti
+                        [Ram] mk_tp(ram_ti_vt(ti), tvar, <+>)
+                        [Enum] mk_tp(ast::ValueType(Enum), tvar, <+>)
+                        [Array] mk_tp(ast::ValueType(Array), tvar, <+>)
+                        [Map] mk_tp(ast::ValueType(Map), tvar, <+>)
+                        [Prim] mk_tp(ast::ValueType(Record), tvar, <+>)
+                        [Rec] mk_tp(ast::ValueType(Record), tvar, <+>)
+                        [Fn] mk_tp(ast::ValueType(Fn), tvar, <+>)
+                        | mk_tp(ast::ValueType(Record), tvar, <+>)
+            |
+               pr = parse_dva_type_name(name)
+               pr | vt => mk_tp(vt, ast::TypeInfo(Prim, vt), <+>) |
+                  is_mod_qual = p.curr.text ["::"]
+                  is_mod_qual
+                     |
+                        parser_advance(p)
+                        sym = p.curr.text
+                        parser_advance(p)
+                        qual = name + "::" + sym
+                        ql = lookup_type(p.user_types, qual)
+                        ql
+                           | qti =>
+                              qtvar = ast::TypeInfo(TypeVar, qual)
+                              qti
+                                 [Ram] mk_tp(ram_ti_vt(qti), qtvar, <+>)
+                                 [Enum] mk_tp(ast::ValueType(Enum), qtvar, <+>)
+                                 [Array]
+                                    mk_tp(ast::ValueType(Array), qtvar, <+>)
+                                 [Map] mk_tp(ast::ValueType(Map), qtvar, <+>)
+                                 [Rec] mk_tp(ast::ValueType(Record), qtvar, <+>)
+                                 | mk_tp(ast::ValueType(Record), qtvar, <+>)
+                           |
+                              frs = p.forward_refs
+                              frs += ForwardRef(tok, qual,
+                                 ast::TypeInfo(TypeVar, qual))
+                              p.forward_refs = frs
+                              mk_tp(ast::ValueType(Record),
+                                 ast::TypeInfo(TypeVar, qual), <+>)
+                     |
+                        // Forward reference: a type name not yet declared
+                        // (mutual recursion). A TypeVar placeholder is returned
+                        // now, and parse_program's resolve_refs flags an
+                        // undeclared name.
+                        frs2 = p.forward_refs
+                        frs2 += ForwardRef(tok, name,
+                           ast::TypeInfo(TypeVar, name))
+                        p.forward_refs = frs2
+                        mk_tp(ast::ValueType(Record),
+                           ast::TypeInfo(TypeVar, name), <+>)
+
+// The user-type table lookup: the map key access unwrapped.
+lookup_type: TypeEntry{}, String => <ast::TypeInfo|>
+lookup_type = lst, name =>
+   found' = <->
+   res' = ast::TypeInfo(Prim, ast::ValueType(Unknown))
+   lst @ e =>
+      e.name == name
+         |
+            found' = <+>
+            res' = e.ti
+            0
+   found' | <+ res' +>
+
+// Appends a type entry to the list and returns the updated list.
+add_type: TypeEntry{}, String, ast::TypeInfo => TypeEntry{}
+add_type = lst, name, ti =>
+   lst += TypeEntry(name, ti)
+   lst
+
+// Builds a (ValueType, TypeInfo, <>) tuple with the DECLARED return type —
+// a literal 3-tuple of enum elements infers as a homogeneous flag record in
+// older codegen, which then mis-merges with function results.
+mk_tp: ast::ValueType, ast::TypeInfo, <> => (ast::ValueType, ast::TypeInfo, <>)
+mk_tp = vt, ti, ok => (vt, ti, ok)
+
+parse_type_suffixes: Parser,
+   (ast::ValueType, ast::TypeInfo, <>) => (ast::ValueType, ast::TypeInfo, <>)
+parse_type_suffixes = p, at =>
+   p.curr.kind
+      [LBrace]
+         arr = parse_array_cap_and_close(p, at)
+         parse_type_suffixes(p, arr)
+      [LBracket]
+         parser_advance(p)
+         p.curr.kind
+            [RBracket]
+               parser_advance(p)
+               sl_flds = ast::FieldTypes()
+               sl_flds += ast::RecordFieldType("", at.0, at.1, <->, ast::Expr(Int, 0))
+               sl_ti = ast::TypeInfo(Rec, (sl_flds, <+>, <->, ast::ValueType(Unknown), 1, <->))
+               parse_type_suffixes(p, mk_tp(ast::ValueType(Slice), sl_ti, <+>))
+            |
+               parser_error(p, diag::DiagCode(E2015),
+                  "Expected ']' for slice type, got '" + p.curr.text + "'")
+               mk_tp(ast::ValueType(Unknown),
+                  ast::TypeInfo(Prim, ast::ValueType(Unknown)), <->)
+      | parse_type_map(p, at)
+
+// The full type: the atom, optional '{}' array suffix, then a '^' map continuation.
+parse_type: Parser => (ast::ValueType, ast::TypeInfo, <>)
+parse_type = p =>
+   at = parse_type_atom(p)
+   !at.2 | (at.0, at.1, <->) | parse_type_suffixes(p, at)
+
+parse_type_map: Parser, (ast::ValueType, ast::TypeInfo, <>) => (ast::ValueType, ast::TypeInfo, <>)
+parse_type_map = p, at =>
+   p.curr.text
+      ["^"]
+         parser_advance(p)
+         vt2 = parse_type(p)
+         !vt2.2 | (vt2.0, vt2.1, <->) |
+            map_key_ok(at.0)
+               | mk_tp(ast::ValueType(Map),
+                  ast::TypeInfo(Map, (at.0, vt2.0, vt2.1)), <+>)
+               |
+                  parser_error(p, diag::DiagCode(E2090),
+                     "Map key type must be String, Int, or Addr")
+                  mk_tp(ast::ValueType(Unknown), at.1, <->)
+      |
+         mk_tp(at.0, at.1, <+>)
+
+map_key_ok: ast::ValueType => <>
+map_key_ok = [Str, Int, Rune, I8, I16, I32, I64, U8, U16, U32, U64, RawPtr]
+
+// Compile-time unary operator "#size T": the byte size of T in bytes.
+parse_sizeof: Parser => <ast::Expr|>
+parse_sizeof = p =>
+   t = parse_type(p)
+   !t.2
+      | <-->
+      | <+ ast::Expr(SizeOf, ast::SizeOfExpr(t.0, t.1)) +>
+
+// Compile-time unary operator "#align T": the byte alignment of T in bytes.
+parse_alignof: Parser => <ast::Expr|>
+parse_alignof = p =>
+   t = parse_type(p)
+   !t.2
+      | <-->
+      | <+ ast::Expr(AlignOf, ast::AlignOfExpr(t.0, t.1)) +>
+
+// --- type declarations (#type) ----------------------------------------------
+
+// "#type Name ..." — the type-declaration directive: consumes '#type' and the
+// name, then dispatches on the schema (a '<' opens an enum or ram, a '(' a
+// record, anything else is parsed as a full type). Registers the type in
+// user_types and returns a TypeDecl node.
+parse_type_decl: Parser => <ast::Expr|>
+parse_type_decl = p =>
+   parser_advance(p)
+   p.curr.kind
+      [Id]
+         name = p.curr.text
+         parser_advance(p)
+         p.curr.text
+            [":"] parser_advance(p)
+         p.curr.kind
+            [Newline]
+               parse_indent_decl(p, name)
+            |
+               p.curr.text
+                  ["<"]
+                     decl_is_enum(p)
+                        |
+                           predeclare(p, name,
+                              ast::TypeInfo(Enum, ast::EnumSlots()))
+                           parse_enum_decl(p)
+                              | ti =>
+                                 ok_min = enum_min_variants(p, name, ti)
+                                 ok_min
+                                    | declare_type(p, name, ti)
+                                    | <-->
+                              | <-->
+                        |
+                           slot = ast::RamSlotInfo(<->,
+                              ast::ValueType(Unknown),
+                              ast::TypeInfo(Prim, ast::ValueType(Unknown)))
+                           ram_ti = ast::TypeInfo(Ram, (slot, slot))
+                           predeclare(p, name, ram_ti)
+                           ty = parse_type(p)
+                           !ty.2 | <--> |
+                              declare_type(p, name, ty.1)
+                  |
+                     p.curr.kind
+                        [LParen]
+                           rt = parse_type(p)
+                           !rt.2 | <--> |
+                              rt.1
+                                 [Prim, TypeVar]
+                                    parser_error(p, diag::DiagCode(E2084),
+                                       "Single-field records are not allowed: a record must have at least 2 fields")
+                                    <-->
+                                 | declare_type(p, name, rt.1)
+                        |
+                           ty2 = parse_type(p)
+                           !ty2.2 | <--> |
+                              declare_type(p, name, ty2.1)
+      | <-->
+
+// "#type Name" + Newline + Indent + "field: Type" lines — an indented record
+// type declaration block (no parens/commas), mirroring the native's
+// parser_parse_indent_type_fields.
+parse_indent_decl: Parser, String => <ast::Expr|>
+parse_indent_decl = p, name =>
+   p.curr.kind
+      [Newline]
+         parser_advance(p)
+         parse_indent_decl(p, name)
+      [Indent]
+         parser_advance(p)
+         skip_nl_only(p)
+         indent_fields(p, ast::FieldTypes(), p.indent_level)
+            | ti => declare_type(p, name, ti)
+            | <-->
+      | <-->
+
+indent_field_after: Parser, ast::FieldTypes, Int => <ast::TypeInfo|>
+indent_field_after = p, fields, block_indent =>
+   p.curr.kind
+      [Comma]
+         parser_advance(p)
+         unwind_to_indent(p, block_indent)
+         indent_fields(p, fields, block_indent)
+      |
+         has_nl = tok_is_nl(p.curr) || tok_is_dedent(p.curr) ||
+            tok_is_eof(p.curr) || p.just_dedented
+         !has_nl
+            |
+               parser_error(p, diag::DiagCode(E2015),
+                  "Expected ',' or newline after field in record type declaration, got '" +
+                  p.curr.text + "'")
+               <-->
+            |
+               unwind_to_indent(p, block_indent)
+               indent_fields(p, fields, block_indent)
+
+// The field lines of an indented record type block, until the matching
+// Dedent/EOF. "field: Type" lines (commas optional); a "field:" alone followed
+// by a deeper Indent starts a nested inline record.
+indent_fields: Parser, ast::FieldTypes, Int => <ast::TypeInfo|>
+indent_fields = p, fields, block_indent =>
+   p.curr.kind
+      [Newline]
+         parser_advance(p)
+         indent_fields(p, fields, block_indent)
+      [Dedent]
+         parser_advance(p)
+         mk_tp_rec(p, fields)
+      [Eof]
+         mk_tp_rec(p, fields)
+      [Id]
+         fname = p.curr.text
+         parser_advance(p)
+         p.curr.text
+            [":"]
+               parser_advance(p)
+               p.curr.kind
+                  [Newline]
+                     parser_advance(p)
+                     p.curr.kind
+                        [Indent]
+                           parser_advance(p)
+                           skip_nl_only(p)
+                           indent_fields(p, ast::FieldTypes(), p.indent_level)
+                              | nested =>
+                                 fields += ast::RecordFieldType(fname,
+                                    ast::ValueType(Record), nested,
+                                    <->, ast::Expr(Int, 0))
+                                 indent_fields(p, fields, block_indent)
+                              | <-->
+                        | <-->
+                  |
+                     ft = parse_type(p)
+                     !ft.2 | <--> |
+                        has_def = p.curr.text == "="
+                        has_def
+                           |
+                              parser_advance(p)
+                              p.is_stmt = <->
+                              def_opt = tok_is_nl(p.curr) | parse_indented_rhs(p) | parse_choice(p)
+                              def_opt
+                                 | def_e =>
+                                    rf = ast::RecordFieldType(fname,
+                                       ft.0, ft.1, <+>, def_e)
+                                    fields += rf
+                                    indent_field_after(p, fields, block_indent)
+                                 | <-->
+                           |
+                              rf = ast::RecordFieldType(fname, ft.0, ft.1,
+                                 <->, ast::Expr(Int, 0))
+                              fields += rf
+                              indent_field_after(p, fields, block_indent)
+            |
+               parser_error(p, diag::DiagCode(E2042), "Expected ':' after field name '" +
+                  fname + "' in record type declaration block")
+               <-->
+      [Indent]
+         parser_error(p, diag::DiagCode(E2041),
+            "Expected a field name in record type declaration block")
+         <-->
+      | <-->
+
+// Finalizes an indented-block field list as a record TypeInfo (the same
+// simplification the paren form uses: heterogeneous, elem_type Unknown).
+mk_tp_rec: Parser, ast::FieldTypes => <ast::TypeInfo|>
+mk_tp_rec = p, fields =>
+   ?fields < 2
+      |
+         parser_error(p, diag::DiagCode(E2084),
+            "Single-field records are not allowed: a record must have at least 2 fields")
+         <-->
+      |
+         <+ ast::TypeInfo(Rec, (fields, <->, <->, ast::ValueType(Unknown),
+            ?fields, <->)) +>
+
+// A '<' schema is an enum when its first item is a label (an identifier whose
+// next token is '(' payload, ',' or ')' — the ram forms are '|', a leading
+// parenthesized slot, or a bare '>').
+peek_non_layout: lexer::Lx => lexer::Tok
+peek_non_layout = c =>
+   t = lexer::next_tok(c, 0)
+   t.kind
+      [Newline, Indent, Dedent] peek_non_layout(c)
+      | t
+
+peek_skip_parens: lexer::Lx, Int => ()
+peek_skip_parens = c, depth =>
+   depth > 0
+      |
+         t = lexer::next_tok(c, 0)
+         t.kind != lexer::TokKind(Eof)
+            |
+               t.kind
+                  [LParen] peek_skip_parens(c, depth + 1)
+                  [RParen] peek_skip_parens(c, depth - 1)
+                  | peek_skip_parens(c, depth)
+
+decl_is_enum: Parser => <>
+decl_is_enum = p =>
+   c = lexer::clone_lx(p.lx)
+   first = peek_non_layout(c)
+   tok = peek_non_layout(c)
+   first_is_id = first.kind [Id]
+   tok_is_lp = tok.kind [LParen]
+   is_payload = first_is_id && tok_is_lp
+   tok2 = is_payload
+      |
+         peek_skip_parens(c, 1)
+         peek_non_layout(c)
+      | tok
+   first_is_paren = first.kind [LParen]
+   is_ram = (first.text ["|", ">"]) || first_is_paren
+   is_ram
+      | <->
+      |
+         is_ram2 = tok2.text == "|"
+         is_ram2
+            | <->
+            |
+               tok2_is_id_or_comma = tok2.kind [Comma, Id]
+               tok2_is_id_or_comma || (tok2.text == ">")
+
+// Block-form and inline enum parsing:
+enum_skip_newlines: Parser => ()
+enum_skip_newlines = p =>
+   p.curr.kind
+      [Newline]
+         parser_advance(p)
+         enum_skip_newlines(p)
+
+enum_skip_open_block: Parser => <>
+enum_skip_open_block = p =>
+   p.curr.kind
+      [Newline]
+         enum_skip_newlines(p)
+         p.curr.kind
+            [Indent]
+               parser_advance(p)
+               enum_skip_newlines(p)
+               <+>
+            | <->
+      | <->
+
+// "< Label(Type), Label >" or indented block — an enum declaration body.
+parse_enum_decl: Parser => <ast::TypeInfo|>
+parse_enum_decl = p =>
+   parser_advance(p)
+   is_block = enum_skip_open_block(p)
+   p.curr.text
+      [">"]
+         parser_error(p, diag::DiagCode(E2070),
+            "An enum declaration needs at least two variants")
+         <-->
+      |
+         enum_slots_loop(p, is_block, ast::EnumSlots(),
+            (p.curr.col, p.indent_level))
+
+enum_slots_loop: Parser, <>, ast::EnumSlots, (Int, Int) => <ast::TypeInfo|>
+enum_slots_loop = p, is_block, es, layout =>
+   p.curr.kind
+      [Id]
+         label = p.curr.text
+         !guard_is_variant(p.curr)
+            |
+               parser_error(p, diag::DiagCode(E2071),
+                  "Enum variant label '" + label +
+                  "' must start with an uppercase letter")
+               <-->
+            |
+               parser_advance(p)
+               enum_has_label(es, label)
+                  |
+                     parser_error(p, diag::DiagCode(E2074), "Duplicate variant label '" + label +
+                        "' in enum declaration")
+                     <-->
+                  |
+                     enum_parse_payload(p, is_block, es, label, layout)
+      |
+         parser_error(p, diag::DiagCode(E2071),
+            "Expected a variant label in enum declaration")
+         <-->
+
+enum_parse_payload: Parser, <>, ast::EnumSlots, String,
+   (Int, Int) => <ast::TypeInfo|>
+enum_parse_payload = p, is_block, es, label, layout =>
+   p.curr.kind
+      [LParen]
+         pt = parse_record_type_inner(p, <+>)
+         !pt.2 | <--> |
+            es += ast::EnumSlotInfo(label, <+>, pt.0, pt.1)
+            enum_after_variant(p, is_block, es, layout)
+      |
+         es += ast::EnumSlotInfo(
+            label, <->, ast::ValueType(Unknown),
+            ast::TypeInfo(Prim, ast::ValueType(Unknown)))
+         enum_after_variant(p, is_block, es, layout)
+
+enum_after_variant: Parser, <>, ast::EnumSlots, (Int, Int) => <ast::TypeInfo|>
+enum_after_variant = p, is_block, es, layout =>
+   is_block
+      | enum_after_variant_block(p, es, layout)
+      | enum_after_variant_inline(p, es, layout)
+
+enum_block_after_comma: Parser, ast::EnumSlots, (Int, Int) => <ast::TypeInfo|>
+enum_block_after_comma = p, es, layout =>
+   parser_advance(p)
+   unwind_to_indent(p, layout.1)
+   p.curr.kind [Dedent] skip_nl_dedent(p)
+   p.curr.text
+      [">"]
+         parser_advance(p)
+         <+ ast::TypeInfo(Enum, es) +>
+      |
+         enum_slots_loop(p, <+>, es, layout)
+
+enum_block_misaligned: Parser, Int => <ast::TypeInfo|>
+enum_block_misaligned = p, expected_col =>
+   parser_error(p, diag::DiagCode(E2075),
+      "Misaligned enum variant in type declaration: expected column " +
+      str::from_int(expected_col) + ", got column " + str::from_int(p.curr.col))
+   <-->
+
+enum_after_variant_block: Parser, ast::EnumSlots,
+   (Int, Int) => <ast::TypeInfo|>
+enum_after_variant_block = p, es, layout =>
+   p.curr.kind
+      [Comma]
+         enum_block_after_comma(p, es, layout)
+      |
+         p.curr.text
+            [">"]
+               parser_advance(p)
+               <+ ast::TypeInfo(Enum, es) +>
+            |
+               has_nl = tok_is_nl(p.curr) || tok_is_dedent(p.curr) || p.just_dedented
+               !has_nl
+                  |
+                     parser_error(p, diag::DiagCode(E2076),
+                        "Expected ',' or '>' after variant label in enum declaration")
+                     <-->
+                  |
+                     unwind_to_indent(p, layout.1)
+                     p.curr.kind
+                        [Comma]
+                           enum_block_after_comma(p, es, layout)
+                        [Dedent]
+                           skip_nl_dedent(p)
+                           p.curr.text
+                              [">"]
+                                 parser_advance(p)
+                                 <+ ast::TypeInfo(Enum, es) +>
+                              | enum_block_misaligned(p, layout.0)
+                        [Indent]
+                           skip_nl_indent(p)
+                           p.curr.text
+                              [">"]
+                                 parser_advance(p)
+                                 <+ ast::TypeInfo(Enum, es) +>
+                              | enum_block_misaligned(p, layout.0)
+                        |
+                           p.curr.text
+                              [">"]
+                                 parser_advance(p)
+                                 <+ ast::TypeInfo(Enum, es) +>
+                              |
+                                 p.curr.col == layout.0 && p.indent_level == layout.1
+                                    |
+                                       p.curr.kind
+                                          [Id]
+                                             enum_slots_loop(p, <+>, es, layout)
+                                          |
+                                             parser_error(p, diag::DiagCode(E2075),
+                                                "Expected a variant label or '>' closing enum declaration")
+                                             <-->
+                                    | enum_block_misaligned(p, layout.0)
+
+enum_after_variant_inline: Parser, ast::EnumSlots,
+   (Int, Int) => <ast::TypeInfo|>
+enum_after_variant_inline = p, es, layout =>
+   p.curr.kind
+      [Comma]
+         parser_advance(p)
+         skip_type_layout(p)
+         p.curr.text
+            [">"]
+               parser_advance(p)
+               <+ ast::TypeInfo(Enum, es) +>
+            |
+               enum_slots_loop(p, <->, es, layout)
+      |
+         skip_type_layout(p)
+         p.curr.text
+            [">"]
+               parser_advance(p)
+               <+ ast::TypeInfo(Enum, es) +>
+            |
+               parser_error(p, diag::DiagCode(E2076),
+                  "Expected ',' or '>' after variant label in enum declaration")
+               <-->
+
+// Whether a label is already among an enum's declared variants (E2074).
+enum_has_label_at: ast::EnumSlots, String, Int => <>
+enum_has_label_at = es, label, i =>
+   i < ?es
+      |
+         s = es(i) | _ | ast::EnumSlotInfo(
+            "", <->, ast::ValueType(Unknown),
+            ast::TypeInfo(Prim, ast::ValueType(Unknown)))
+         s.label == label
+            | <+>
+            | enum_has_label_at(es, label, i + 1)
+      | <->
+
+enum_has_label: ast::EnumSlots, String => <>
+enum_has_label = es, label => enum_has_label_at(es, label, 0)
+
+// An enum needs at least two variants (E2070).
+enum_min_variants: Parser, String, ast::TypeInfo => <>
+enum_min_variants = p, name, ti =>
+   n = ti [Enum es] ?es | 0
+   n < 2
+      |
+         parser_error(p, diag::DiagCode(E2070),
+            "An enum declaration needs at least two variants in '" + name + "'")
+         <->
+      | <+>
+
+// Registers a placeholder TypeInfo before a declaration body parses, so a
+// self-referential payload ("Node(Tree)") resolves the name during the parse.
+predeclare: Parser, String, ast::TypeInfo => ()
+predeclare = p, name, ph =>
+   p.user_types = add_type(p.user_types, name, ph)
+
+// Registers a declared type in user_types and returns a TypeDecl node.
+declare_type: Parser, String, ast::TypeInfo => <ast::Expr|>
+declare_type = p, name, ti =>
+   p.user_types = add_type(p.user_types, name, ti)
+   <+ ast::Expr(TypeDecl, ast::TypeDeclExpr(name, ti)) +>
+
+// --- imports (#use) ---------------------------------------------------------
+
+find_use_eq: String, Int => Int
+find_use_eq = s, i =>
+   i < ?s
+      | s(i) == '=' | i | find_use_eq(s, i + 1)
+      | -1
+
+find_use_slash: String, Int => Int
+find_use_slash = s, i =>
+   i < ?s
+      | s(i) == '/' | i | find_use_slash(s, i + 1)
+      | -1
+
+trim_use_str: String => String
+trim_use_str = s =>
+   n = ?s
+   n == 0 | "" |
+      start' = 0
+      0..n @ i =>
+         c = s(i)
+         c [' ', '\t'] (start' = i + 1) | -->
+      end' = n
+      0..n @ j =>
+         idx = n - 1 - j
+         idx < start' | -->
+         c = s(idx)
+         c [' ', '\t'] (end' = idx) | -->
+      start' < end' | s(start'..end') | ""
+
+// "#use module" / "#use "path"" / "#use alias = path" —
+// module name is the alias, or last segment / package alias.
+parse_import: Parser, <>, <> => <ast::Expr|>
+parse_import = p, is_dyn, is_imp =>
+   raw_path = p.curr.text
+   parser_advance(p)
+   is_imp | p.has_use_import = <+>
+   eq_idx = find_use_eq(raw_path, 0)
+   parsed = eq_idx !< 0
+      |
+         name = trim_use_str(raw_path(0..eq_idx))
+         path = trim_use_str(raw_path(eq_idx + 1..))
+         (name, path)
+      |
+         has_at = ?raw_path > 0 && raw_path(0) == '@'
+         has_slash = find_use_slash(raw_path, 0) !< 0
+         name = has_at && !has_slash | raw_path(1..) | last_segment(raw_path)
+         (name, raw_path)
+   <+ ast::Expr(Import, ast::ImportStmt(parsed.0, parsed.1,
+      is_dyn, is_imp)) +>
+
+last_segment: String => String
+last_segment = p => path::basename(p)
+

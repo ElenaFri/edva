@@ -1,0 +1,2195 @@
+// src/parser/pexpr.dva — Expression parsing: entries, sequence/range/cycle tiers, Pratt core, atoms.
+//
+// Split from the former monolithic src/parser.dva. Sibling parser units are
+// imported unqualified via #use(import); external modules stay qualified.
+
+#use "../lexer"
+#use "../ast"
+#use "path"
+#use "str"
+#use "../operators"
+#use "../diag"
+#use "log"
+#use const
+#use unicode
+#use(import) pstate
+#use(import) plambda
+#use(import) ptype
+#use(import) ppost
+#use(import) pchoice
+#use(import) pident
+
+#public
+
+// --- expression parsing ----------------------------------------------------
+
+// Public entry: parse one expression from source text.
+parse: String => ast::Expr
+parse = src =>
+   r = parse_expr(parse_init(src))
+   r | _ | ast::Expr(Var, "<error>")
+
+// A parser over source text (public entry for program parsing).
+parse_init: String => Parser
+parse_init = src => parser_init(lexer::lex_init(src))
+
+// --- expression tiers ------------------------------------------------------
+
+// The full expression entry (mirrors parser_parse_expr): sequence is the
+// loosest binary tier; choice/cycle sit above the Pratt core.
+parse_expr: Parser => <ast::Expr|>
+parse_expr = p =>
+   parse_sequence(p)
+
+parse_sequence: Parser => <ast::Expr|>
+parse_sequence = p =>
+   // An IDENTIFIER-start expression stops before ';' (the native's
+   // parser_parse_expr_after_identifier ends in cycle_with_lhs, no sequence):
+   // "a; b" is "a" with ";" left for the next statement, and "(a + b; c)" is
+   // a group error. Named assignments ("x = 5; y = 6") and member writes
+   // continue ';' via their OWN seq_loop (parse_named_assign /
+   // parse_finish_assignment), so the outer sequence must not double-consume.
+   p.curr.kind
+      [Id]
+         parse_cycle(p)
+      | seq_sequence(p)
+
+seq_sequence: Parser => <ast::Expr|>
+seq_sequence = p =>
+   parse_cycle(p)
+      | c => seq_loop(p, c)
+      | <-->
+
+seq_loop: Parser, ast::Expr => <ast::Expr|>
+seq_loop = p, lhs =>
+   p.curr.kind
+      [Semi]
+         parser_advance(p)
+         p.is_stmt = <+>
+         parse_cycle(p)
+            | r =>
+               p.is_stmt = <->
+               n = ast::Expr(Bin, (ast::BinaryOp(Seq), lhs, r))
+               seq_loop(p, n)
+            | <-->
+      | <+ lhs +>
+
+parse_cycle: Parser => <ast::Expr|>
+parse_cycle = p =>
+   parse_choice(p)
+      | c => cycle_cont(p, c)
+      | <-->
+
+cycle_cont: Parser, ast::Expr => <ast::Expr|>
+cycle_cont = p, lhs =>
+   is_at = token_is_op(p.curr, "@")
+   is_atat = token_is_op(p.curr, "@@")
+   is_at || is_atat
+      |
+         is_rune = is_atat
+         parser_advance(p)
+         p.cycle_depth = p.cycle_depth + 1
+         b_opt = parse_block(p)
+         p.cycle_depth = p.cycle_depth - 1
+         b_opt
+            | body =>
+               cyc = ast::Expr(Cycle, ast::CycleExpr(lhs, body, is_rune))
+               token_is_op(p.curr, ">--")
+                  |
+                     parser_advance(p)
+                     parse_block(p)
+                        | br =>
+                           <+ ast::Expr(CycleEscape, ast::CycleEscapeExpr(
+                              cyc, br)) +>
+                        | <-->
+                  | <+ cyc +>
+            | <-->
+      | <+ lhs +>
+
+wrap_headless_choice: Parser, <ast::Expr|> => <ast::Expr|>
+wrap_headless_choice = p, res =>
+   res
+      | ce =>
+         p.cycle_depth > 0 && !p.in_rhs
+            | <+ ce +>
+            |
+               params = ast::Names()
+               params += "_"
+               <+ ast::Expr(Fn, ast::FnExpr(params, ast::Names(), ce)) +>
+      | <-->
+
+token_is_range_op: lexer::Tok => <>
+token_is_range_op = t => token_is_op(t, "..") || token_is_op(t, "...")
+
+parse_choice: Parser => <ast::Expr|>
+parse_choice = p =>
+   p.curr.kind [LBracket] || tok_is_neg_lbracket(p)
+      | wrap_headless_choice(p, headless_choice_resume(p))
+      |
+         token_is_pipe(p.curr)
+            | choice_resume(p, ast::Expr(Var, "_"))
+            |
+               parse_range(p)
+                  | r =>
+                     r
+                        [Assign, Fn, TypeDecl, Import, Foreign, Block] <+ r +>
+                        | choice_resume(p, r)
+                  | <-->
+
+headless_choice_resume: Parser => <ast::Expr|>
+headless_choice_resume = p =>
+   headless_choice_cont(p, ast::Expr(Var, "_"))
+      | r =>
+         is_binary_cont(p)
+            |
+               parse_bp_lhs(p, 30, r)
+                  | rr => choice_resume(p, rr)
+                  | <-->
+            | <+ r +>
+      | <-->
+
+// Runs the choice continuation on `lhs`, then alternates with the Pratt loop:
+// a binary operator after a complete choice is picked up by the loop (the
+// choice layer runs AFTER it, so the loop is re-entered with the choice as the
+// lhs), and on the loop's return another choice continuation absorbs any
+// following '[guard]'/'|'. The choice binds the WHOLE preceding expression
+// (looser than every binary operator), so "text [a] || text [b]" is
+// "((text [a]) || text) [b]" — operating on a choice requires grouping
+// ("(text [a]) || (text [b])").
+choice_resume: Parser, ast::Expr => <ast::Expr|>
+choice_resume = p, lhs =>
+   choice_cont(p, lhs)
+      | r =>
+         is_binary_cont(p)
+            |
+               parse_bp_lhs(p, 30, r)
+                  | rr => choice_resume(p, rr)
+                  | <-->
+            | <+ r +>
+      | <-->
+
+parse_range: Parser => <ast::Expr|>
+parse_range = p =>
+   token_is_range_op(p.curr)
+      |
+         is_incl = p.curr.text == "..."
+         dot_trail = p.curr.trail
+         parser_advance(p)
+         is_range_start(p.curr)
+            |
+               dot_trail
+                  |
+                     parser_error(p, diag::DiagCode(E2025), diag::E2025_range_endpoint_whitespace!)
+                     <-->
+                  |
+                     parse_bp(p, 30)
+                        | rr =>
+                           <+ ast::Expr(Range, ast::RangeExpr(
+                              <->, <+>, ast::Expr(Int, 0), rr, is_incl)) +>
+                        | <-->
+            |
+               <+ ast::Expr(Range, ast::RangeExpr(
+                  <->, <->, ast::Expr(Int, 0), ast::Expr(Int, 0), is_incl)) +>
+      |
+         parse_bp(p, 30)
+            | a => range_cont(p, a)
+            | <-->
+
+range_cont: Parser, ast::Expr => <ast::Expr|>
+range_cont = p, lhs =>
+   token_is_range_op(p.curr)
+      |
+         is_incl = p.curr.text == "..."
+         dot_lead = p.curr.lead
+         dot_trail = p.curr.trail
+         dot_lead
+            |
+               parser_error(p, diag::DiagCode(E2025), diag::E2025_range_endpoint_whitespace!)
+               <-->
+            |
+               parser_advance(p)
+               is_range_start(p.curr)
+                  |
+                     dot_trail
+                        |
+                           parser_error(p, diag::DiagCode(E2025), diag::E2025_range_endpoint_whitespace!)
+                           <-->
+                        |
+                           parse_bp(p, 30)
+                              | rr =>
+                                 range_cont(p, ast::Expr(Range,
+                                    ast::RangeExpr(<+>, <+>, lhs, rr, is_incl)))
+                              | <-->
+                  |
+                     range_cont(p, ast::Expr(Range, ast::RangeExpr(
+                        <+>, <->, lhs, ast::Expr(Int, 0), is_incl)))
+      | <+ lhs +>
+
+// A range RHS may begin with an integer, float, rune, identifier,
+// parenthesized expr, '?' length query ("0..?T"), or a negative offset ("-2").
+is_range_start: lexer::Tok => <>
+is_range_start = t =>
+   t.kind [Int, Float, Rune, Id, LParen] || t.text == "?" ||
+      (t.text == "-" && !t.trail)
+
+// Semicolon sequence continuation from an already-parsed lhs (named
+// assignment, member write, choice branch body). Operands parse at the RANGE
+// tier so a following '|' / '[' is left for an enclosing choice.
+seq_cont_loop: Parser, ast::Expr => <ast::Expr|>
+seq_cont_loop = p, lhs =>
+   p.curr.kind
+      [Semi]
+         parser_advance(p)
+         parse_range(p)
+            | r =>
+               n = ast::Expr(Bin, (ast::BinaryOp(Seq), lhs, r))
+               seq_cont_loop(p, n)
+            | <-->
+      | <+ lhs +>
+
+
+// range_with_lhs: the choice tier's operand continuation for an already-parsed
+// lhs (the identifier dispatch fallback): apply ".."/"..." if present, else
+// continue the Pratt loop from the lhs.
+parse_range_with_lhs: Parser, ast::Expr => <ast::Expr|>
+parse_range_with_lhs = p, lhs =>
+   token_is_range_op(p.curr)
+      |
+         is_incl = p.curr.text == "..."
+         dot_lead = p.curr.lead
+         dot_trail = p.curr.trail
+         dot_lead
+            |
+               parser_error(p, diag::DiagCode(E2025), diag::E2025_range_endpoint_whitespace!)
+               <-->
+            |
+               parser_advance(p)
+               is_range_start(p.curr)
+                  |
+                     dot_trail
+                        |
+                           parser_error(p, diag::DiagCode(E2025), diag::E2025_range_endpoint_whitespace!)
+                           <-->
+                        |
+                           parse_bp(p, 30)
+                              | rr =>
+                                 range_cont(p, ast::Expr(Range,
+                                    ast::RangeExpr(<+>, <+>, lhs, rr, is_incl)))
+                              | <-->
+                  |
+                     range_cont(p, ast::Expr(Range, ast::RangeExpr(
+                        <+>, <->, lhs, ast::Expr(Int, 0), is_incl)))
+      | parse_bp_lhs(p, 30, lhs)
+
+// --- Pratt core with a threaded lhs ----------------------------------------
+
+// Continues the binary loop from an already-parsed lhs (the identifier
+// dispatch fallback and member/key writes).
+parse_bp_lhs: Parser, Int, ast::Expr => <ast::Expr|>
+parse_bp_lhs = p, min_bp, lhs =>
+   bp_loop(p, lhs, min_bp, -1)
+
+// The Pratt core. parse_bp parses a unary/primary lhs then hands the
+// accumulation to bp_loop, which consumes binary operators while their
+// binding power is >= min_bp.
+parse_bp: Parser, Int => <ast::Expr|>
+parse_bp = p, min_bp =>
+   p.expr_depth = p.expr_depth + 1
+   p.expr_depth > 100
+      | parse_bp_depth_error(p)
+      | parse_bp_depth_ok(p, min_bp)
+
+parse_bp_depth_error: Parser => <ast::Expr|>
+parse_bp_depth_error = p =>
+   parser_error(p, diag::DiagCode(E2039), diag::E2039_expr_too_deep!)
+   p.expr_depth = p.expr_depth - 1
+   <-->
+
+parse_bp_depth_ok: Parser, Int => <ast::Expr|>
+parse_bp_depth_ok = p, min_bp =>
+   lr = parse_unary(p)
+   r = lr | lre => bp_loop(p, lre, min_bp, -1) | <-->
+   p.expr_depth = p.expr_depth - 1
+   r
+
+parse_trailing_block_expr: Parser, ast::Expr => <ast::Expr|>
+
+bp_loop: Parser, ast::Expr, Int, Int => <ast::Expr|>
+bp_loop = p, res, min_bp, cmp_line =>
+   p.just_dedented || tok_is_nl(p.curr) || tok_is_eof(p.curr)
+      | <+ res +>
+      |
+         min_bp !> 120 && tok_is_neg_lbracket(p)
+            |
+               parse_neg_guard_choice(p, res)
+                  | neg_e => bp_loop(p, neg_e, min_bp, -1)
+                  | <-->
+            |
+               min_bp !> 120 && (p.curr.kind [LBracket]) && lbracket_is_empty_guard(p)
+                  |
+                     parse_pos_guard_choice(p, res)
+                        | pos_e => bp_loop(p, pos_e, min_bp, -1)
+                        | <-->
+                  |
+                     !tok_is_op(p.curr)
+                        | <+ res +>
+                        |
+                           operators::bin_info(p.curr.text)
+                              | bp_cont(p, res, min_bp, cmp_line, _)
+                              |
+                                 uo = user_op_lookup(p.user_ops, p.curr.text)
+                                 uo.0
+                                    | bp_cont_user(p, res, min_bp, cmp_line, uo.1, uo.2)
+                                    | <+ res +>
+
+// Whether an operator is apply/feed ($, $>, $>>) — the binary tiers BELOW
+// the choice tier, whose right operand absorbs a choice continuation.
+op_is_apply_feed: ast::BinaryOp => <>
+op_is_apply_feed = [Apply, Feed, Bind]
+
+parse_bp_rhs: Parser, operators::BinOpInfo => <ast::Expr|>
+parse_bp_rhs = p, i =>
+   is_brk = p.curr.kind [LBracket] || tok_is_neg_lbracket(p)
+   p.branch_body_depth == 0 && op_is_apply_feed(i.op) && is_brk
+      |
+         saved_cd = p.cycle_depth
+         p.cycle_depth = 0
+         res = parse_choice(p)
+         p.cycle_depth = saved_cd
+         res
+      |
+         parse_bp(p, i.rbp)
+            | rre => apply_feed_rhs(p, rre, i.op)
+            | <-->
+
+is_cmp_atom: ast::Expr => <>
+is_cmp_atom = [Int, Float, Rune, Str, Var]
+
+chain_cmp: Parser, ast::Expr, ast::BinaryOp, ast::Expr => ast::Expr
+chain_cmp = p, prev, op2, rhs =>
+   prev
+      [Bin b]
+         b.0
+            [Seq]
+               new_r = chain_cmp(p, b.2, op2, rhs)
+               ast::Expr(Bin, (ast::BinaryOp(Seq), b.1, new_r))
+            [And]
+               new_r = chain_cmp(p, b.2, op2, rhs)
+               ast::Expr(Bin, (ast::BinaryOp(And), b.1, new_r))
+            |
+               mid = b.2
+               is_cmp_atom(mid)
+                  |
+                     cmp2 = ast::Expr(Bin, (op2, mid, rhs))
+                     ast::Expr(Bin, (ast::BinaryOp(And), prev, cmp2))
+                  |
+                     tmp = fresh_dp_var(p)
+                     tmp_var = ast::Expr(Var, tmp)
+                     asgn = mk_assign(tmp, mid)
+                     cmp1 = ast::Expr(Bin, (b.0, b.1, tmp_var))
+                     cmp2 = ast::Expr(Bin, (op2, tmp_var, rhs))
+                     and_e = ast::Expr(Bin, (ast::BinaryOp(And), cmp1, cmp2))
+                     ast::Expr(Bin, (ast::BinaryOp(Seq), asgn, and_e))
+      | ast::Expr(Bin, (op2, prev, rhs))
+
+// Consume one binary operator (the token is an Op whose BinOpInfo is in hand):
+// bound check, comparison same-line check, advance, parse the right operand,
+// build the Bin node, then resume the loop.
+bp_cont: Parser, ast::Expr, Int, Int,
+   operators::BinOpInfo => <ast::Expr|>
+bp_cont = p, res, min_bp, cmp_line, i =>
+   i.lbp < min_bp || i.same_line && cmp_line != -1 && p.curr.line != cmp_line
+      | <+ res +>
+      |
+         op_line = p.curr.line
+         parser_advance(p)
+         (i.op [Apply]) && tok_is_nl(p.curr)
+            |
+               parse_trailing_block_expr(p, res)
+                  | node => bp_loop(p, node, min_bp, cmp_line)
+                  | <-->
+            |
+               parse_bp_rhs(p, i)
+                  | cae =>
+                     node = i.same_line && cmp_line != -1
+                        | chain_cmp(p, res, i.op, cae)
+                        | ast::Expr(Bin, (i.op, res, cae))
+                     nc = i.same_line | op_line | -1
+                     bp_loop(p, node, min_bp, nc)
+                  | <-->
+
+// The apply/feed right operand: a full choice ("a $> b | c | d" ==
+// "a $> (b | c | d)"), suppressed inside a choice branch body where a
+// following '|' belongs to the ENCLOSING choice. A normal function (not a
+// guard-chain branch body) so the ==/&& work at the full tiers.
+apply_feed_rhs: Parser, ast::Expr, ast::BinaryOp => <ast::Expr|>
+apply_feed_rhs = p, rhs, op =>
+   p.branch_body_depth == 0 && op_is_apply_feed(op)
+      | choice_cont(p, rhs)
+      | <+ rhs +>
+
+// The Pratt min for a user operator's right operand: left-assoc (rbp > lbp)
+// parses the RHS at rbp, right-assoc at lbp, non-assoc (equal) one notch
+// tighter so the RHS can't absorb an equal-precedence operator (the chain is
+// then rejected by bp_cont_user). Mirrors the native synthetic tier.
+user_rhs_min: Int, Int => Int
+user_rhs_min = lbp, rbp =>
+   lbp == rbp | lbp + 1 | (rbp > lbp | rbp | lbp)
+
+// Consume one user-defined binary operator (custom-operators.md): the bound
+// check, parse the right operand at the derived min, desugar `a <op> b` to
+// the call `<op>(a, b)`, and reject non-associative chains.
+bp_cont_user: Parser, ast::Expr, Int, Int, Int, Int => <ast::Expr|>
+bp_cont_user = p, res, min_bp, cmp_line, lbp, rbp =>
+   lbp < min_bp
+      | <+ res +>
+      |
+         text = p.curr.text
+         rhs_min = user_rhs_min(lbp, rbp)
+         parser_advance(p)
+         rr = parse_bp(p, rhs_min)
+         rr
+            | rre =>
+               args = ast::Exprs()
+               args += res
+               args += rre
+               node = make_call(p, text, args)
+               lbp == rbp && tok_is_op(p.curr) && p.curr.text == text
+                  |
+                     parser_error(p, diag::DiagCode(E2100), "Non-associative operator '" +
+                        text + "' cannot chain ('a " + text + " b " +
+                        text + " c' is ambiguous).")
+                     <-->
+                  | bp_loop(p, node, min_bp, cmp_line)
+            | <-->
+
+// Prefix unary: -x desugars to 0 - x (integers/floats); ! is negation; ++ is
+// copy. Anything else falls through to the atom layer.
+parse_unary: Parser => <ast::Expr|>
+parse_unary = p =>
+   // Unary operators are Op tokens only — a String literal whose text is an
+   // operator symbol ("!", "+", ...) must not be dispatched as one (the
+   // native dispatches on token kind; this guards the text-based dispatch).
+   p.curr.kind [Op] parse_unary_op(p) | parse_primary(p)
+
+parse_unary_op: Parser => <ast::Expr|>
+parse_unary_op = p =>
+   p.curr.text
+      ["!"] atom_neg(p)
+      ["++"] atom_copy(p)
+      [".!."] atom_bitnot(p)
+      ["~~"] atom_binding(p)
+      [(_ == "&" && !p.curr.trail)] atom_addrof(p)
+      [(_ == "+" && !p.curr.trail)] atom_freeze(p)
+      [(_ == "-" && !p.curr.trail)] atom_minus(p)
+      | parse_primary(p)
+
+// "!x" — logical negation (a RamNN flag).
+atom_neg: Parser => <ast::Expr|>
+atom_neg = p =>
+   parser_advance(p)
+   orr = parse_unary(p)
+   orr | oe => <+ ast::Expr(Unary, (ast::UnaryOp(Not), oe)) +>
+
+// "+x" — Builder freeze into String (no trailing whitespace).
+atom_freeze: Parser => <ast::Expr|>
+atom_freeze = p =>
+   parser_advance(p)
+   fr = parse_unary(p)
+   fr | fe => <+ ast::Expr(Unary, (ast::UnaryOp(Freeze), fe)) +>
+
+// "&x" — address of a Builder's writable buffer or String pointer (no trailing whitespace).
+atom_addrof: Parser => <ast::Expr|>
+atom_addrof = p =>
+   parser_advance(p)
+   ar = parse_unary(p)
+   ar | ae => <+ ast::Expr(Unary, (ast::UnaryOp(AddrOf), ae)) +>
+
+// ".!.x" — bitwise NOT (integerish).
+atom_bitnot: Parser => <ast::Expr|>
+atom_bitnot = p =>
+   parser_advance(p)
+   br = parse_unary(p)
+   br | be => <+ ast::Expr(Unary, (ast::UnaryOp(BitNot), be)) +>
+
+// "++x" — the copy operator.
+atom_copy: Parser => <ast::Expr|>
+atom_copy = p =>
+   parser_advance(p)
+   orr = parse_unary(p)
+   orr | oe => <+ ast::Expr(Copy, oe) +>
+
+find_last_dot: String, Int => <Int|>
+find_last_dot = s, i =>
+   i < 0 | --| <-->
+   (s(i) == 46) | <+ i +> | find_last_dot(s, i - 1)
+
+dotted_to_expr: String => ast::Expr
+dotted_to_expr = s =>
+   dot = find_last_dot(s, ?s - 1) | _ | --| ast::Expr(Var, s)
+   dot !> 0 | --| ast::Expr(Var, s)
+   target_str = s(0..dot)
+   field_str = s(dot + 1..?s)
+   me = ast::MemberExpr(dotted_to_expr(target_str),
+      field_str, <->, ast::Expr(Var, ""), 0, 0)
+   ast::Expr(Member, me)
+
+mark_lvalue_cell: ast::Expr => ()
+mark_lvalue_cell = e =>
+   e
+      [Var v] ast::cell_var_add(v)
+      [Member m] mark_lvalue_cell(m.target)
+
+atom_binding_var: Parser, String => <ast::Expr|>
+atom_binding_var = p, name =>
+   ast::cell_var_add(name)
+   get_fn = ast::Expr(Fn, (ast::Names(), ast::Names(), ast::Expr(Var, name)))
+   val_var = ast::Expr(Var, "_v")
+   is_mut = name_is_primed(name)
+   is_glob = !is_mut
+   set_assign = ast::Expr(Assign, (name, is_mut, <->, is_glob, <->,
+      val_var, ast::Expr(Var, ""), "",
+      ast::TypeInfo(Prim, ast::ValueType(Unknown))))
+   set_params = ast::Names()
+   set_params += "_v"
+   set_fn = ast::Expr(Fn, (set_params, ast::Names(), set_assign))
+   fields = ast::Fields()
+   fields += ast::RecordField(<+>, "get", get_fn)
+   fields += ast::RecordField(<+>, "set", set_fn)
+   <+ ast::Expr(Record, ast::RecordExpr(fields, <->)) +>
+
+atom_binding_module_var: Parser, ast::Expr => <ast::Expr|>
+atom_binding_module_var = p, target =>
+   get_fn = ast::Expr(Fn, (ast::Names(), ast::Names(), target))
+   val_var = ast::Expr(Var, "_v")
+   set_assign = ast::Expr(Assign, ("", <->, <->, <+>, <->,
+      val_var, target, "",
+      ast::TypeInfo(Prim, ast::ValueType(Unknown))))
+   set_params = ast::Names()
+   set_params += "_v"
+   set_fn = ast::Expr(Fn, (set_params, ast::Names(), set_assign))
+   fields = ast::Fields()
+   fields += ast::RecordField(<+>, "get", get_fn)
+   fields += ast::RecordField(<+>, "set", set_fn)
+   <+ ast::Expr(Record, ast::RecordExpr(fields, <->)) +>
+
+expr_is_lvalue: ast::Expr => <>
+expr_is_lvalue = e =>
+   e
+      [Var] <+>
+      [Member m] expr_is_lvalue(m.target)
+      | <->
+
+atom_binding_member: Parser, ast::MemberExpr => <ast::Expr|>
+atom_binding_member = p, m =>
+   is_lv = expr_is_lvalue(m.target)
+   rec_name = is_lv | "" | fresh_dp_var(p)
+   rec_var = is_lv | ast::Expr(Var, "") | ast::Expr(Var, rec_name)
+   rec_assign = is_lv
+      | ast::Expr(Var, "")
+      | ast::Expr(Assign, (rec_name, <->, <->, <->, <->,
+         m.target, ast::Expr(Var, ""), "",
+         ast::TypeInfo(Prim, ast::ValueType(Unknown))))
+   bound_mem = is_lv
+      | ast::Expr(Member, m)
+      | ast::Expr(Member, ast::MemberExpr(rec_var, m.field_name,
+         <->, m.index_expr, m.line, m.col))
+   get_fn = ast::Expr(Fn, (ast::Names(), ast::Names(), bound_mem))
+   val_var = ast::Expr(Var, "_v")
+   set_assign = ast::Expr(Assign, ("", <->, <->, <->, <->,
+      val_var, bound_mem, "",
+      ast::TypeInfo(Prim, ast::ValueType(Unknown))))
+   set_params = ast::Names()
+   set_params += "_v"
+   set_fn = ast::Expr(Fn, (set_params, ast::Names(), set_assign))
+   fields = ast::Fields()
+   fields += ast::RecordField(<+>, "get", get_fn)
+   fields += ast::RecordField(<+>, "set", set_fn)
+   rec_expr = ast::Expr(Record, ast::RecordExpr(fields, <->))
+   is_lv
+      | <+ rec_expr +>
+      |
+         stmts = ast::Exprs()
+         stmts += rec_assign
+         stmts += rec_expr
+         <+ ast::Expr(Block, stmts) +>
+
+atom_binding_call: Parser, ast::CallExpr => <ast::Expr|>
+atom_binding_call = p, c =>
+   arr_name = fresh_dp_var(p)
+   arr_var = ast::Expr(Var, arr_name)
+   arr_target = c.fn_name != "" | dotted_to_expr(c.fn_name) | c.fn_target
+   arr_assign = ast::Expr(Assign, (arr_name, <->, <->, <->, <->,
+      arr_target, ast::Expr(Var, ""), "",
+      ast::TypeInfo(Prim, ast::ValueType(Unknown))))
+   stmts = ast::Exprs()
+   stmts += arr_assign
+   bound_args = ast::Exprs()
+   c.args @ arg_e =>
+      idx_name = fresh_dp_var(p)
+      idx_var = ast::Expr(Var, idx_name)
+      idx_assign = ast::Expr(Assign, (idx_name, <->, <->, <->, <->,
+         arg_e, ast::Expr(Var, ""), "",
+         ast::TypeInfo(Prim, ast::ValueType(Unknown))))
+      stmts += idx_assign
+      bound_args += idx_var
+   bound_call = ast::Expr(Call, ast::CallExpr("", arr_var, bound_args,
+      c.line, c.col))
+   unwrapped = ast::Expr(Unary, (ast::UnaryOp(Unwrap), bound_call))
+   get_fn = ast::Expr(Fn, (ast::Names(), ast::Names(), unwrapped))
+   val_var = ast::Expr(Var, "_v")
+   set_assign = ast::Expr(Assign, ("", <->, <->, <->, <->,
+      val_var, bound_call, "",
+      ast::TypeInfo(Prim, ast::ValueType(Unknown))))
+   set_params = ast::Names()
+   set_params += "_v"
+   set_fn = ast::Expr(Fn, (set_params, ast::Names(), set_assign))
+   fields = ast::Fields()
+   fields += ast::RecordField(<+>, "get", get_fn)
+   fields += ast::RecordField(<+>, "set", set_fn)
+   rec_expr = ast::Expr(Record, ast::RecordExpr(fields, <->))
+   stmts += rec_expr
+   <+ ast::Expr(Block, stmts) +>
+
+atom_binding_target: Parser, ast::Expr => <ast::Expr|>
+atom_binding_target = p, target =>
+   mark_lvalue_cell(target)
+   target
+      [Member m]
+         m.is_module_access
+            | atom_binding_module_var(p, target)
+            | atom_binding_member(p, m)
+      [Call c]
+         ?c.args > 0
+            | atom_binding_call(p, c)
+            |
+               parser_error(p, diag::DiagCode(E2108), diag::E2108_state_binding_target!)
+               <-->
+      [Var v]
+         atom_binding_var(p, v)
+      |
+         parser_error(p, diag::DiagCode(E2108), diag::E2108_state_binding_target!)
+         <-->
+
+// "~~operand" — two-way state binding / property lens.
+atom_binding: Parser => <ast::Expr|>
+atom_binding = p =>
+   parser_advance(p)
+   tr = parse_primary(p)
+   tr
+      | target => atom_binding_target(p, target)
+      |
+         parser_error(p, diag::DiagCode(E2108), diag::E2108_state_binding_target!)
+         <-->
+
+// The token after p.curr without consuming it: clone the lexer and pull one
+// token from the clone (mirrors the native lexer_peek_token).
+parser_peek_next: Parser => lexer::Tok
+parser_peek_next = p =>
+   c = lexer::clone_lx(p.lx)
+   lexer::next_tok(c, 0)
+
+// "-5" / "-3.5" / "-x" — a '-' with no trailing whitespace folds a numeric
+// sign when a number follows, otherwise desugars to "0 - x". Dispatches to a
+// per-kind helper so no body nests choices deeply.
+atom_minus: Parser => <ast::Expr|>
+atom_minus = p =>
+   nxt = parser_peek_next(p)
+   nxt.kind
+      [Int] atom_minus_int(p)
+      [Float] atom_minus_float(p)
+      [Rune] atom_minus_rune(p)
+      | atom_minus_other(p)
+
+atom_minus_int: Parser => <ast::Expr|>
+atom_minus_int = p =>
+   parser_advance(p)
+   text = p.curr.text
+   r = parse_int_text(text)
+   r
+      | v =>
+         parser_advance(p)
+         suf = int_suffix_vt(text)
+         iexpr = ast::Expr(Int, 0 - v)
+         suf.1
+            | <+ ast::Expr(TypeCast, ast::CastExpr(suf.0, iexpr)) +>
+            | <+ iexpr +>
+      | <-->
+
+atom_minus_float: Parser => <ast::Expr|>
+atom_minus_float = p =>
+   parser_advance(p)
+   text = p.curr.text
+   rf = parse_float_text(text)
+   rf
+      | v =>
+         parser_advance(p)
+         vt = float_suffix_vt(text)
+         neg_val = v == 0.0 | -1.0 * 0.0 | (0.0 - v)
+         flt = ast::Expr(Float, neg_val)
+         vt [F32]
+            <+ ast::Expr(TypeCast, ast::CastExpr(ast::ValueType(F32),
+               flt)) +>
+         | <+ flt +>
+      | <-->
+
+atom_minus_rune: Parser => <ast::Expr|>
+atom_minus_rune = p =>
+   parser_advance(p)
+   rr = parse_int_text(p.curr.text)
+   rr
+      | v =>
+         parser_advance(p)
+         <+ ast::Expr(Rune, 0 - v) +>
+      | <-->
+
+atom_minus_other: Parser => <ast::Expr|>
+atom_minus_other = p =>
+   parser_advance(p)
+   orr = parse_unary(p)
+   orr
+      | oe =>
+         <+ ast::Expr(Unary, (ast::UnaryOp(Neg), oe)) +>
+      | <-->
+
+atom_to_ram: <ast::Expr|> => < ast::Expr | Error >
+atom_to_ram = r =>
+   r
+      | e => <+ e ->
+      | <- Error(2064, "Expected primary expression", "", 0, 0, (0, 0)) +>
+
+// The atom layer: literals, identifiers, parens, and the operator-led atoms
+// (variants, cycle jumps, sections, builder literal).
+parse_atom: Parser => < ast::Expr | Error >
+parse_atom = p =>
+   k = p.curr
+   is_id = k.kind [Id]
+   !is_id | p.is_stmt = <->
+   k.kind
+      [Op]
+         p.curr.text
+            ["!=>"] atom_to_ram(parse_fn(p))
+            ["=>"]
+               parser_error(p, diag::DiagCode(E2050), "Function parameters may not be " +
+                  "omitted; write a named parameter (e.g. 'x =>') or use " +
+                  "a parenthesized grouped expression with '_'.")
+               <- Error(2050, "Function parameters may not be omitted", "",
+                  p.curr.line, p.curr.col, (0, 0)) +>
+            | atom_to_ram(atom_op(p))
+      [LBrace] atom_to_ram(atom_builder(p))
+      [Int] atom_to_ram(atom_integer(p, k.text))
+      [Float] atom_to_ram(atom_float(p, k.text))
+      [Str] atom_to_ram(atom_str(p, k.text))
+      [Rune] atom_to_ram(atom_rune(p, k.text))
+      [Id]
+         is_fn_start(p)
+            | atom_to_ram(parse_fn(p))
+            | atom_to_ram(atom_ident(p, k.text))
+      [LParen] atom_to_ram(atom_paren(p))
+      [TypeKw] atom_to_ram(parse_type_decl(p))
+      [AlignKw]
+         parser_advance(p)
+         atom_to_ram(parse_alignof(p))
+      [UsePath] atom_to_ram(parse_import(p, <->, <->))
+      [UseDynamicPath] atom_to_ram(parse_import(p, <+>, <->))
+      [UseImportPath] atom_to_ram(parse_import(p, <->, <+>))
+      [UseDynamicImportPath] atom_to_ram(parse_import(p, <+>, <+>))
+      [SpawnKw] atom_to_ram(atom_spawn(p))
+      [JoinKw] atom_to_ram(atom_join(p))
+      [ExitKw] atom_to_ram(atom_exit(p))
+      [ErrorKw] atom_to_ram(atom_user_diag(p, <->))
+      [WarnKw] atom_to_ram(atom_user_diag(p, <+>))
+      [CT]
+         is_fn_start(p)
+            | atom_to_ram(parse_fn(p))
+            | atom_to_ram(atom_ct(p))
+      [PragmaFP] atom_to_ram(atom_pragma_fp(p, k.text))
+      [PragmaKw] atom_to_ram(atom_pragma_number(p))
+      [PragmaSwizzle] atom_to_ram(atom_pragma_swizzle(p, k.text))
+      [Export] atom_to_ram(atom_export(p))
+      [Public] atom_to_ram(atom_public(p))
+      [Private] atom_to_ram(atom_private(p))
+      [Foreign] atom_to_ram(atom_foreign(p))
+      |
+         parser_error(p, diag::DiagCode(E2064), diag::expected_primary(p.curr.text))
+         <- Error(2064, diag::expected_primary(p.curr.text),
+            "", p.curr.line, p.curr.col, (0, 0)) +>
+
+// "#pragma number <type>" — file-scoped directive, already applied by lexer.
+atom_pragma_number: Parser => <ast::Expr|>
+atom_pragma_number = p =>
+   parser_advance(p)
+   <+ ast::Expr(FastMathPragma, "") +>
+
+// "#pragma fpfast all|none" — the lexer validated the argument and put it in
+// the token text; codegen reads it to switch cg.fast_math.
+atom_pragma_fp: Parser, String => <ast::Expr|>
+atom_pragma_fp = p, arg =>
+   parser_advance(p)
+   <+ ast::Expr(FastMathPragma, arg) +>
+
+// "#pragma swizzle all|xyzw|rgba|none" — vector swizzling switch.
+atom_pragma_swizzle: Parser, String => <ast::Expr|>
+atom_pragma_swizzle = p, arg =>
+   parser_advance(p)
+   <+ ast::Expr(SwizzlePragma, arg) +>
+
+clean_decl_name: String => String
+clean_decl_name = s =>
+   (?s > 0 && s(0) == '#') | s(1..) | s
+
+names_has_at: ast::Names, String, Int => <>
+names_has_at = names, name, i =>
+   i < ?names
+      |
+         (names(i) | _ | "") == name
+            | <+>
+            | names_has_at(names, name, i + 1)
+      | <->
+
+names_has: ast::Names, String => <>
+names_has = names, name => names_has_at(names, name, 0)
+
+add_public_name: Parser, String => ()
+add_public_name = p, name =>
+   clean = clean_decl_name(name)
+   clean != "" && !names_has(p.publics, clean) && !names_has(p.privates, clean)
+      | p.publics += clean
+
+add_private_name: Parser, String => ()
+add_private_name = p, name =>
+   clean = clean_decl_name(name)
+   clean != "" && !names_has(p.privates, clean) && !names_has(p.publics, clean)
+      | p.privates += clean
+
+mark_decl_item: Parser, ast::Expr => ()
+mark_decl_item = p, e =>
+   e
+      [Block] --|
+      [Assign t]
+         p.is_export
+            |
+               is_fn = (t.5 [Fn]) || (t.8 [Fn])
+               is_fn
+                  |
+                     clean = clean_decl_name(t.0)
+                     entry = p.export_alias != "" | (clean + "=" + p.export_alias) | clean
+                     !names_has(p.exports, entry) | (p.exports += entry)
+                     add_public_name(p, clean)
+                     p.export_alias = ""
+                  |
+                     parser_error(p, diag::DiagCode(E2091), "#export requires a function " +
+                        "definition, got a variable binding '" + t.0 + "'.")
+            |
+               p.is_public | add_public_name(p, t.0) | add_private_name(p, t.0)
+      [TypeDecl t]
+         p.is_export
+            |
+               parser_error(p, diag::DiagCode(E2091), "#export requires a function definition, " +
+                  "got a non-function declaration.")
+            |
+               p.is_public | add_public_name(p, t.name) | add_private_name(p, t.name)
+      [Foreign f]
+         p.is_export
+            |
+               parser_error(p, diag::DiagCode(E2091), "#export requires a function definition, " +
+                  "got a non-function declaration.")
+            |
+               p.is_public | add_public_name(p, f.dva_name) | add_private_name(p, f.dva_name)
+      |
+         p.is_export | parser_error(p, diag::DiagCode(E2091), "#export requires a function definition, " +
+            "got a non-function declaration.")
+
+parser_skip_newlines: Parser => ()
+parser_skip_newlines = p =>
+   tok_is_nl(p.curr)
+      |
+         parser_advance(p)
+         parser_skip_newlines(p)
+
+peek_scan_indent: lexer::Lx, lexer::Tok => <>
+peek_scan_indent = lx, tok =>
+   tok.kind
+      [Newline] peek_scan_indent(lx, lexer::next_tok(lx, 0))
+      [Indent]
+
+parser_peek_is_indent: Parser => <>
+parser_peek_is_indent = p =>
+   c = lexer::clone_lx(p.lx)
+   tok = lexer::next_tok(c, 0)
+   tok_is_nl(tok)
+      | peek_scan_indent(c, tok)
+      | tok.kind [Indent]
+
+// "#public" — marks subsequent declarations public; scoped if introducing an indented block.
+atom_public: Parser => <ast::Expr|>
+atom_public = p =>
+   has_ind = parser_peek_is_indent(p)
+   parser_advance(p)
+   is_same_line = !tok_is_nl(p.curr) && !tok_is_eof(p.curr)
+   is_same_line
+      |
+         old_vis = p.is_public
+         old_exp = p.is_export
+         old_alias = p.export_alias
+         p.is_public = <+>
+         p.is_export = <->
+         p.export_alias = ""
+         res = parse_expr(p)
+         res | s =>
+            p.module_level | mark_decl_item(p, s)
+         p.is_public = old_vis
+         p.is_export = old_exp
+         p.export_alias = old_alias
+         res
+      |
+         has_ind
+            |
+               parser_skip_newlines(p)
+               parser_advance(p)
+               saved_fd = p.fn_depth
+               p.fn_depth = 0
+               old_vis = p.is_public
+               old_exp = p.is_export
+               old_alias = p.export_alias
+               p.is_public = <+>
+               p.is_export = <->
+               p.export_alias = ""
+               res = block_stmts(p, ast::Exprs())
+               p.fn_depth = saved_fd
+               p.curr.kind [Dedent] parser_advance(p); p.just_dedented = <+>
+               p.is_public = old_vis
+               p.is_export = old_exp
+               p.export_alias = old_alias
+               res
+            |
+               p.is_public = <+>
+               p.is_export = <->
+               p.export_alias = ""
+               <+ ast::Expr(Block, ast::Exprs()) +>
+
+// "#private" — hides subsequent declarations; scoped if introducing an indented block.
+atom_private: Parser => <ast::Expr|>
+atom_private = p =>
+   has_ind = parser_peek_is_indent(p)
+   parser_advance(p)
+   is_same_line = !tok_is_nl(p.curr) && !tok_is_eof(p.curr)
+   is_same_line
+      |
+         old_vis = p.is_public
+         old_exp = p.is_export
+         old_alias = p.export_alias
+         p.is_public = <->
+         p.is_export = <->
+         p.export_alias = ""
+         res = parse_expr(p)
+         res | s =>
+            p.module_level | mark_decl_item(p, s)
+         p.is_public = old_vis
+         p.is_export = old_exp
+         p.export_alias = old_alias
+         res
+      |
+         has_ind
+            |
+               parser_skip_newlines(p)
+               parser_advance(p)
+               saved_fd = p.fn_depth
+               p.fn_depth = 0
+               old_vis = p.is_public
+               old_exp = p.is_export
+               old_alias = p.export_alias
+               p.is_public = <->
+               p.is_export = <->
+               p.export_alias = ""
+               res = block_stmts(p, ast::Exprs())
+               p.fn_depth = saved_fd
+               p.curr.kind [Dedent] parser_advance(p); p.just_dedented = <+>
+               p.is_public = old_vis
+               p.is_export = old_exp
+               p.export_alias = old_alias
+               res
+            |
+               p.is_public = <->
+               p.is_export = <->
+               p.export_alias = ""
+               <+ ast::Expr(Block, ast::Exprs()) +>
+
+// "#export" — marks subsequent functions as linkable external symbols; scoped if introducing an indented block.
+atom_export: Parser => <ast::Expr|>
+atom_export = p =>
+   has_ind' = parser_peek_is_indent(p)
+   parser_advance(p)
+   is_str = p.curr.kind [Str]
+   alias = is_str | p.curr.text | ""
+   is_str | parser_advance(p)
+   has_ind' = has_ind' || (is_str && parser_peek_is_indent(p))
+   is_same_line = !tok_is_nl(p.curr) && !tok_is_eof(p.curr)
+   is_same_line
+      |
+         old_vis = p.is_public
+         old_exp = p.is_export
+         old_alias = p.export_alias
+         p.is_public = <+>
+         p.is_export = <+>
+         p.export_alias = alias
+         res = parse_expr(p)
+         res | s =>
+            p.module_level | mark_decl_item(p, s)
+         p.is_public = old_vis
+         p.is_export = old_exp
+         p.export_alias = old_alias
+         res
+      |
+         has_ind'
+            |
+               parser_skip_newlines(p)
+               parser_advance(p)
+               saved_fd = p.fn_depth
+               p.fn_depth = 0
+               old_vis = p.is_public
+               old_exp = p.is_export
+               old_alias = p.export_alias
+               p.is_public = <+>
+               p.is_export = <+>
+               p.export_alias = alias
+               res = block_stmts(p, ast::Exprs())
+               p.fn_depth = saved_fd
+               p.curr.kind [Dedent] parser_advance(p); p.just_dedented = <+>
+               p.is_public = old_vis
+               p.is_export = old_exp
+               p.export_alias = old_alias
+               res
+            |
+               p.is_public = <+>
+               p.is_export = <+>
+               p.export_alias = alias
+               <+ ast::Expr(Block, ast::Exprs()) +>
+
+
+// "#spawn call" — run the call's closure in a new thread (a ThreadId).
+atom_spawn: Parser => <ast::Expr|>
+atom_spawn = p =>
+   parser_advance(p)
+   operand = parse_expr(p)
+   operand
+      | oe =>
+         oe
+            [Call c] <+ ast::Expr(Spawn, c) +>
+            | <-->
+      | <-->
+
+// "#join handle" — wait for a worker; a fallible ram.
+atom_join: Parser => <ast::Expr|>
+atom_join = p =>
+   parser_advance(p)
+   h = parse_expr(p)
+   h | he => <+ ast::Expr(Join, he) +>
+
+// "#exit code" — terminate the process with the given status. The code is the
+// WHOLE following expression at the choice tier (the lowest precedence): a
+// comparison, feed, or choice chain needs no parens. Inside a choice branch
+// body the code parses at the range tier (like any branch body), so a
+// following '|' / '[' belongs to the ENCLOSING choice; the expression never
+// yields a value. Mirrors parser_parse_primary_atom_exit.
+atom_exit: Parser => <ast::Expr|>
+atom_exit = p =>
+   parser_advance(p)
+   code = p.branch_body_depth > 0
+      | parse_range(p)
+      | parse_choice(p)
+   code | ce => <+ ast::Expr(Exit, ce) +>
+
+// "#error <msg>" or "#warn <msg>" — compile-time user diagnostic assertions.
+atom_user_diag: Parser, <> => <ast::Expr|>
+atom_user_diag = p, is_warn =>
+   line = p.curr.line
+   col = p.curr.col
+   parser_advance(p)
+   is_term = p.curr.kind [Newline, Dedent, Semi, Eof]
+   is_op = p.curr.kind [Op]
+   txt = p.curr.text
+   is_br = txt ["]", "|", "!|", ")"]
+   is_end = is_term || (is_op && is_br)
+   is_end
+      |
+         msg = is_warn | "compile-time warning" | "compile-time error"
+         me = ast::Expr(Str, msg)
+         <+ ast::Expr(UserDiag,
+            ast::UserDiagExpr(is_warn, me, line, col)) +>
+      |
+         msg_e = p.branch_body_depth > 0
+            | parse_range(p)
+            | parse_choice(p)
+         msg_e
+            | me =>
+               <+ ast::Expr(UserDiag,
+                  ast::UserDiagExpr(is_warn, me, line, col)) +>
+            | <-->
+
+// "#foreign [abi] [decl | block]" — foreign function or variable
+// declarations.
+atom_foreign: Parser => <ast::Expr|>
+atom_foreign = p =>
+   parser_advance(p)
+   is_str = p.curr.kind [Str]
+   abi = is_str
+      |
+         a = p.curr.text
+         parser_advance(p)
+         a
+      | "c"
+   is_nl = tok_is_nl(p.curr)
+   is_nl | parser_advance(p)
+   is_block = tok_is_indent(p.curr)
+   is_block | parser_advance(p)
+   exprs = foreign_decls(p, abi, is_block, ast::Exprs())
+   exprs
+      | es =>
+         es @ fe =>
+            fe [Foreign f]
+               p.is_public | add_public_name(p, f.dva_name) |
+                  add_private_name(p, f.dva_name)
+         <+ ast::Expr(Block, es) +>
+      | <-->
+
+foreign_decls_done: Parser, <>, ast::Exprs => <ast::Exprs|>
+foreign_decls_done = p, is_block, exprs =>
+   is_ded = is_block && tok_is_dedent(p.curr)
+   is_ded
+      | parser_advance(p); p.just_dedented = <+>
+   <+ exprs +>
+
+foreign_decls: Parser, String, <>, ast::Exprs => <ast::Exprs|>
+foreign_decls = p, abi, is_block, exprs =>
+   done = tok_is_eof(p.curr) || (is_block && tok_is_dedent(p.curr))
+   done
+      | foreign_decls_done(p, is_block, exprs)
+      | foreign_decls_step(p, abi, is_block, exprs)
+
+foreign_decls_step: Parser, String, <>, ast::Exprs => <ast::Exprs|>
+foreign_decls_step = p, abi, is_block, exprs =>
+   p.curr.kind
+      [Newline]
+         parser_advance(p)
+         foreign_decls(p, abi, is_block, exprs)
+      [Id]
+         foreign_decls_id(p, abi, is_block, exprs)
+      |
+         foreign_decls_other(p, is_block, exprs)
+
+foreign_decls_other: Parser, <>, ast::Exprs => <ast::Exprs|>
+foreign_decls_other = p, is_block, exprs =>
+   is_block
+      |
+         parser_error(p, diag::DiagCode(E2016),
+            "Expected function name in foreign declaration, got '" +
+            p.curr.text + "'")
+         <-->
+      | <+ exprs +>
+
+foreign_parse_c_name: Parser => <String|>
+foreign_parse_c_name = p =>
+   parser_advance(p)
+   p.curr.kind
+      [Id]
+         cn = p.curr.text
+         parser_advance(p)
+         <+ cn +>
+      |
+         parser_error(p, diag::DiagCode(E2058),
+            "Expected foreign symbol name after '=', got '" +
+            p.curr.text + "'")
+         <-->
+
+foreign_decls_id: Parser, String, <>, ast::Exprs => <ast::Exprs|>
+foreign_decls_id = p, abi, is_block, exprs =>
+   dva_name = p.curr.text
+   parser_advance(p)
+   has_eq = p.curr.text ["="]
+   eq_res = has_eq
+         | foreign_parse_c_name(p)
+         | <+ dva_name +>
+   eq_res
+      | c_name =>
+         has_colon = p.curr.text [":"]
+         !has_colon
+            |
+               parser_error(p, diag::DiagCode(E2059),
+                  "Expected ':' after foreign name, got '" +
+                  p.curr.text + "'")
+               <-->
+            |
+               parser_advance(p)
+               foreign_decl_after_colon(p, abi, is_block, exprs,
+                  dva_name, c_name)
+      | <-->
+
+foreign_decl_after_colon: Parser, String, <>, ast::Exprs, String,
+   String => <ast::Exprs|>
+foreign_decl_after_colon = p, abi, is_block, exprs, dva_name, c_name =>
+   is_fn = p.curr.kind [LParen]
+   is_fn
+      | foreign_decl_fn(p, abi, is_block, exprs, dva_name, c_name)
+      | foreign_decl_var(p, abi, is_block, exprs, dva_name, c_name)
+
+foreign_parse_ret_type: Parser => (ast::ValueType, ast::TypeInfo, <>)
+foreign_parse_ret_type = p =>
+   parser_advance(p)
+   p.curr.text
+      ["Void", "void"]
+         parser_advance(p)
+         (ast::ValueType(Unit),
+            ast::TypeInfo(Prim, ast::ValueType(Unit)), <+>)
+      | parse_type(p)
+
+foreign_decl_fn: Parser, String, <>, ast::Exprs, String,
+   String => <ast::Exprs|>
+foreign_decl_fn = p, abi, is_block, exprs, dva_name, c_name =>
+   parser_advance(p)
+   pms = foreign_params(p, ast::FParams())
+   pms
+      | pms_val =>
+         is_rp = p.curr.kind [RParen]
+         !is_rp
+            |
+               parser_error(p, diag::DiagCode(E2060),
+                  "Expected ')' in foreign parameter list, got '" +
+                  p.curr.text + "'")
+               <-->
+            |
+               parser_advance(p)
+               has_arrow = p.curr.text ["=>", "->"]
+               ret_info = has_arrow
+                  | foreign_parse_ret_type(p)
+                  | (ast::ValueType(Unit),
+                     ast::TypeInfo(Prim, ast::ValueType(Unit)), <+>)
+               !ret_info.2 | <--> |
+                  fdecl = ast::ForeignFnDecl(c_name, dva_name, abi,
+                     pms_val, ret_info.0, ret_info.1, <->)
+                  next_exprs = exprs
+                  next_exprs += ast::Expr(Foreign, fdecl)
+                  is_block
+                     | foreign_decls(p, abi, is_block, next_exprs)
+                     | <+ next_exprs +>
+      | <-->
+
+foreign_decl_var: Parser, String, <>, ast::Exprs, String,
+   String => <ast::Exprs|>
+foreign_decl_var = p, abi, is_block, exprs, dva_name, c_name =>
+   vt = parse_type(p)
+   !vt.2 | <--> |
+      vdecl = ast::ForeignFnDecl(c_name, dva_name, abi, ast::FParams(),
+         vt.0, vt.1, <+>)
+      next_exprs = exprs
+      next_exprs += ast::Expr(Foreign, vdecl)
+      is_block
+         | foreign_decls(p, abi, is_block, next_exprs)
+         | <+ next_exprs +>
+
+foreign_params: Parser, ast::FParams => <ast::FParams|>
+foreign_params = p, params =>
+   p.curr.kind [Newline] parser_advance(p)
+   is_end = p.curr.kind [RParen, Eof]
+   is_end
+      | <+ params +>
+      |
+         nxt = parser_peek_next(p)
+         is_colon = nxt.text [":"]
+         has_colon = p.curr.kind [Id] && is_colon
+         p_name = has_colon
+            |
+               nm = p.curr.text
+               parser_advance(p)
+               parser_advance(p)
+               nm
+            | ""
+         pt = parse_type(p)
+         !pt.2 | <--> |
+            next_params = params
+            next_params += ast::ForeignFnParam(p_name, pt.0, pt.1)
+            p.curr.kind [Newline] parser_advance(p)
+            has_comma = p.curr.kind [Comma]
+            has_comma
+               |
+                  parser_advance(p)
+                  p.curr.kind [Newline] parser_advance(p)
+                  foreign_params(p, next_params)
+               | <+ next_params +>
+
+// "#! expr" — a compile-time expression (the native parses its inner at the
+// logical-OR tier, so "#! 2 + 3" folds the addition).
+atom_ct: Parser => <ast::Expr|>
+atom_ct = p =>
+   parser_advance(p)
+   inner = parse_bp(p, 80)
+   inner
+      | ie => <+ ast::Expr(CompileTime, ie) +>
+      | <-->
+
+// "@[addr T]" — a raw-memory load/store address or record view.
+atom_raw_memory: Parser => <ast::Expr|>
+atom_raw_memory = p =>
+   parser_advance(p) // '@'
+   parser_advance(p) // '['
+   addr = parse_bp(p, 140)
+   addr
+      | ae =>
+         load' = ast::ValueType(Unknown)
+         rec_name' = ++""
+         is_rb = p.curr.kind [RBracket]
+         !is_rb
+            |
+               t = parse_type(p)
+               t.2
+                  |
+                     load' = t.0
+                     rec_name' = type_atom_name(t.1, "")
+         p.curr.kind
+            [RBracket]
+               parser_advance(p)
+               <+ ast::Expr(RawMemory,
+                  ast::RawMemoryExpr(ae, load', rec_name')) +>
+            | <-->
+      | <-->
+
+// Operator-led atoms, keyed by the operator's text. Sections (the fallback for
+// RESERVED operators) cover "op rhs" with trailing whitespace; a NON-reserved
+// operator symbol is an operator-name atom — a bare function value, a
+// definition/annotation target, or a prefix call (atom_op_ident).
+atom_op: Parser => <ast::Expr|>
+atom_op = p =>
+   p.curr.text
+      ["<+>"]  atom_variant_unit(p, ast::Tag(Positive))
+      ["<->"]  atom_variant_unit(p, ast::Tag(Negative))
+      ["<++>"] atom_variant_unit(p, ast::Tag(Succ))
+      ["<-->"] atom_variant_unit(p, ast::Tag(Noth))
+      ["<+"]   atom_variant_payload(p, <+>)
+      ["<-"]   atom_variant_payload(p, <->)
+      ["-->"]  atom_cycle_jump(p, <+>)
+      ["--^"]  atom_cycle_jump(p, <->)
+      ["--|"]  atom_early_return(p)
+      ["~~"]   atom_binding(p)
+      ["?"]    atom_length(p)
+      ["??"]   atom_rune_count(p)
+      ["@"] (peek_is_lbracket(p) | atom_raw_memory(p) | atom_section(p))
+      ["."]
+         parser_error(p, diag::DiagCode(E2064), "Expected primary expression, got '.'")
+         <-->
+      ["<>"]
+         parser_advance(p)
+         p.curr.kind
+            [LParen] parse_expr_after_lparen(p, "<>")
+            | <+ ast::Expr(Var, "<>") +>
+      ["::"] atom_double_colon(p)
+      | op_is_reserved(p.curr.text)
+         |
+            s = atom_section(p)
+            s
+               | se => <+ se +>
+               |
+                  parser_error(p, diag::DiagCode(E2064), diag::expected_primary(p.curr.text))
+                  <-->
+         | atom_op_ident(p, p.curr.text)
+
+// Whether the token after the current one is '[' (distinguishes "@[...]"
+// raw memory from the '@' cycle operator).
+peek_is_lbracket: Parser => <>
+peek_is_lbracket = p =>
+   nxt = parser_peek_next(p)
+   nxt.kind [LBracket]
+
+// "::name" in primary position: a global variable declaration ("::name = v",
+// "::name := v"), global forward annotation ("::name: T"), or global read.
+atom_double_colon: Parser => <ast::Expr|>
+atom_double_colon = p =>
+   nxt = parser_peek_next(p)
+   nxt.kind
+      [Id]
+         parser_advance(p)
+         name = p.curr.text
+         parser_advance(p)
+         is_stmt = p.is_stmt
+         p.is_stmt = <->
+         p.no_assign
+            |
+               p.curr.text
+                  ["("] parse_expr_after_lparen(p, name)
+                  | <+ ast::Expr(Var, name) +>
+            |
+               p.curr.text
+                  ["="] parse_named_assign_g(p, name, <->, <+>)
+                  ["+="] parse_named_assign_g(p, name, <+>, <+>)
+                  [":"] parse_colon_ctx_g(p, name, <+>)
+                  ["("] parse_expr_after_lparen(p, name)
+                  | <+ ast::Expr(Var, name) +>
+      |
+         parser_error(p, diag::DiagCode(E2064),
+            "Expected identifier after '::', got '" + nxt.text + "'")
+         <-->
+
+// A non-reserved operator symbol in primary position: mirror of atom_ident for
+// the '.'-free symbol forms — "=" / "+=" / "::=" define or rebind the
+// operator function, ":" starts the forward annotation (with the optional
+// #infix fixity clause), "(" is a prefix call, and anything else is a bare
+// function value (which pp_member/postfix-calls then chain or call).
+atom_op_ident: Parser, String => <ast::Expr|>
+atom_op_ident = p, name =>
+   parser_advance(p)
+   p.no_assign
+      |
+         p.curr.text
+            ["("] parse_expr_after_lparen(p, name)
+            | <+ ast::Expr(Var, name) +>
+      |
+         p.curr.text
+            ["="] parse_named_assign(p, name, <->)
+            ["+="] parse_named_assign(p, name, <+>)
+            ["::="] parse_global_assign(p, name)
+            [":"] parse_colon(p, name)
+            ["("] parse_expr_after_lparen(p, name)
+            | <+ ast::Expr(Var, name) +>
+
+int_suffix_vt: String => (ast::ValueType, <>)
+int_suffix_vt = text =>
+   s2 = text(-2..)
+   s3 = text(-3..)
+   s2
+      ["i8"] (ast::ValueType(I8), <+>)
+      ["u8"] (ast::ValueType(U8), <+>)
+      |
+         s3
+            ["i16"] (ast::ValueType(I16), <+>)
+            ["i32"] (ast::ValueType(I32), <+>)
+            ["i64"] (ast::ValueType(I64), <+>)
+            ["u16"] (ast::ValueType(U16), <+>)
+            ["u32"] (ast::ValueType(U32), <+>)
+            ["u64"] (ast::ValueType(U64), <+>)
+            | (ast::ValueType(Int), <->)
+
+atom_integer: Parser, String => <ast::Expr|>
+atom_integer = p, text =>
+   r = parse_int_text(text)
+   r
+      | v =>
+         parser_advance(p)
+         suf = int_suffix_vt(text)
+         iexpr = ast::Expr(Int, v)
+         suf.1
+            | <+ ast::Expr(TypeCast, ast::CastExpr(suf.0, iexpr)) +>
+            | <+ iexpr +>
+      |
+         has_brace = has_char(text, '{')
+         has_brace
+            |
+               parser_error(p, diag::DiagCode(E2043),
+                  "Repeat count in integer literal '" + text + "' must be between 0 and 64")
+               <-->
+            | <-->
+
+atom_rune: Parser, String => <ast::Expr|>
+atom_rune = p, text =>
+   r = parse_int_text(text)
+   r
+      | v =>
+         parser_advance(p)
+         <+ ast::Expr(Rune, v) +>
+      | <-->
+
+atom_float: Parser, String => <ast::Expr|>
+atom_float = p, text =>
+   r = parse_float_text(text)
+   r
+      | v =>
+         parser_advance(p)
+         vt = float_suffix_vt(text)
+         flt = ast::Expr(Float, v)
+         vt [F32]
+            <+ ast::Expr(TypeCast, ast::CastExpr(ast::ValueType(F32),
+               flt)) +>
+         | <+ flt +>
+      |
+         parser_error(p, diag::DiagCode(E2033), "Invalid float literal '" + text + "'")
+         <-->
+
+atom_str: Parser, String => <ast::Expr|>
+atom_str = p, text =>
+   parser_advance(p)
+   <+ ast::Expr(Str, text) +>
+
+atom_var: Parser, String => <ast::Expr|>
+atom_var = p, text =>
+   parser_advance(p)
+   <+ ast::Expr(Var, text) +>
+
+fresh_accessor_var: Parser => String
+fresh_accessor_var = p =>
+   p.dp_var_count = p.dp_var_count + 1
+   "_acc_" + str::from_int(p.dp_var_count)
+
+paren_is_accessor_step: lexer::Lx, lexer::Tok => <>
+paren_is_accessor_step = c, t =>
+   t.kind
+      [Newline, Indent, Dedent]
+         paren_is_accessor_step(c, lexer::next_tok(c, 0))
+      [Op]
+         t.text == "."
+      | <->
+
+paren_is_accessor: Parser => <>
+paren_is_accessor = p =>
+   p.curr.kind [Op] && p.curr.text == "."
+      | <+>
+      |
+         c = lexer::clone_lx(p.lx)
+         paren_is_accessor_step(c, p.curr)
+
+parse_accessor_chain: Parser, String, ast::Expr => <ast::Expr|>
+parse_accessor_chain = p, param_name, cur_target =>
+   parser_skip_layout(p)
+   is_dot = p.curr.kind [Op] && p.curr.text == "."
+   is_dot
+      |
+         parser_advance(p)
+         parser_skip_layout(p)
+         p.curr.kind
+            [Id, Int]
+               next_field = p.curr.text
+               f_line = p.curr.line
+               f_col = p.curr.col
+               parser_advance(p)
+               next_target = ast::Expr(Member, ast::MemberExpr(cur_target, next_field,
+                  <->, ast::Expr(Var, ""), f_line, f_col))
+               parse_accessor_chain(p, param_name, next_target)
+            |
+               parser_error(p, diag::DiagCode(E2064), "Expected field name or tuple index after '.', got '" +
+                  p.curr.text + "'")
+               <-->
+      |
+         p.curr.kind
+            [RParen]
+               parser_advance(p)
+               params = ast::Names()
+               params += param_name
+               fe = ast::Expr(Fn, ast::FnExpr(params, ast::Names(), cur_target))
+               p.curr.text == "=>"
+                  |
+                     parser_error(p, diag::DiagCode(E2037), diag::E2037_params_parenthesized!)
+                     <-->
+                  | pp_postfix(p, fe)
+            |
+               parser_error(p, diag::DiagCode(E2027), "Expected ')' after accessor section, got '" +
+                  p.curr.text + "'.")
+               <-->
+
+parse_accessor_section: Parser => <ast::Expr|>
+parse_accessor_section = p =>
+   parser_skip_layout(p)
+   param_name = fresh_accessor_var(p)
+   target = ast::Expr(Var, param_name)
+   parser_advance(p)
+   parser_skip_layout(p)
+   p.curr.kind
+      [Id, Int]
+         first_field = p.curr.text
+         f_line = p.curr.line
+         f_col = p.curr.col
+         parser_advance(p)
+         cur_target = ast::Expr(Member, ast::MemberExpr(target, first_field,
+            <->, ast::Expr(Var, ""), f_line, f_col))
+         parse_accessor_chain(p, param_name, cur_target)
+      |
+         parser_error(p, diag::DiagCode(E2064), "Expected field name or tuple index after '.', got '" +
+            p.curr.text + "'")
+         <-->
+
+atom_paren: Parser => <ast::Expr|>
+atom_paren = p =>
+   saved_no_assign = p.no_assign
+   p.no_assign = <->
+   saved_cd = p.cycle_depth
+   p.cycle_depth = 0
+   parser_advance(p)
+   res = p.curr.kind
+      [RParen]
+         // "()" is the unit/void TYPE, not a value: it is only valid in a type
+         // declaration. A function declared "=> ()" coerces any value to unit
+         // (.Void); the unit itself is never directly constructible.
+         parser_error(p, diag::DiagCode(E2104), "unit '()' is only valid in a type " +
+            "declaration, not as a value")
+         <-->
+      |
+         paren_is_accessor(p)
+            | parse_accessor_section(p)
+            | paren_has_map(p)
+               | parse_paren_map_literal(p)
+               | paren_has_comma(p)
+                  | parse_paren_record(p)
+                  | parse_paren_group(p)
+   p.cycle_depth = saved_cd
+   p.no_assign = saved_no_assign
+   res
+
+paren_has_map_step: lexer::Lx, lexer::Tok, Int => <>
+paren_has_map_step = c, t, depth =>
+   t.kind
+      [Eof] <->
+      [Newline, Indent, Dedent]
+         paren_has_map_step(c, lexer::next_tok(c, 0), depth)
+      [LParen, LBracket, LBrace]
+         paren_has_map_step(c, lexer::next_tok(c, 0), depth + 1)
+      [RParen, RBracket, RBrace]
+         depth > 0
+            | paren_has_map_step(c, lexer::next_tok(c, 0), depth - 1)
+            | <->
+      [Comma]
+         depth == 0 | <-> | paren_has_map_step(c, lexer::next_tok(c, 0), depth)
+      [Op]
+         depth == 0 && t.text == "^="
+            | <+>
+            | paren_has_map_step(c, lexer::next_tok(c, 0), depth)
+      | paren_has_map_step(c, lexer::next_tok(c, 0), depth)
+
+// Whether the parenthesized list is a MAP LITERAL: a '^=' at this depth
+// before any ',' / ')' ("(k1 ^= v1, k2 ^= v2)").
+paren_has_map: Parser => <>
+paren_has_map = p =>
+   c = lexer::clone_lx(p.lx)
+   paren_has_map_step(c, p.curr, 0)
+
+// "(k1 ^= v1, k2 ^= v2)" — a map literal. Each field is "key ^= value".
+parse_paren_map_literal: Parser => <ast::Expr|>
+parse_paren_map_literal = p =>
+   ml_pairs(p, ast::MapPairs())
+
+ml_pairs: Parser, ast::MapPairs => <ast::Expr|>
+ml_pairs = p, pairs =>
+   p.curr.kind
+      [RParen]
+         parser_advance(p)
+         <+ ast::Expr(MapLiteral, pairs) +>
+      |
+         parse_atom(p)
+            | key => ml_pair_with_key(p, pairs, key)
+            | <-->
+
+ml_pair_with_key: Parser, ast::MapPairs, ast::Expr => <ast::Expr|>
+ml_pair_with_key = p, pairs, key =>
+   p.curr.text == "^="
+      |
+         parser_advance(p)
+         v = parse_expr(p)
+         v
+            | ve =>
+               pairs += ast::MapPair(key, ve)
+               p.curr.kind
+                  [Comma]
+                     parser_advance(p)
+                     ml_pairs(p, pairs)
+                  |
+                     p.curr.kind
+                        [RParen]
+                           parser_advance(p)
+                           <+ ast::Expr(MapLiteral, pairs) +>
+                        | <-->
+            | <-->
+      | <-->
+
+paren_has_comma_step: lexer::Lx, lexer::Tok, Int => <>
+paren_has_comma_step = c, t, depth =>
+   t.kind
+      [Eof] <->
+      [Newline, Indent, Dedent]
+         paren_has_comma_step(c, lexer::next_tok(c, 0), depth)
+      [LParen, LBracket, LBrace]
+         paren_has_comma_step(c, lexer::next_tok(c, 0), depth + 1)
+      [RParen, RBracket, RBrace]
+         depth > 0
+            | paren_has_comma_step(c, lexer::next_tok(c, 0), depth - 1)
+            | <->
+      [Comma]
+         depth == 0
+            | <+>
+            | paren_has_comma_step(c, lexer::next_tok(c, 0), depth)
+      | paren_has_comma_step(c, lexer::next_tok(c, 0), depth)
+
+// A parenthesized list is a RECORD only when it contains a comma at this
+// depth (mirrors parser_parse_record_or_group's lookahead): "(1, 2)" is a
+// record, "(x + y)" is a grouping. Nested brackets/braces/parens are skipped
+// so "(1, (2, 3))" still counts its top-level comma.
+paren_has_comma: Parser => <>
+paren_has_comma = p =>
+   c = lexer::clone_lx(p.lx)
+   paren_has_comma_step(c, p.curr, 0)
+
+// "(expr1, expr2, ...)" — a positional record literal. Fields may be named
+// ("name = value"); a field value that is itself a repetition ("1 {3}")
+// splices its copies flat into THIS record.
+parse_paren_record: Parser => <ast::Expr|>
+parse_paren_record = p =>
+   parser_skip_layout(p)
+   pr_record_field_loop(p, ast::Fields())
+
+pr_record_field_loop: Parser, ast::Fields => <ast::Expr|>
+record_closed: Parser, ast::Fields => <ast::Expr|>
+record_closed = p, fields =>
+   parser_advance(p)
+   p.curr.text == "=>"
+      |
+         parser_error(p, diag::DiagCode(E2037), diag::E2037_params_parenthesized!)
+         <-->
+      |
+         ?fields < 2
+            |
+               parser_error(p, diag::DiagCode(E2084),
+                  "Single-field records are not allowed: a record must have at least 2 fields")
+               <-->
+            | <+ ast::Expr(Record, ast::RecordExpr(fields, <->)) +>
+
+pr_record_field_loop = p, fields =>
+   parser_skip_layout(p)
+   p.curr.kind
+      [RParen] record_closed(p, fields)
+      |
+         p.curr.kind
+            [Id]
+               nt = parser_peek_next(p)
+               nt.text == "="
+                  |
+                     name = p.curr.text
+                     parser_advance(p)
+                     parser_advance(p)
+                     pr_field_value(p, fields, <+>, name)
+                  |
+                     nt.text == ":"
+                        |
+                           parser_error(p, diag::DiagCode(E2107),
+                              "Record literal fields use '=' for values " +
+                              "(e.g. '(x = 10)'); ':' is only for types.")
+                           <-->
+                        | pr_field_value(p, fields, <->, "")
+            | pr_field_value(p, fields, <->, "")
+
+pr_field_value: Parser, ast::Fields, <>, String => <ast::Expr|>
+pr_field_value = p, fields, has_name, name =>
+   v = parse_expr(p)
+   v
+      | ve =>
+         fs = append_field(fields, has_name, name, ve)
+         parser_skip_layout(p)
+         p.curr.kind
+            [Comma]
+               parser_advance(p)
+               parser_skip_layout(p)
+               pr_record_field_loop(p, fs)
+            |
+               p.curr.kind
+                  [RParen] record_closed(p, fs)
+                  |
+                     parser_error(p, diag::DiagCode(E2063), "Expected ')' after record " +
+                        "fields, got '" + p.curr.text + "'.")
+                     <-->
+      | <-->
+
+// Appends one field value; a repetition value ("1 {3}") splices its copies.
+append_field: ast::Fields, <>, String, ast::Expr => ast::Fields
+append_field = fields, has_name, name, v =>
+   v
+      [Record r]
+          r.is_repeat
+            |
+               r.fields @ f =>
+                  fields += ast::RecordField(has_name, name, f.val)
+               fields
+            |
+               fields += ast::RecordField(has_name, name, v)
+               fields
+      |
+         fields += ast::RecordField(has_name, name, v)
+         fields
+
+trailing_block_field: ast::Fields, ast::Expr => ast::Fields
+trailing_block_field = fields, e =>
+   e
+      [Assign a]
+         !a.2 && !a.3
+            | append_field(fields, <+>, a.0, a.5)
+            | append_field(fields, <->, "", e)
+      | append_field(fields, <->, "", e)
+
+parse_trailing_block_expr = p, lhs =>
+   bk = parse_block(p)
+   bk
+      | be =>
+         be
+            [Fn]
+               <+ ast::Expr(Bin, (ast::BinaryOp(Apply), lhs, be)) +>
+            [Record]
+               <+ ast::Expr(Bin, (ast::BinaryOp(Apply), lhs, be)) +>
+            [Block b]
+               n_exprs = ?b
+               n_exprs == 1
+                  |
+                     first_e = b(0)!!
+                     first_e
+                        [Fn]
+                           <+ ast::Expr(Bin, (ast::BinaryOp(Apply),
+                              lhs, first_e)) +>
+                        |
+                           fields' = ast::Fields()
+                           fields' = trailing_block_field(fields', first_e)
+                           rec = ast::Expr(Record,
+                              ast::RecordExpr(fields', <->))
+                           <+ ast::Expr(Bin, (ast::BinaryOp(Apply),
+                              lhs, rec)) +>
+                  |
+                     fields' = ast::Fields()
+                     b @ e =>
+                        fields' = trailing_block_field(fields', e)
+                     rec = ast::Expr(Record, ast::RecordExpr(fields', <->))
+                     <+ ast::Expr(Bin, (ast::BinaryOp(Apply), lhs, rec)) +>
+            |
+               fields' = ast::Fields()
+               fields' = trailing_block_field(fields', be)
+               rec = ast::Expr(Record, ast::RecordExpr(fields', <->))
+               <+ ast::Expr(Bin, (ast::BinaryOp(Apply), lhs, rec)) +>
+      | <-->
+
+// "(expr)" with no top-level comma: a grouping that unwraps to its inner
+// value. A grouped expression referencing a free "_" desugars to the
+// implicit-parameter lambda "_ => expr" ("(3 - 2 * _)" is "_ => 3 - 2 * _").
+parse_paren_group: Parser => <ast::Expr|>
+parse_paren_group = p =>
+   parser_skip_layout(p)
+   ir = parse_expr(p)
+   ir
+      | ire =>
+         parser_skip_layout(p)
+         p.curr.kind
+            [RParen] group_closed(p, ire)
+            |
+               parser_error(p, diag::DiagCode(E2027), "Expected ')' after grouped " +
+                  "expression, got '" + p.curr.text + "'.")
+               <-->
+      | <-->
+
+is_single_term_expr: Parser, ast::Expr => <>
+is_single_term_expr = p, e =>
+   !has_free_underscore(e) &&
+      (e
+         [Call c] !user_op_lookup(p.user_ops, c.fn_name).0
+         [Record r] !r.is_repeat
+         [Var, Int, Float, Str, Rune, Member, RawMemory, TypeCast,
+            SizeOf, AlignOf, BuilderCreate, ArrayCreate, MapLiteral, Variant])
+
+group_closed: Parser, ast::Expr => <ast::Expr|>
+group_closed = p, inner =>
+   parser_advance(p)
+   p.curr.text == "=>"
+      |
+         parser_error(p, diag::DiagCode(E2037), diag::E2037_params_parenthesized!)
+         <-->
+      |
+         is_single_term_expr(p, inner)
+            |
+               parser_error(p, diag::DiagCode(E2084), "Inexplicable parenthesizing of a single term")
+               <-->
+            |
+               has_free_underscore(inner)
+                  |
+                     params = ast::Names()
+                     params += "_"
+                     fe = ast::Expr(Fn, ast::FnExpr(params, ast::Names(), inner))
+                     pp_postfix(p, fe)
+                  |
+                     inner
+                        [Record r]
+                           ?r.fields < 2
+                              |
+                                 parser_error(p, diag::DiagCode(E2084),
+                                    "Single-field records are not allowed: a record must have at least 2 fields")
+                                 <-->
+                              |
+                                 pp_postfix(p, ast::Expr(Record,
+                                    ast::RecordExpr(r.fields, <->)))
+                        | pp_postfix(p, inner)
+
+// A growable-array element read that unwraps the `< elem | Error >` ram.
+// The `| _` identity extractor (the named `d => d` form would be the same)
+// passes the element through; a placeholder covers the Error slot. A helper
+// (not an inline `xs(i) | _ | ...`) so it works inside a guard-chain branch
+// body, where the RHS parses at the addition tier.
+read_expr: ast::Exprs, Int => ast::Expr
+read_expr = xs, i =>
+   xs(i) | _ | ast::Expr(Var, "?")
+
+read_str: ast::Names, Int => String
+read_str = xs, i =>
+   xs(i) | _ | ""
+
+read_field: ast::Fields, Int => ast::RecordField
+read_field = xs, i =>
+   xs(i) | _ | ast::RecordField(<->, "", ast::Expr(Var, "?"))
+
+// Whether `e` contains a "_" not bound by an inner lambda's params (the free
+// underscore the grouping desugar turns into an implicit lambda param).
+has_free_underscore: ast::Expr => <>
+has_free_underscore = e =>
+   e
+      [Var v] v == "_"
+      [Fn f]
+         bound' = <->
+         f.params @ pname =>
+            pname == "_" | bound' = <+>; -->
+         bound'
+            | <->
+            | has_free_underscore(f.body)
+      [Bin t] has_free_underscore(t.1) || has_free_underscore(t.2)
+      [Unary t] has_free_underscore(t.1)
+      [Assign t] has_free_underscore(t.5)
+      [Choice c]
+         has_free_underscore(c.cond) ||
+            has_free_underscore_branches(c.branches)
+      [Block b] has_free_underscore_exprs(b)
+      [Call t]
+         t.fn_name == ""
+            |
+               has_free_underscore(t.fn_target) ||
+                  has_free_underscore_exprs(t.args)
+            | t.fn_name == "_" || has_free_underscore_exprs(t.args)
+      [CycleEscape t]
+         has_free_underscore(t.cycle) || has_free_underscore(t.branch)
+      [Cycle t]
+         has_free_underscore(t.iterable) || has_free_underscore(t.body_fn)
+      [Range t]
+         (t.has_lhs | has_free_underscore(t.lhs) | <->) ||
+            (t.has_rhs | has_free_underscore(t.rhs) | <->)
+      [Record r] has_free_underscore_fields(r.fields)
+      [MapLiteral t] has_free_underscore_map(t)
+      [Member t]
+         t.is_module_access
+            | <->
+            | has_free_underscore(t.target)
+      [KeyAccess t] has_free_underscore(t.target) || has_free_underscore(t.key)
+      [Variant t] has_free_underscore_exprs(t.args)
+      [RawMemory t] has_free_underscore(t.addr)
+      [TypeCast t] has_free_underscore(t.expr)
+      [Copy e] has_free_underscore(e)
+      [BuilderCreate e] has_free_underscore(e)
+      [ArrayCreate] <->
+      [CompileTime t] has_free_underscore(t)
+      [Spawn t]
+         has_free_underscore(t.fn_target) ||
+            has_free_underscore_exprs(t.args)
+      [Join t] has_free_underscore(t)
+      | <->
+
+has_free_underscore_exprs: ast::Exprs => <>
+has_free_underscore_exprs = xs =>
+   found' = <->
+   xs @ x =>
+      has_free_underscore(x)
+         | found' = <+>; -->
+   found'
+
+has_free_underscore_branches: ast::Branches => <>
+has_free_underscore_branches = bs =>
+   found' = <->
+   bs @ b =>
+      !b.is_identity_extractor
+         |
+            has_free_underscore_exprs(b.case_values)
+               | (found' = <+>; -->)
+               |
+                  is_payload_branch = b.kind [Bare, Variant]
+                  !is_payload_branch && has_free_underscore(b.block)
+                     | (found' = <+>; -->)
+   found'
+
+has_free_underscore_fields: ast::Fields => <>
+has_free_underscore_fields = fs =>
+   found' = <->
+   fs @ f =>
+      has_free_underscore(f.val)
+         | found' = <+>; -->
+   found'
+
+// "<+>" / "<->" / "<++>" / "<-->" — the four unit variant constructors.
+atom_variant_unit: Parser, ast::Tag => <ast::Expr|>
+atom_variant_unit = p, tag =>
+   parser_advance(p)
+   <+ ast::Expr(Variant, (tag, ast::Exprs())) +>
+
+// The payload tag for a "<+ p ...>" / "<- p ...>" variant:
+// For "<+": "+>" (RamPN, Some), "->" (RamPP, Positive).
+// For "<-": "->" (RamNP, Err), "+>" (RamPP, Negative).
+#type TagOpt < ast::Tag | >
+variant_tag: <>, String => TagOpt
+variant_tag = is_pos, closer =>
+   is_pos
+      | closer
+         ["+>"] TagOpt(<+ ast::Tag(Some) +>)
+         ["->"] TagOpt(<+ ast::Tag(Positive) +>)
+         | TagOpt(<-->)
+      | closer
+         ["->"] TagOpt(<+ ast::Tag(Err) +>)
+         ["+>"] TagOpt(<+ ast::Tag(Negative) +>)
+         | TagOpt(<-->)
+
+// "<+ p +>" / "<+ p ->" / "<- p ->" / "<- p +>" — payload variants.
+atom_variant_payload: Parser, <> => <ast::Expr|>
+atom_variant_payload = p, is_pos =>
+   parser_advance(p)
+   ar = parse_expr(p)
+   ar
+      | are =>
+         variant_tag(is_pos, p.curr.text)
+            | t =>
+               parser_advance(p)
+               args = ast::Exprs()
+               args += are
+               <+ ast::Expr(Variant, (t, args)) +>
+            | <-->
+      | <-->
+
+// "-->" / "--^" — a cycle jump (break/continue), with an optional integer
+// depth suffix ("-->2" = second enclosing cycle).
+atom_cycle_jump: Parser, <> => <ast::Expr|>
+atom_cycle_jump = p, is_break =>
+   parser_advance(p)
+   level' = 1
+   p.curr.kind
+      [Int]
+         r = parse_int_text(p.curr.text)
+         r
+            | v =>
+               v !< 1
+                  |
+                     level' = v
+                     parser_advance(p)
+                     <+ ast::Expr(CycleJump, (is_break, level')) +>
+                  |
+                     parser_error(p, diag::DiagCode(E2066), diag::cycle_jump_depth(p.curr.text))
+                     <-->
+            |
+               parser_error(p, diag::DiagCode(E2066), diag::cycle_jump_depth(p.curr.text))
+               <-->
+      | <+ ast::Expr(CycleJump, (is_break, level')) +>
+
+// "--|" — early return from the enclosing function, with an optional return
+// value. Bare "--|" is used for void functions (=> ()).
+atom_early_return: Parser => <ast::Expr|>
+atom_early_return = p =>
+   line = p.curr.line
+   col = p.curr.col
+   parser_advance(p)
+   is_term = p.curr.kind [Newline, Dedent, Semi, Eof, RParen, RBracket, RBrace]
+   is_op = p.curr.kind [Op]
+   txt = p.curr.text
+   is_br = txt ["]", "|", "!|", ")", "}"]
+   is_end = is_term || (is_op && is_br)
+   is_end
+      | <+ ast::Expr(Return, ast::ReturnExpr(<->, ast::Expr(Int, 0), line, col)) +>
+      |
+         val = p.branch_body_depth > 0
+            | parse_range(p)
+            | parse_choice(p)
+         val
+            | v => <+ ast::Expr(Return, ast::ReturnExpr(<+>, v, line, col)) +>
+            | <-->
+
+// "{expr}" — Builder literal: a fresh Builder with capacity = expr.
+atom_builder: Parser => <ast::Expr|>
+atom_builder = p =>
+   parser_advance(p)
+   cr = parse_bp(p, 0)
+   cr
+      | cre =>
+         p.curr.kind
+            [RBrace]
+               parser_advance(p)
+               <+ ast::Expr(BuilderCreate, cre) +>
+            | <-->
+      |
+         parser_error(p, diag::DiagCode(E2064), diag::expected_primary(p.curr.text))
+         <-->
+
+// "?operand" — the length operator (String/Builder/array/map/record/slice).
+atom_length: Parser => <ast::Expr|>
+atom_length = p =>
+   parser_advance(p)
+   p.curr.kind
+      [Id]
+         nxt = parser_peek_next(p)
+         nxt.text == "="
+            |
+               name = p.curr.text
+               parser_advance(p)
+               atom_length_set(p, name)
+            | atom_length_op(p)
+      | atom_length_op(p)
+
+// "?b = n" — a Builder length-set (the report model after an FFI read).
+atom_length_set: Parser, String => <ast::Expr|>
+atom_length_set = p, name =>
+   parser_advance(p) // consume '='
+   p.in_rhs = <+>
+   rhs = parse_assign_rhs(p)
+   p.in_rhs = <->
+   rhs
+      | re =>
+         n = ast::Expr(Assign, (name, <->, <->, <->, <+>, re,
+            ast::Expr(Var, ""), "",
+            ast::TypeInfo(Prim, ast::ValueType(Unknown))))
+         seq_cont_loop(p, n)
+      | <-->
+
+// "?operand" — String / Builder byte length (a Unary Length).
+atom_length_op: Parser => <ast::Expr|>
+atom_length_op = p =>
+   orr = parse_unary(p)
+   orr
+      | oe =>
+         <+ ast::Expr(Unary, (ast::UnaryOp(Length), oe)) +>
+      | <-->
+
+// "??operand" — String codepoint count (a Unary RuneCount).
+atom_rune_count: Parser => <ast::Expr|>
+atom_rune_count = p =>
+   parser_advance(p)
+   orr = parse_unary(p)
+   orr
+      | oe =>
+         <+ ast::Expr(Unary, (ast::UnaryOp(RuneCount), oe)) +>
+      | <-->
+
+// "op rhs" — an operator section: a lambda over the implicit "_" param.
+// Requires trailing whitespace after the operator; excluded binary ops
+// (|| && $ $> $>> !> !< !=) never form a section.
+atom_section: Parser => <ast::Expr|>
+atom_section = p =>
+   operators::bin_info(p.curr.text)
+      | opb =>
+         ex = opb.op [Or, And, Feed, Apply, Bind, NotGt, NotLt, NotEq]
+         p.curr.trail && !ex
+            |
+               parser_advance(p)
+               rr = parse_bp(p, 130)
+               rr
+                  | rre =>
+                     params = ast::Names()
+                     params += "_"
+                     body = ast::Expr(Bin, (opb.op, ast::Expr(Var, "_"),
+                        rre))
+                     <+ ast::Expr(Fn, (params, ast::Names(), body)) +>
+                  | <-->
+            |
+               p.curr.trail
+                  | <-->
+                  |
+                     parser_error(p, diag::DiagCode(E2031), "Operator section '" +
+                        p.curr.text +
+                        "' requires trailing whitespace after the operator.")
+                     <-->
+      | <-->
+
