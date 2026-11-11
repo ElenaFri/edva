@@ -7,7 +7,7 @@
 #use "ast"
 #use "path"
 #use "str"
-#use "operators"
+#use "opvocab"
 #use "diag"
 #use "log"
 #use const
@@ -124,21 +124,11 @@ token_is_pipe = t =>
    tok_is_op(t) && (t.text ["|", "!|", "|->", "|+>", "|-->", "|++>"])
 
 // Whether an operator text already has a meaning: a built-in binary operator
-// (the generated bin_info table) or one of the special token forms (ram
-// literal "<+", cycle jump "-->", etc.). User-defined operators cannot reuse
-// any of these.
+// or one of the special sigil forms (ram literal "<+", cycle jump "-->", etc.).
+// User-defined operators cannot reuse any of these. The reserved vocabulary is
+// generated into opvocab.dva from operators.yaml (the single source of truth).
 op_is_reserved: String => <>
-op_is_reserved = text =>
-   operators::bin_info(text)
-      | <+>
-      |
-         text
-            ["<+", "<-", "<+>", "<->", "<++>", "<-->", "<>", "+>", "->",
-            "-->", "--^", "--|", ">--", "@", "[@",
-            "@@", "^", "^?", "?", "!", "*", "&", "=>",
-            "!=>", "|", "|->", "|+>", "|-->", "|++>",
-            "=", ":=", "+=", "::=", "..", "...", "..=", "::", ".", ":",
-            "??", ".!.", "++", "~~", "--!", "!!", "^-", "^="]
+op_is_reserved = text => opvocab::is_reserved_run(text)
 
 user_op_lookup: UserOpEntry{}, String => (found': <>, lbp': Int, rbp': Int)
 user_op_lookup = lst, text =>
@@ -317,6 +307,7 @@ bump_branch_body = p, body =>
 
 // --- precedence (binary operators) ----------------------------------------
 
-// The operator table lives in selfhost/operators.dva (operators::bin_info,
-// GENERATED from process/spec/operators.yaml).
+// The operator table lives in src/operators.dva (operators::bin_info) and the
+// reserved-run vocabulary in src/opvocab.dva (opvocab::is_reserved_run), both
+// GENERATED from operators.yaml.
 

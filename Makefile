@@ -67,7 +67,7 @@ POLL_BACKEND ?= poll
 
 # --- Modules and Objects -----------------------------------------------------
 STD_MODULES      := const ascii utf str mem sys libc unicode io ccl json uring event path fs cli time log
-COMPILER_MODULES := poll diag ast llvm operators dep_graph layout tast lexer unify type_env show \
+COMPILER_MODULES := poll diag ast llvm operators opvocab dep_graph layout tast lexer unify type_env show \
                     parser/pstate parser/pexpr parser/plambda parser/ptype parser/ppost parser/pchoice parser/pident parser \
                     annotate version pkg formatter lsp \
                     codegen/types codegen/runtime codegen/expr codegen/match codegen/stmt codegen/main codegen
@@ -134,7 +134,9 @@ bootstrap:
 src/lexer.dva: tools/tokens.txt
 	$(NU) tools/gen_tokens.nu
 
-src/operators.dva: operators.yaml
+# opgen emits operators.dva and opvocab.dva from the same invocation; the
+# grouped target (&:) runs the recipe once for both.
+src/operators.dva src/opvocab.dva &: operators.yaml
 	$(NU) tools/opgen/main.nu
 
 src/version.dva: VERSION tools/gen_version.nu
@@ -144,7 +146,7 @@ gen-version:
 	$(NU) tools/gen_version.nu
 
 gen-tokens: src/lexer.dva
-gen-operators: src/operators.dva
+gen-operators: src/operators.dva src/opvocab.dva
 
 # --- Module Dependencies (Prerequisites for incremental & parallel builds) ----
 # build/deps.mk lists, for every object, all .dva files reachable through

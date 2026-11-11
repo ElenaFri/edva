@@ -5,6 +5,9 @@
 # run_tests.sh):
 #   - the compiler       -> src/operators.dva (the operators module:
 #                           BinOpInfo + bin_info, used by src/parser.dva)
+#   - the compiler       -> src/opvocab.dva (the reserved-run vocabulary:
+#                           is_reserved_run, a leaf module the lexer layer
+#                           can consume; used by parser pstate op_is_reserved)
 #   - the docs           -> the §1.6 operators/precedence table in GRAMMAR.md
 #
 # Conventions:
@@ -702,3 +705,59 @@ non_operators:
     note: "directives triggered by a leading #, not bare reserved words."
   - symbol: "--|"
     note: "early return from functions; not an operator."
+
+# Fixed sigil forms: special operator runs that are NOT Pratt-loop binary
+# operators — ram literals and payload closers, cycle jumps, early return,
+# state binding, assignment/rebind forms, member and key access, lengths,
+# call forms. opgen emits them (union with the kind_self operator symbols)
+# into src/opvocab.dva, the reserved-run vocabulary: a run OUTSIDE it is a
+# legal user-defined operator name ('#infix'). User operators may not reuse
+# any reserved run (parser pstate op_is_reserved, E2097).
+sigils:
+  - "<+"
+  - "<-"
+  - "<+>"
+  - "<->"
+  - "<++>"
+  - "<-->"
+  - "<>"
+  - "+>"
+  - "->"
+  - "-->"
+  - "--^"
+  - "--|"
+  - ">--"
+  - "@"
+  - "[@"
+  - "@@"
+  - "^"
+  - "^?"
+  - "?"
+  - "!"
+  - "*"
+  - "&"
+  - "=>"
+  - "!=>"
+  - "|"
+  - "|->"
+  - "|+>"
+  - "|-->"
+  - "|++>"
+  - "="
+  - ":="
+  - "+="
+  - "::="
+  - ".."
+  - "..."
+  - "..="
+  - "::"
+  - "."
+  - ":"
+  - "??"
+  - ".!."
+  - "++"
+  - "~~"
+  - "--!"
+  - "!!"
+  - "^-"
+  - "^="
