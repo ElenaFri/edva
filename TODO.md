@@ -109,6 +109,58 @@ Top priority. Without this, any syntax change is risky.
   - Remove the "split-back hack" (`<Int|>` → `Op("|>")` re-split).
   - Move the unknown-operator diagnostic closer to the lexer (former `E1006`).
   - *Files*: `src/lexer.dva`, `src/operators.dva`, `operators.yaml`, `src/parser.dva`
+  - *Scoped* (design notes for implementation):
+    - Current state: the lexer emits every unbroken special-character run as
+      ONE generic `Op` token (documented as a deliberate simplification in
+      `src/lexer.dva`'s header); the split-back hack for compact ram types is
+      already gone. The parser filters by text: ~30 sites (21 `.text
+      ["..."]` guards + 9 `token_is_op` calls) plus the Pratt loop's
+      `operators::bin_info(text)` lookup; ram-literal forms (`<+`, `<->`,
+      `<|>`, closers, …) are matched by text in pexpr/pchoice.
+    - Layering constraint: `src/lexer.dva` is a leaf (no `ast`/`operators`
+      import) while `src/operators.dva` depends on `ast`. The operator
+      vocabulary must therefore be GENERATED into the lexer's layer — e.g. a
+      generated `is_op_run: String => <>` table (a new opgen artifact, kept
+      in sync with `operators.yaml` + the fixed sigil set: ram forms, cycle
+      jumps, `=>`/`!=>`, `..`/`...`, `!!`, `~~`, `$`/`$>`/`$>>`, `:=`, …).
+    - Step 1 — restore the unknown-operator diagnostic in the lexer with a
+      NEW code (one code = one cause; the retired E1006 stays retired).
+      Decide fatal vs recoverable carefully: `lexer::fail` is fatal, and the
+      formatter and LSP also lex arbitrary user text — a fatal error would
+      change `edva fmt` behavior on partially-broken files. Check which
+      tests currently pin E2064 for meaningless runs before re-pointing.
+    - Step 2 — typed emission: either (a) one `TokKind` per operator symbol
+      (append-only ordinals in `tools/tokens.txt`; requires gen_tokens and
+      opgen to share the symbol list), or (b) keep the `Op` kind but resolve
+      the run at lex time against the generated table and carry the resolved
+      operator id on the token, then migrate the ~30 parser text-matches and
+      the `bin_info` lookup in `bp_loop` to the resolved form. Option (b)
+      avoids the two-SSOT merge of tokens.txt and operators.yaml.
+  - *Revised after investigation* — the lexer-side unknown-op diagnostic
+    (former E1006) is UNSOUND as stated: runs outside the reserved vocabulary
+    are legal **user-defined operator names** (`+++ : #infix 25 20`,
+    `parse_fixity_clause` in pident; `atom_op_ident` accepts any non-reserved
+    run in primary position as an operator-name atom). E1006's retirement was
+    load-bearing for the custom-operator feature. A fatal lexer check would
+    reject every user operator. Revised plan:
+    1. Generate the reserved-vocabulary table (`op_is_reserved`'s list +
+       `bin_info` symbols) into a leaf module the lexer can consume — the
+       foundation for typed emission — instead of the hardcoded list in
+       pstate.
+    2. Improve the unknown-operator diagnostic at the PARSER, in operator
+       position, where user-op registration is knowable: a run that is
+       neither reserved nor `#infix`-registered gets a targeted "unknown
+       operator 'xyz' — declare fixity with '#infix'" diagnostic instead of
+       the generic E2064.
+    3. Typed emission (former Step 2) applies to reserved runs only; user
+       ops stay text-keyed by necessity.
+  - *Second finding*: even parser-position blanket checks are unsound — an
+    op run that cannot continue an expression legitimately ENDS it and may
+    start the next statement (verified: `y = x + 1` ⏎ `--| y` compiles). The
+    only sound improvement is a better MESSAGE at the existing error sites
+    (e.g. E2064 hinting at `#infix` when the offending token is an op run).
+    The former E1006 stays retired; the blanket-diagnostic bullet is closed
+    as unsound-by-evidence.
 
 ---
 
