@@ -1,0 +1,14 @@
+// A reserved operator run cannot be redefined as a custom operator. The run
+// '@@' is in the generated reserved vocabulary (src/opvocab.dva, emitted from
+// operators.yaml), so op_is_reserved routes it to section/built-in parsing and
+// it never reaches the '#infix' fixity path.
+//
+// This guards the generated-vocabulary SSOT: if '@@' were dropped from
+// operators.yaml, op_is_reserved would return false, '@@' would be parsed as a
+// custom operator name, this file would compile, and the test would flip red.
+//
+// Note: the surfaced diagnostic is E2064 (by routing to an operator section),
+// not E2097 — the E2097 guard in parse_fixity_clause is unreachable because
+// reserved runs are intercepted before fixity parsing.
+@@ : #infix 50 50, Int, Int => Int
+@@ = a, b => a

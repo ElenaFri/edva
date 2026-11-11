@@ -1,0 +1,6 @@
+// Companion to 394 for a second reserved sigil ('!!'), guarding another entry
+// of the generated reserved vocabulary (src/opvocab.dva from operators.yaml).
+// Dropping '!!' from operators.yaml would let this compile, flipping the test
+// red. As in 394, the surfaced diagnostic is E2064 by routing, not E2097.
+!! : #infix 50 50, Int, Int => Int
+!! = a, b => a

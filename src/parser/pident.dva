@@ -109,9 +109,15 @@ parse_colon_g = p, name, is_global =>
 
 // The custom-operator fixity clause: "+++ : #infix 25 20, ..." — the explicit
 // left and right binding powers (custom-operators.md §4). Registers the
-// operator's text in p.user_ops so the Pratt loop can parse it infix; a
-// reserved text (a built-in operator) is rejected. The current token is the
-// "#infix" identifier.
+// operator's text in p.user_ops so the Pratt loop can parse it infix. The
+// current token is the "#infix" identifier.
+//
+// The op_is_reserved(name) guard below (E2097) is a defensive backstop: in
+// practice it is unreachable, because a reserved run never reaches fixity
+// parsing — op_is_reserved routes it to an operator section in atom_op, so a
+// re-fix attempt on a reserved run surfaces earlier as E2064. The guard is
+// kept so that any future grammar change that lets a reserved run through
+// still fails with a clear message instead of silently shadowing a built-in.
 parse_fixity_clause: Parser, String => <>
 parse_fixity_clause = p, name =>
    parser_advance(p)

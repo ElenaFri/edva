@@ -3,11 +3,13 @@
 // and rerun the generator.
 //
 // A special-character run OUTSIDE this set is a legal user-defined operator
-// name ('#infix'); a run INSIDE it is reserved (parser pstate op_is_reserved,
-// E2097). The set is the union of the binary operator symbols (bin_info) and
-// the fixed sigil forms (ram literals, cycle jumps, assignment, member/key
-// access, early return, call forms). This module is a leaf: it imports
-// nothing, so the lexer layer can consume it without pulling in `ast`.
+// name ('#infix'); a run INSIDE it is reserved. Reserved runs are routed to
+// built-in/section parsing before fixity parsing, so they cannot be used as
+// custom operator names (a re-fix attempt surfaces as E2064). The set is the
+// union of the binary operator symbols (bin_info) and the fixed sigil forms
+// (ram literals, cycle jumps, assignment, member/key access, early return,
+// call forms). This module is a leaf: it imports nothing, so the lexer layer
+// can consume it without pulling in `ast`.
 
 #public
 

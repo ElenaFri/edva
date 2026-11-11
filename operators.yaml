@@ -711,8 +711,11 @@ non_operators:
 # state binding, assignment/rebind forms, member and key access, lengths,
 # call forms. opgen emits them (union with the kind_self operator symbols)
 # into src/opvocab.dva, the reserved-run vocabulary: a run OUTSIDE it is a
-# legal user-defined operator name ('#infix'). User operators may not reuse
-# any reserved run (parser pstate op_is_reserved, E2097).
+# legal user-defined operator name ('#infix'). Reserved runs cannot be used as
+# custom operator names: op_is_reserved routes them to built-in/section parsing
+# before fixity parsing, so a re-fix attempt surfaces as E2064 (the nominal
+# E2097 guard in parse_fixity_clause is an unreachable backstop). Guarded by
+# tests/fail/394 and 395.
 sigils:
   - "<+"
   - "<-"
