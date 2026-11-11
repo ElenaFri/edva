@@ -37,6 +37,9 @@ jobs:
       - name: Verify 2-stage fixed point
         run: make fixed-point
 
+      - name: Check diagnostic coverage
+        run: make coverage-check
+
   distros:
     name: ${{ matrix.name }}
     runs-on: ubuntu-24.04

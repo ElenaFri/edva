@@ -215,6 +215,36 @@ Only undertake once the foundation (0 + 1) is in place.
   - Currently empty: unkept promise / bad signal.
   - *Files*: `audits/`
 
+- [x] **3.4 — Diagnostic-code coverage gate + badge**
+  - Standard source-based line coverage (`llvm-cov` / `gcov`) is unavailable:
+    the compiler emits objects directly through the LLVM C API with no
+    debug-line or coverage metadata (`seed/ir/*.ll` carry no `!dbg`). Measure
+    instead a compiler-appropriate metric — the fraction of the `DiagCode`
+    registry (`src/diag.dva`) actually triggered by the negative suite
+    (`tests/fail/*.dva`).
+  - *Done*: `tools/diag_coverage.nu` compiles every negative test, collects the
+    emitted E-codes, intersects them with the 138-code registry, and writes
+    `coverage.json` (shields.io endpoint). `make coverage` regenerates it;
+    `make coverage-check` gates freshness in CI (ubuntu job); the README shows a
+    `diagnostics` badge. Current: 96/138 = 70%.
+  - *Surfaced* (follow-ups): 42 registry codes have no triggering test
+    (including the structurally unreachable `E2097`); 5 front-end codes are
+    emitted but missing from the registry enum (`E3006`, `E3007`, `E3040`,
+    `E3172`, `E3174`).
+  - *Files*: `tools/diag_coverage.nu`, `Makefile`, `.github/workflows/ci.yml`,
+    `README.md`, `coverage.json`
+
+- [ ] **3.5 — Source-based line/function coverage (real coverage)**
+  - The honest line-coverage metric needs the compiler to emit coverage data.
+    Two routes: (a) emit DWARF line info (`!dbg`) + an LLVM coverage map so
+    `llvm-cov` can map execution back to `.dva` source; or (b) add a
+    `--coverage` mode that instruments each function/branch with a counter,
+    dumps a profile at exit, and a tool aggregates counts across the suite into
+    `.dva`-level coverage. Route (b) is the more tractable one for a
+    self-hosted compiler.
+  - Supersedes the diagnostic-code proxy (3.4) once available.
+  - *Files*: `src/llvm.dva`, `src/codegen/*`, `tools/`
+
 ---
 
 ## Tracking
@@ -224,7 +254,7 @@ Only undertake once the foundation (0 + 1) is in place.
 | 0 — Foundation | 3 | 3 |
 | 1 — Complexity | 3 | 2 |
 | 2 — Design | 3 | 0 |
-| 3 — Quality | 3 | 0 |
+| 3 — Quality | 5 | 1 |
 
 **Recommended starting point:** Levels 0 + 1 (make the compiler modifiable),
 then **2.1** (sigil desaturation), the highest-impact design change.

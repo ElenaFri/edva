@@ -83,7 +83,7 @@ ALL_SRCS      := $(STD_MODULES:%=std/%.dva) $(COMPILER_MODULES:%=src/%.dva) src/
 SCAN_SRCS     := $(shell find src std -name '*.dva')
 DEPS_MK       := build/deps.mk
 
-.PHONY: all build clean test check driver-test fixed-point rebuild-seed bootstrap gen-tokens gen-operators gen-version install uninstall
+.PHONY: all build clean test check driver-test fixed-point rebuild-seed bootstrap gen-tokens gen-operators gen-version install uninstall coverage coverage-check
 
 # Default target: incremental modular build
 all: edva
@@ -239,6 +239,14 @@ build: gen-tokens gen-operators gen-version edva
 
 test: edva
 	./run_tests.sh
+
+# Diagnostic-code coverage: the fraction of the DiagCode registry (src/diag.dva)
+# exercised by tests/fail/*.dva. Writes coverage.json (shields.io endpoint badge).
+coverage: edva
+	$(NU) tools/diag_coverage.nu
+
+coverage-check: edva
+	$(NU) tools/diag_coverage.nu --check
 
 driver-test: edva
 	./test_driver.sh

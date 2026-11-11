@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/ElenaFri/edva/actions/workflows/ci.yml/badge.svg)](https://github.com/ElenaFri/edva/actions/workflows/ci.yml)
 [![Documentation](https://github.com/ElenaFri/edva/actions/workflows/docs.yml/badge.svg)](https://elenafri.github.io/edva/)
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FElenaFri%2Fedva%2Fmaster%2Fcoverage.json)](tools/diag_coverage.nu)
 [![License](https://img.shields.io/badge/License-BSD_2--Clause-orange.svg)](LICENSE)
 
 > *edva — an implementation of dva*  
@@ -61,6 +62,21 @@ make
 ```sh
 ./run_tests.sh
 ```
+
+### Diagnostic coverage
+
+The `diagnostics` badge tracks the share of the `DiagCode` registry
+(`src/diag.dva`) actually triggered by the negative tests (`tests/fail/`):
+
+```sh
+make coverage        # recompute and write coverage.json
+make coverage-check  # verify coverage.json is up to date (CI gate)
+```
+
+Edva emits objects directly through the LLVM C API without debug-line metadata,
+so standard source-line coverage (`llvm-cov` / `gcov`) is not yet available; the
+diagnostic-code metric is the compiler-appropriate proxy in the meantime (see
+the roadmap item 3.5 in [`TODO.md`](TODO.md)).
 
 ---
 
